@@ -1,0 +1,28 @@
+[package]
+name = "pawrly-flight"
+description = "Arrow Flight SQL transport for Pawrly. Exposes an EngineService over the Arrow Flight SQL wire protocol for BI-tool and pyarrow.flight interop."
+version = { workspace = true }
+edition = { workspace = true }
+rust-version = { workspace = true }
+license = { workspace = true }
+repository = { workspace = true }
+
+[lints]
+workspace = true
+
+[dependencies]
+pawrly-core = { workspace = true }
+arrow-flight = { workspace = true }
+arrow-array = { workspace = true }
+arrow-schema = { workspace = true }
+arrow-ipc = { workspace = true }
+tonic = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+futures = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+prost = { workspace = true }
+
+[dev-dependencies]
+pawrly-core = { workspace = true, features = ["test-support"] }

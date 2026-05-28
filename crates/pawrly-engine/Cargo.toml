@@ -1,0 +1,49 @@
+[package]
+name = "pawrly-engine"
+description = "DataFusion-backed engine implementation of EngineService."
+version = { workspace = true }
+edition = { workspace = true }
+rust-version = { workspace = true }
+license = { workspace = true }
+repository = { workspace = true }
+
+[lints]
+workspace = true
+
+[dependencies]
+pawrly-core = { workspace = true }
+pawrly-config = { workspace = true }
+pawrly-secrets = { workspace = true }
+pawrly-sources-duckdb = { workspace = true }
+pawrly-sources-http = { workspace = true }
+pawrly-sources-ai = { workspace = true }
+datafusion = { workspace = true }
+arrow-array = { workspace = true }
+arrow-schema = { workspace = true }
+parquet = { workspace = true }
+async-trait = { workspace = true }
+async-stream = { workspace = true }
+futures = { workspace = true }
+futures-util = { workspace = true }
+tokio = { workspace = true }
+tokio-stream = "0.1"
+tracing = { workspace = true }
+thiserror = { workspace = true }
+chrono = { workspace = true }
+parking_lot = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+num_cpus = { workspace = true }
+duckdb = { workspace = true }
+fs2 = { workspace = true }
+cron = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+parquet = { workspace = true }
+pawrly-config = { workspace = true }
+pawrly-secrets = { workspace = true }
+pawrly-sources-http = { workspace = true }
+arrow-array = { workspace = true }
+rusqlite = { version = "0.33", features = ["bundled"] }

@@ -1,0 +1,29 @@
+# Build artefacts
+/target
+**/*.rs.bk
+*.profraw
+
+# Pawrly runtime data
+/.pawrly
+*.log
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Secrets & local env
+.env
+.env.*
+!.env.example
+secrets/
+*.pem
+*.key
+
+docs/
+
+AGENTS.md
+CHANGELOG.md
+.claude/

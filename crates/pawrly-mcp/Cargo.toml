@@ -1,0 +1,24 @@
+[package]
+name = "pawrly-mcp"
+description = "Model Context Protocol server for Pawrly (stdio + HTTP+SSE)."
+version = { workspace = true }
+edition = { workspace = true }
+rust-version = { workspace = true }
+license = { workspace = true }
+repository = { workspace = true }
+
+[lints]
+workspace = true
+
+[dependencies]
+pawrly-core = { workspace = true }
+arrow-array = { workspace = true }
+arrow-schema = { workspace = true }
+arrow-cast = "58"
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+futures-util = { workspace = true }

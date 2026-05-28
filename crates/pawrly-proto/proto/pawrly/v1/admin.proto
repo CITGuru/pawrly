@@ -1,0 +1,27 @@
+syntax = "proto3";
+package pawrly.v1;
+
+service AdminService {
+  rpc Health(HealthRequest) returns (HealthResponse);
+  rpc Shutdown(ShutdownRequest) returns (ShutdownResponse);
+  rpc Version(VersionRequest) returns (VersionResponse);
+}
+
+message HealthRequest {}
+message HealthResponse {
+  bool ok = 1;
+  string version = 2;
+  uint64 active_queries = 3;
+  uint64 sources_ok = 4;
+  uint64 sources_unavailable = 5;
+}
+
+message ShutdownRequest { bool drain = 1; }
+message ShutdownResponse { bool accepted = 1; }
+
+message VersionRequest {}
+message VersionResponse {
+  string pawrly_version = 1;
+  string api_version = 2;
+  string protobuf_revision = 3;
+}

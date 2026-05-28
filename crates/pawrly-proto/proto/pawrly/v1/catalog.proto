@@ -1,0 +1,47 @@
+syntax = "proto3";
+package pawrly.v1;
+
+import "pawrly/v1/common.proto";
+
+service CatalogService {
+  rpc ListTables(ListTablesRequest) returns (ListTablesResponse);
+  rpc DescribeTable(DescribeTableRequest) returns (DescribeTableResponse);
+  rpc SchemaSnapshot(SchemaSnapshotRequest) returns (SchemaSnapshotResponse);
+  rpc RefreshCatalog(RefreshCatalogRequest) returns (RefreshCatalogResponse);
+}
+
+message ListTablesRequest {
+  optional string source = 1;
+  optional string name_glob = 2;
+}
+
+message ListTablesResponse {
+  repeated TableInfo tables = 1;
+}
+
+message DescribeTableRequest { TableName name = 1; }
+
+message DescribeTableResponse {
+  TableInfo table = 1;
+  repeated ColumnSpec columns = 2;
+  repeated string pushable_filter_columns = 3;
+  repeated string examples = 4;
+}
+
+message SchemaSnapshotRequest {
+  repeated string sources = 1;
+  bool compact = 2;
+}
+
+message SchemaSnapshotResponse {
+  bytes snapshot_json = 1;
+}
+
+message RefreshCatalogRequest {
+  optional string source = 1;
+}
+
+message RefreshCatalogResponse {
+  uint64 sources_refreshed = 1;
+  uint64 tables_discovered = 2;
+}

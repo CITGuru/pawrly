@@ -1,0 +1,593 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Config",
+  "description": "Top-level workspace config.",
+  "type": "object",
+  "required": [
+    "version"
+  ],
+  "properties": {
+    "defaults": {
+      "description": "Workspace defaults.",
+      "default": {
+        "cache": {
+          "mode": {
+            "mode": "none"
+          },
+          "storage": "~/.pawrly/cache"
+        },
+        "engine": {
+          "duckdb_pool_size": 8,
+          "max_concurrent_queries": 16,
+          "memory_limit_bytes": null,
+          "query_timeout": "5m"
+        },
+        "http": {
+          "timeout": "30s",
+          "user_agent": "pawrly/0.0.1"
+        },
+        "optimizer": {
+          "coalesce_batches": true,
+          "dynamic_filter_pushdown": false,
+          "join_reorder": true
+        },
+        "safety": {
+          "max_unfiltered_rows": 1000000
+        }
+      },
+      "allOf": [
+        {
+          "$ref": "#/definitions/Defaults"
+        }
+      ]
+    },
+    "include": {
+      "description": "Files (or glob patterns) whose `sources:` and optional `secrets:` are merged into this config before validation. Resolved relative to the declaring file. See docs/14-multi-file-sources.md.",
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "name": {
+      "description": "Workspace name. Defaults to `\"default\"`.",
+      "default": "default",
+      "type": "string"
+    },
+    "secrets": {
+      "description": "Configured secret backends. Empty = use the built-in default chain (`env`, then OS keyring under `service=pawrly`).",
+      "default": [],
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/SecretsBackendDef"
+      }
+    },
+    "sources": {
+      "description": "Declared sources.",
+      "default": [],
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/SourceDef"
+      }
+    },
+    "version": {
+      "description": "Schema version. Only `1` is accepted in v1.",
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0.0
+    }
+  },
+  "additionalProperties": false,
+  "definitions": {
+    "CacheDefaults": {
+      "description": "Cache section under `defaults:`.",
+      "type": "object",
+      "properties": {
+        "mode": {
+          "description": "Default cache mode applied to tables that don't declare their own.",
+          "default": {
+            "mode": "none"
+          },
+          "allOf": [
+            {
+              "$ref": "#/definitions/CachePolicy"
+            }
+          ]
+        },
+        "storage": {
+          "description": "Filesystem path used as the cache root. `~/.pawrly/cache` by default.",
+          "default": "~/.pawrly/cache",
+          "type": "string"
+        }
+      }
+    },
+    "CachePolicy": {
+      "description": "Per-table cache mode declared in YAML.",
+      "oneOf": [
+        {
+          "description": "Default. No caching; every query hits the live source.",
+          "type": "object",
+          "required": [
+            "mode"
+          ],
+          "properties": {
+            "mode": {
+              "type": "string",
+              "enum": [
+                "none"
+              ]
+            }
+          }
+        },
+        {
+          "description": "Read from the cache if fresher than `ttl`; else fetch live and write through.",
+          "type": "object",
+          "required": [
+            "mode",
+            "ttl"
+          ],
+          "properties": {
+            "mode": {
+              "type": "string",
+              "enum": [
+                "ttl"
+              ]
+            },
+            "ttl": {
+              "type": "string"
+            }
+          }
+        },
+        {
+          "description": "Always read from the cache; a background task re-fetches every `every`.",
+          "type": "object",
+          "required": [
+            "every",
+            "mode"
+          ],
+          "properties": {
+            "every": {
+              "type": "string"
+            },
+            "mode": {
+              "type": "string",
+              "enum": [
+                "refresh"
+              ]
+            }
+          }
+        },
+        {
+          "description": "Same as `refresh`, scheduled by cron expression.",
+          "type": "object",
+          "required": [
+            "cron",
+            "mode"
+          ],
+          "properties": {
+            "cron": {
+              "type": "string"
+            },
+            "mode": {
+              "type": "string",
+              "enum": [
+                "cron"
+              ]
+            }
+          }
+        },
+        {
+          "description": "Incremental: a `cursor_column` is used to fetch only newer rows on each refresh.",
+          "type": "object",
+          "required": [
+            "cursor_column",
+            "mode"
+          ],
+          "properties": {
+            "cursor_column": {
+              "type": "string"
+            },
+            "mode": {
+              "type": "string",
+              "enum": [
+                "append"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "Defaults": {
+      "description": "Workspace-level defaults that apply unless overridden per source / table.",
+      "type": "object",
+      "properties": {
+        "cache": {
+          "default": {
+            "mode": {
+              "mode": "none"
+            },
+            "storage": "~/.pawrly/cache"
+          },
+          "allOf": [
+            {
+              "$ref": "#/definitions/CacheDefaults"
+            }
+          ]
+        },
+        "engine": {
+          "default": {
+            "duckdb_pool_size": 8,
+            "max_concurrent_queries": 16,
+            "memory_limit_bytes": null,
+            "query_timeout": "5m"
+          },
+          "allOf": [
+            {
+              "$ref": "#/definitions/EngineDefaults"
+            }
+          ]
+        },
+        "http": {
+          "default": {
+            "timeout": "30s",
+            "user_agent": "pawrly/0.0.1"
+          },
+          "allOf": [
+            {
+              "$ref": "#/definitions/HttpDefaults"
+            }
+          ]
+        },
+        "optimizer": {
+          "default": {
+            "coalesce_batches": true,
+            "dynamic_filter_pushdown": false,
+            "join_reorder": true
+          },
+          "allOf": [
+            {
+              "$ref": "#/definitions/OptimizerDefaults"
+            }
+          ]
+        },
+        "safety": {
+          "default": {
+            "max_unfiltered_rows": 1000000
+          },
+          "allOf": [
+            {
+              "$ref": "#/definitions/SafetyDefaults"
+            }
+          ]
+        }
+      }
+    },
+    "EngineDefaults": {
+      "description": "Engine section under `defaults:`.",
+      "type": "object",
+      "properties": {
+        "duckdb_pool_size": {
+          "description": "Size of the DuckDB connection pool (in-memory).",
+          "default": 8,
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0.0
+        },
+        "max_concurrent_queries": {
+          "description": "Maximum concurrent queries served from a single engine instance.",
+          "default": 16,
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0.0
+        },
+        "memory_limit_bytes": {
+          "description": "Memory limit passed to DataFusion's memory pool. `None` = unlimited.",
+          "default": null,
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "query_timeout": {
+          "description": "Per-query timeout.",
+          "default": "5m",
+          "type": "string"
+        }
+      }
+    },
+    "HttpDefaults": {
+      "description": "HTTP section under `defaults:`.",
+      "type": "object",
+      "properties": {
+        "timeout": {
+          "default": "30s",
+          "type": "string"
+        },
+        "user_agent": {
+          "default": "pawrly/0.0.1",
+          "type": "string"
+        }
+      }
+    },
+    "OptimizerDefaults": {
+      "description": "Optimizer section under `defaults:`.",
+      "type": "object",
+      "properties": {
+        "coalesce_batches": {
+          "default": true,
+          "type": "boolean"
+        },
+        "dynamic_filter_pushdown": {
+          "description": "Off in v1; flipped on after the dynamic-filter milestone (P10).",
+          "default": false,
+          "type": "boolean"
+        },
+        "join_reorder": {
+          "default": true,
+          "type": "boolean"
+        }
+      }
+    },
+    "SafetyDefaults": {
+      "description": "Safety section under `defaults:`.",
+      "type": "object",
+      "properties": {
+        "max_unfiltered_rows": {
+          "description": "Hard cap on returned rows for any source that doesn't declare its own.",
+          "default": 1000000,
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        }
+      }
+    },
+    "SafetyPolicy": {
+      "description": "Restrictions a source can place on its own tables to prevent accidental \"scan the entire warehouse\" queries.",
+      "type": "object",
+      "properties": {
+        "max_pages": {
+          "description": "Cap on HTTP pagination calls.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0.0
+        },
+        "max_rows": {
+          "description": "Hard cap on returned rows.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "require_at_least_one_filter": {
+          "description": "If true, refuse to scan with no filter at all.",
+          "default": false,
+          "type": "boolean"
+        },
+        "require_filters_on": {
+          "description": "Columns that must appear in a filter; empty means no requirement.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "timeout": {
+          "description": "Per-query timeout override.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "SecretsBackendDef": {
+      "description": "One secret backend in the resolution chain.",
+      "oneOf": [
+        {
+          "description": "Process environment.",
+          "type": "object",
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "env"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "description": "YAML file on disk.",
+          "type": "object",
+          "required": [
+            "kind",
+            "path"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "file"
+              ]
+            },
+            "path": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "description": "OS keyring under the given service.",
+          "type": "object",
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "keyring"
+              ]
+            },
+            "service": {
+              "default": "pawrly",
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "SourceDef": {
+      "description": "One source declaration.",
+      "type": "object",
+      "required": [
+        "kind",
+        "name"
+      ],
+      "properties": {
+        "cache": {
+          "description": "Workspace-level cache override for this source.",
+          "default": {
+            "mode": "none"
+          },
+          "allOf": [
+            {
+              "$ref": "#/definitions/CachePolicy"
+            }
+          ]
+        },
+        "config": {
+          "description": "Per-kind opaque config. Validated by the source builder when registered."
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "from": {
+          "description": "Optional path to a YAML file containing the rest of this source's body. Resolved relative to the declaring file. See docs/14-multi-file-sources.md.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kind": {
+          "$ref": "#/definitions/SourceKind"
+        },
+        "name": {
+          "type": "string"
+        },
+        "raw_table": {
+          "description": "HTTP-shaped sources only: register a raw-HTTP table named after the source.",
+          "default": false,
+          "type": "boolean"
+        },
+        "raw_table_safety": {
+          "description": "HTTP-shaped sources only: safety policy for the raw table.",
+          "anyOf": [
+            {
+              "$ref": "#/definitions/SafetyPolicy"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "safety": {
+          "description": "Workspace-level safety override for this source.",
+          "anyOf": [
+            {
+              "$ref": "#/definitions/SafetyPolicy"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "tables": {
+          "description": "Per-table declarations / overrides.",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/TableDef"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "SourceKind": {
+      "description": "Every supported `kind:` for a source declaration.\n\nThis list is closed: adding a new kind requires a code change so the router can dispatch it. Kind aliases are matched case-insensitively at parse time but the canonical form is lowercase.",
+      "type": "string",
+      "enum": [
+        "http",
+        "github",
+        "linear",
+        "stripe",
+        "sentry",
+        "datadog",
+        "slack",
+        "notion",
+        "ai",
+        "file",
+        "postgres",
+        "mysql",
+        "sqlite",
+        "snowflake",
+        "bigquery",
+        "redshift",
+        "iceberg",
+        "delta",
+        "s3",
+        "gcs",
+        "azure"
+      ]
+    },
+    "TableDef": {
+      "description": "One per-table override / declaration. The body is opaque per-kind.\n\n`deny_unknown_fields` is intentionally absent — this struct uses `#[serde(flatten)] body` to capture every kind-specific key (endpoint, path, format, params, …), so unknown fields are *expected* and routed into `body`.",
+      "type": "object",
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "cache": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/CachePolicy"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "safety": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/SafetyPolicy"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,25 @@
+[package]
+name = "xtask"
+description = "Internal task runner for Pawrly: schema/proto generation, fixtures, error code docs."
+version = { workspace = true }
+edition = { workspace = true }
+rust-version = { workspace = true }
+license = { workspace = true }
+repository = { workspace = true }
+publish = false
+
+[[bin]]
+name = "xtask"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+clap = { workspace = true }
+anyhow = { workspace = true }
+pawrly-config = { workspace = true }
+serde_json = { workspace = true }
+arrow-array = { workspace = true }
+arrow-schema = { workspace = true }
+parquet = { workspace = true }

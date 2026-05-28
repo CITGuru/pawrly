@@ -1,0 +1,148 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/pawrly-core",
+    "crates/pawrly-config",
+    "crates/pawrly-secrets",
+    "crates/pawrly-proto",
+    "crates/pawrly-engine",
+    "crates/pawrly-server",
+    "crates/pawrly-client",
+    "crates/pawrly-flight",
+    "crates/pawrly-sources/http",
+    "crates/pawrly-sources/ai",
+    "crates/pawrly-sources/duckdb",
+    "crates/pawrly-cli",
+    "crates/pawrly-mcp",
+    "crates/pawrly-lib",
+    "xtask",
+]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+rust-version = "1.85"
+license = "Apache-2.0"
+repository = "https://github.com/withpawrly/pawrly"
+
+[workspace.dependencies]
+# Internal crates
+pawrly-core = { path = "crates/pawrly-core" }
+pawrly-config = { path = "crates/pawrly-config" }
+pawrly-secrets = { path = "crates/pawrly-secrets" }
+pawrly-proto = { path = "crates/pawrly-proto" }
+pawrly-engine = { path = "crates/pawrly-engine" }
+pawrly-server = { path = "crates/pawrly-server" }
+pawrly-client = { path = "crates/pawrly-client" }
+pawrly-flight = { path = "crates/pawrly-flight" }
+pawrly-sources-http = { path = "crates/pawrly-sources/http" }
+pawrly-sources-ai = { path = "crates/pawrly-sources/ai" }
+pawrly-sources-duckdb = { path = "crates/pawrly-sources/duckdb" }
+pawrly-cli = { path = "crates/pawrly-cli" }
+pawrly-mcp = { path = "crates/pawrly-mcp" }
+
+# Async / runtime
+tokio = { version = "1", features = ["full"] }
+async-trait = "0.1"
+futures = "0.3"
+futures-core = "0.3"
+futures-util = "0.3"
+async-stream = "0.3"
+
+# Arrow (used in EngineService trait + downstream)
+arrow-array = "58"
+arrow-schema = "58"
+arrow-ipc = "58"
+arrow-flight = { version = "58", features = ["flight-sql-experimental"] }
+parquet = "58"
+
+# DataFusion (planner + executor)
+datafusion = "53"
+arrow-json = "58"
+arrow-cast = "58"
+
+# HTTP
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "gzip"] }
+url = "2"
+jsonpath-rust = "0.7"
+
+# Test
+wiremock = "0.6"
+
+# Bytes (gRPC payloads)
+bytes = "1"
+
+# gRPC / tonic
+tonic = { version = "0.12", features = ["transport", "tls"] }
+tonic-build = "0.12"
+prost = "0.13"
+prost-types = "0.13"
+tower = "0.5"
+hyper-util = "0.1"
+
+# Serde / config
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+schemars = { version = "0.8", features = ["chrono"] }
+humantime-serde = "1"
+
+# Secrets
+secrecy = { version = "0.10", features = ["serde"] }
+zeroize = "1"
+keyring = "3"
+
+# IO
+tempfile = "3"
+fs2 = "0.4"
+
+# Cache scheduling
+cron = "0.12"
+
+# Errors / logging
+thiserror = "1"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+# CLI helpers
+clap = { version = "4", features = ["derive", "env"] }
+
+# Misc
+glob = "0.3"
+once_cell = "1"
+parking_lot = "0.12"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+num_cpus = "1"
+
+# DuckDB (sub-engine; in-process, FFI; calls wrapped in spawn_blocking)
+duckdb = { version = "=1.10502", features = ["bundled"] }
+
+# Test
+insta = "1"
+rstest = "0.22"
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+strip = "symbols"
+panic = "abort"
+
+[profile.dev]
+debug = "line-tables-only"
+opt-level = 0
+
+[profile.test]
+opt-level = 1
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+all = "deny"
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"

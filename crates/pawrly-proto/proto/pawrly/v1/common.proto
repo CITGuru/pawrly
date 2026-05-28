@@ -1,0 +1,88 @@
+syntax = "proto3";
+package pawrly.v1;
+
+import "google/protobuf/timestamp.proto";
+
+// Stable error code carried alongside every failure response.
+message Error {
+  string code = 1;
+  string message = 2;
+  map<string, string> details = 3;
+  string hint = 4;
+}
+
+// Fully-qualified table identifier as <schema>.<table>.
+message TableName {
+  string schema = 1;
+  string table = 2;
+}
+
+// Closed enum mirroring pawrly_core::SourceKind.
+enum SourceKind {
+  SOURCE_KIND_UNSPECIFIED = 0;
+  SOURCE_KIND_HTTP = 1;
+  SOURCE_KIND_GITHUB = 2;
+  SOURCE_KIND_LINEAR = 3;
+  SOURCE_KIND_STRIPE = 4;
+  SOURCE_KIND_SENTRY = 5;
+  SOURCE_KIND_DATADOG = 6;
+  SOURCE_KIND_SLACK = 7;
+  SOURCE_KIND_NOTION = 8;
+  SOURCE_KIND_AI = 10;
+  SOURCE_KIND_FILE = 20;
+  SOURCE_KIND_POSTGRES = 21;
+  SOURCE_KIND_MYSQL = 22;
+  SOURCE_KIND_SQLITE = 23;
+  SOURCE_KIND_SNOWFLAKE = 30;
+  SOURCE_KIND_BIGQUERY = 31;
+  SOURCE_KIND_REDSHIFT = 32;
+  SOURCE_KIND_ICEBERG = 33;
+  SOURCE_KIND_DELTA = 34;
+  SOURCE_KIND_S3 = 40;
+  SOURCE_KIND_GCS = 41;
+  SOURCE_KIND_AZURE = 42;
+}
+
+// Cache mode mirroring pawrly_core::CacheMode.
+enum CacheMode {
+  CACHE_MODE_UNSPECIFIED = 0;
+  CACHE_MODE_NONE = 1;
+  CACHE_MODE_TTL = 2;
+  CACHE_MODE_REFRESH = 3;
+  CACHE_MODE_CRON = 4;
+  CACHE_MODE_APPEND = 5;
+}
+
+message ColumnSpec {
+  string name = 1;
+  string data_type = 2;
+  bool nullable = 3;
+  string description = 4;
+  bool is_filter_pushable = 5;
+  bool is_required_filter = 6;
+}
+
+// Source status enum.
+enum SourceStatus {
+  SOURCE_STATUS_UNSPECIFIED = 0;
+  SOURCE_STATUS_OK = 1;
+  SOURCE_STATUS_UNAVAILABLE = 2;
+}
+
+message SourceInfo {
+  string name = 1;
+  SourceKind kind = 2;
+  SourceStatus status = 3;
+  string status_detail = 4;
+  uint64 table_count = 5;
+  google.protobuf.Timestamp registered_at = 6;
+}
+
+message TableInfo {
+  TableName name = 1;
+  SourceKind kind = 2;
+  string description = 3;
+  optional uint64 row_count_estimate = 4;
+  bool cached = 5;
+  repeated string required_filters = 6;
+}

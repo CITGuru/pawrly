@@ -1,0 +1,61 @@
+syntax = "proto3";
+package pawrly.v1;
+
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
+import "pawrly/v1/common.proto";
+
+service QueryService {
+  // Server-streaming. The first response is a `started` frame; subsequent
+  // responses carry IPC-encoded record batches; the stream terminates with
+  // a `completed` or `error` frame.
+  rpc Query(QueryRequest) returns (stream QueryResponse);
+
+  // Cancel an in-flight query identified by its query_id (returned in `started`).
+  rpc Cancel(CancelRequest) returns (CancelResponse);
+
+  // Plan-only; returns the optimized DataFusion plan as text.
+  rpc Explain(ExplainRequest) returns (ExplainResponse);
+}
+
+message QueryRequest {
+  string sql = 1;
+  map<string, string> params = 2;
+  google.protobuf.Duration timeout = 3;
+  uint64 max_rows = 4;
+  string trace_id = 5;
+}
+
+message QueryResponse {
+  oneof payload {
+    QueryStarted started = 1;
+    bytes ipc_stream = 2;     // raw arrow-ipc::writer::StreamWriter bytes for one batch
+    QueryCompleted completed = 3;
+    Error error = 4;
+  }
+}
+
+message QueryStarted {
+  string query_id = 1;
+  google.protobuf.Timestamp started_at = 2;
+}
+
+message QueryCompleted {
+  uint64 rows_returned = 1;
+  google.protobuf.Duration elapsed = 2;
+  bool truncated = 3;
+  string explain = 4;
+}
+
+message CancelRequest { string query_id = 1; }
+message CancelResponse { bool cancelled = 1; }
+
+message ExplainRequest {
+  string sql = 1;
+  bool analyze = 2;
+  map<string, string> params = 3;
+}
+
+message ExplainResponse {
+  string plan = 1;
+}

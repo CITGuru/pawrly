@@ -1,0 +1,6 @@
+# Config fragment included via the root's `include:` glob.
+sources:
+  - name: linear
+    kind: linear
+    config:
+      api_key: ${secret:LINEAR_API_KEY}

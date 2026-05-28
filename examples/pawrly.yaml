@@ -1,0 +1,72 @@
+# Pawrly workspace config.
+# yaml-language-server: $schema=../schemas/pawrly.schema.json
+
+version: 1
+name: kitchen-sink
+
+defaults:
+  cache:
+    storage: ~/.pawrly/cache
+    mode: { mode: none }
+  http:
+    timeout: 30s
+    user_agent: pawrly/0.0.1
+  safety:
+    max_unfiltered_rows: 1000000
+  engine:
+    query_timeout: 5m
+    max_concurrent_queries: 16
+    duckdb_pool_size: 8
+
+# `secrets:` is optional; if omitted, env + OS keyring are tried in that order.
+secrets:
+  - kind: env
+  - kind: keyring
+    service: pawrly
+
+sources:
+  # ----- Local files (csv/json/parquet/excel) --------------------------------
+  - name: data
+    kind: file
+    config:
+      path: ./data/*.parquet
+
+  # ----- HTTP / bundled GitHub -----------------------------------------------
+  - name: gh
+    kind: github
+    config:
+      token: ${secret:GITHUB_TOKEN}
+    raw_table: true
+
+  # ----- HTTP / bundled Linear -----------------------------------------------
+  - name: linear
+    kind: linear
+    config:
+      api_key: ${secret:LINEAR_API_KEY}
+
+  # ----- DuckDB-backed Postgres ----------------------------------------------
+  - name: oltp
+    kind: postgres
+    config:
+      dsn: ${secret:PG_DSN}
+
+  # ----- DuckDB-backed Snowflake ---------------------------------------------
+  - name: warehouse
+    kind: snowflake
+    config:
+      account: acme.us-east-1
+      user: ${secret:SNOWFLAKE_USER}
+      password: ${secret:SNOWFLAKE_PASSWORD}
+      database: ANALYTICS
+      schema: PUBLIC
+    cache:
+      mode: refresh
+      every: 1h
+
+  # ----- AI / OpenAI-compatible ----------------------------------------------
+  - name: models
+    kind: ai
+    config:
+      provider: openai
+      api_key: ${secret:OPENAI_API_KEY}
+      default_model: gpt-5

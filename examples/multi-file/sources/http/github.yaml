@@ -1,0 +1,8 @@
+# Config fragment: its `sources:` list is appended via the root's `include:`.
+# Fragments may only contain `sources:`, `secrets:`, and (nested) `include:`.
+sources:
+  - name: gh
+    kind: github
+    config:
+      token: ${secret:GITHUB_TOKEN}
+    raw_table: true

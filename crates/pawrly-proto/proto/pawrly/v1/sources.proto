@@ -1,0 +1,36 @@
+syntax = "proto3";
+package pawrly.v1;
+
+import "google/protobuf/duration.proto";
+import "pawrly/v1/common.proto";
+
+service SourcesService {
+  rpc ListSources(ListSourcesRequest) returns (ListSourcesResponse);
+  rpc AddSource(AddSourceRequest) returns (AddSourceResponse);
+  rpc RemoveSource(RemoveSourceRequest) returns (RemoveSourceResponse);
+  rpc TestSource(TestSourceRequest) returns (TestSourceResponse);
+  rpc ReloadConfig(ReloadConfigRequest) returns (ReloadConfigResponse);
+}
+
+message ListSourcesRequest {}
+message ListSourcesResponse { repeated SourceInfo sources = 1; }
+
+message AddSourceRequest { string yaml = 1; }
+message AddSourceResponse { SourceInfo source = 1; }
+
+message RemoveSourceRequest { string name = 1; }
+message RemoveSourceResponse { bool removed = 1; }
+
+message TestSourceRequest { string name = 1; }
+message TestSourceResponse {
+  bool ok = 1;
+  google.protobuf.Duration latency = 2;
+  string detail = 3;
+}
+
+message ReloadConfigRequest {}
+message ReloadConfigResponse {
+  uint64 sources_added = 1;
+  uint64 sources_removed = 2;
+  uint64 sources_changed = 3;
+}

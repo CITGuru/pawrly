@@ -1,0 +1,44 @@
+syntax = "proto3";
+package pawrly.v1;
+
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
+import "pawrly/v1/common.proto";
+
+service CacheService {
+  rpc ListEntries(ListEntriesRequest) returns (ListEntriesResponse);
+  rpc Refresh(RefreshRequest) returns (RefreshResponse);
+  rpc Invalidate(InvalidateRequest) returns (InvalidateResponse);
+  rpc Vacuum(VacuumRequest) returns (VacuumResponse);
+}
+
+message CacheEntryInfo {
+  TableName name = 1;
+  CacheMode mode = 2;
+  google.protobuf.Timestamp written_at = 3;
+  optional google.protobuf.Timestamp expires_at = 4;
+  uint64 row_count = 5;
+  uint64 size_bytes = 6;
+  uint32 file_count = 7;
+}
+
+message ListEntriesRequest {}
+message ListEntriesResponse { repeated CacheEntryInfo entries = 1; }
+
+message RefreshRequest { TableName name = 1; }
+message RefreshResponse {
+  uint64 rows_written = 1;
+  uint64 size_bytes = 2;
+  google.protobuf.Duration elapsed = 3;
+  optional google.protobuf.Timestamp expires_at = 4;
+}
+
+message InvalidateRequest { TableName name = 1; }
+message InvalidateResponse { bool removed = 1; }
+
+message VacuumRequest {}
+message VacuumResponse {
+  uint64 entries_removed = 1;
+  uint64 files_removed = 2;
+  uint64 bytes_reclaimed = 3;
+}

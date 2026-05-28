@@ -1,0 +1,12 @@
+# `from:` target: a partial SourceDef. No `name:` / `kind:` — the parent
+# entry in pawrly.yaml owns those.
+description: Production warehouse
+config:
+  account: acme.us-east-1
+  user: ${secret:SNOWFLAKE_USER}
+  password: ${secret:SNOWFLAKE_PASSWORD}
+  database: ANALYTICS
+  schema: PUBLIC
+cache:
+  mode: refresh
+  every: 1h

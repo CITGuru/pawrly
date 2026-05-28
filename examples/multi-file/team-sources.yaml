@@ -1,0 +1,12 @@
+# A multi-source fragment owned by, say, a product team. Committed and
+# reviewed independently of the root config.
+sources:
+  - name: oltp
+    kind: postgres
+    config:
+      dsn: ${secret:PG_DSN}
+
+  - name: billing
+    kind: stripe
+    config:
+      api_key: ${secret:STRIPE_API_KEY}
