@@ -20,7 +20,7 @@ Tested on macOS (Apple Silicon and Intel) and Linux (x86_64). Should take under 
 
 ### 1. Prerequisites
 
-- **Rust** ≥ 1.85 with the 2024 edition (the workspace pins this via `[rust-toolchain.toml](./rust-toolchain.toml)`; `rustup` will install it automatically the first time you run `cargo`).
+- **Rust** ≥ 1.85 with the 2024 edition (the workspace pins this via [`rust-toolchain.toml`](./rust-toolchain.toml); `rustup` will install it automatically the first time you run `cargo`).
 - A C/C++ toolchain for DuckDB:
   - macOS: `xcode-select --install`
   - Debian/Ubuntu: `sudo apt-get install build-essential pkg-config libssl-dev cmake`
@@ -123,7 +123,7 @@ You should see Acme on top with two orders totalling 619, then Initech at 300, t
 
 `pawrly schema` will list every table the workspace knows about (`data.customers`, `data.orders` here). `pawrly validate` will sanity-check the YAML without running anything.
 
-For more sources — GitHub, Linear, Postgres, Snowflake, AI models — see the worked examples in `[examples/pawrly.yaml](./examples/pawrly.yaml)`. Source coverage tracks the roadmap below; start with files (M3) and add sources as their milestones land.
+For more sources — GitHub, Linear, Postgres, Snowflake, AI models — see the worked examples in [`examples/pawrly.yaml`](./examples/pawrly.yaml). Source coverage tracks the roadmap below; start with files (M3) and add sources as their milestones land.
 
 ### 7. (Optional) Run as a daemon
 
@@ -142,9 +142,9 @@ Same query, same result — local mode and daemon mode are identical-output by d
 
 ## What's in this repo
 
-- `[crates/](./crates)` — the Rust workspace.
-- `[examples/](./examples)` — reference configurations including the kitchen-sink workspace covering every source kind.
-- `[schemas/](./schemas)` — generated JSON Schema for `pawrly.yaml`. Wire this into your editor for completion + validation.
+- [`crates/`](./crates) — the Rust workspace.
+- [`examples/`](./examples) — reference configurations including the kitchen-sink workspace covering every source kind.
+- [`schemas/`](./schemas) — generated JSON Schema for `pawrly.yaml`. Wire this into your editor for completion + validation.
 
 ---
 
