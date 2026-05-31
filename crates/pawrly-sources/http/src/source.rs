@@ -40,6 +40,14 @@ pub struct ParamSpec {
     /// Optional default value if the user didn't supply one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default: Option<String>,
+    /// Comparison operators (besides `=`) that may push down, e.g. `[">=", "<="]`.
+    /// Each must have an `emit` mapping. Empty means equality only.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub accepts: Vec<String>,
+    /// For non-equality operators, the query parameter to emit the value as,
+    /// keyed by operator token (`">="` -> `"since"`).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub emit: BTreeMap<String, String>,
 }
 
 fn default_type() -> String {
@@ -131,10 +139,59 @@ impl Default for RetryConfig {
     }
 }
 
-/// Rate-limit policy: a steady ceiling of requests per second.
+/// Rate-limit policy: a steady ceiling of requests per second, plus optional
+/// awareness of the API's own quota headers.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RateLimitConfig {
-    pub requests_per_second: u32,
+    /// Steady token-bucket ceiling. `None`/zero disables the local throttle.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requests_per_second: Option<u32>,
+    /// Response header carrying remaining quota (e.g. `x-ratelimit-remaining`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remaining_header: Option<String>,
+    /// Response header carrying the reset time as an epoch-seconds timestamp
+    /// (e.g. `x-ratelimit-reset`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reset_header: Option<String>,
+    /// Statuses (besides `429`/`503`) also treated as rate-limit signals, e.g.
+    /// GitHub's secondary-limit `403`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extra_statuses: Vec<u16>,
+}
+
+/// Runtime rate-limit state on an [`HttpSource`]: the local throttle plus the
+/// parsed header-awareness config.
+#[derive(Default)]
+pub struct RateLimitPolicy {
+    /// Optional in-memory, direct (un-keyed) rate limiter shared across scans.
+    pub limiter: Option<Arc<governor::DefaultDirectRateLimiter>>,
+    /// Header carrying remaining quota; `0` triggers a wait until `reset_header`.
+    pub remaining_header: Option<String>,
+    /// Header carrying the reset time (epoch seconds).
+    pub reset_header: Option<String>,
+    /// Statuses treated as rate-limit signals in addition to `429`/`503`.
+    pub extra_statuses: Vec<u16>,
+}
+
+/// Request body for non-GET endpoints (POST/PUT, GraphQL).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RequestBody {
+    /// How to encode the rendered body.
+    #[serde(default)]
+    pub kind: BodyKind,
+    /// Body text with `{param}` placeholders filled from bound params/filters.
+    pub template: String,
+}
+
+/// Encoding for a [`RequestBody`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum BodyKind {
+    /// `application/json`.
+    #[default]
+    Json,
+    /// `application/x-www-form-urlencoded`.
+    Form,
 }
 
 /// Per-table declaration for an HTTP source.
@@ -148,6 +205,9 @@ pub struct HttpTableSpec {
     pub params: Vec<ParamSpec>,
     #[serde(default)]
     pub headers: BTreeMap<String, String>,
+    /// Optional request body (POST/PUT/GraphQL); absent means no body.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body: Option<RequestBody>,
     /// Response body shape (minimal).
     pub response: ResponseSpec,
     /// Optional pagination strategy; absent means single-page fetch.
@@ -222,19 +282,18 @@ fn match_status_expr(expr: &str, status: u16) -> bool {
         }
         return false;
     }
-    for (op, len) in [(">=", 2), ("<=", 2), (">", 1), ("<", 1), ("==", 2), ("=", 1)] {
+    for op in [">=", "<=", ">", "<", "==", "="] {
         if let Some(rest) = expr.strip_prefix(op) {
-            let _ = len;
-            if let Ok(code) = rest.trim().parse::<u16>() {
-                return match op {
-                    ">=" => status >= code,
-                    "<=" => status <= code,
-                    ">" => status > code,
-                    "<" => status < code,
-                    _ => status == code,
-                };
-            }
-            return false;
+            let Ok(code) = rest.trim().parse::<u16>() else {
+                return false;
+            };
+            return match op {
+                ">=" => status >= code,
+                "<=" => status <= code,
+                ">" => status > code,
+                "<" => status < code,
+                _ => status == code,
+            };
         }
     }
     expr.parse::<u16>().map(|c| c == status).unwrap_or(false)
@@ -258,8 +317,8 @@ pub struct HttpSource {
     pub client: reqwest::Client,
     /// Retry policy applied to every request issued by this source.
     pub retry: RetryConfig,
-    /// Optional in-memory, direct (un-keyed) rate limiter shared across scans.
-    pub limiter: Option<Arc<governor::DefaultDirectRateLimiter>>,
+    /// Rate-limit policy (local throttle + header awareness).
+    pub rate_limit: RateLimitPolicy,
 }
 
 impl std::fmt::Debug for HttpSource {
@@ -268,7 +327,7 @@ impl std::fmt::Debug for HttpSource {
             .field("name", &self.name)
             .field("base_url", &self.base_url.as_str())
             .field("retry", &self.retry)
-            .field("rate_limited", &self.limiter.is_some())
+            .field("rate_limited", &self.rate_limit.limiter.is_some())
             .finish()
     }
 }

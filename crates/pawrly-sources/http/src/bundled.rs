@@ -62,6 +62,8 @@ fn required_param(name: &str) -> ParamSpec {
         r#type: "varchar".into(),
         required: true,
         default: None,
+        accepts: Vec::new(),
+        emit: BTreeMap::new(),
     }
 }
 
@@ -71,6 +73,8 @@ fn optional_param(name: &str, default: Option<&str>) -> ParamSpec {
         r#type: "varchar".into(),
         required: false,
         default: default.map(str::to_string),
+        accepts: Vec::new(),
+        emit: BTreeMap::new(),
     }
 }
 
@@ -100,6 +104,7 @@ fn github() -> BundledSpec {
                 method: "GET".into(),
                 params: owner_repo_state.clone(),
                 headers: BTreeMap::new(),
+                body: None,
                 response: ResponseSpec {
                     path: "$".into(),
                     schema: vec![
@@ -122,6 +127,7 @@ fn github() -> BundledSpec {
                 method: "GET".into(),
                 params: owner_repo_state,
                 headers: BTreeMap::new(),
+                body: None,
                 response: ResponseSpec {
                     path: "$".into(),
                     schema: vec![
@@ -163,6 +169,7 @@ fn sentry() -> BundledSpec {
                 method: "GET".into(),
                 params: vec![required_param("org")],
                 headers: BTreeMap::new(),
+                body: None,
                 response: ResponseSpec {
                     path: "$".into(),
                     schema: vec![
@@ -186,6 +193,7 @@ fn sentry() -> BundledSpec {
                 method: "GET".into(),
                 params: vec![required_param("org")],
                 headers: BTreeMap::new(),
+                body: None,
                 response: ResponseSpec {
                     path: "$".into(),
                     schema: vec![
@@ -232,6 +240,7 @@ fn slack() -> BundledSpec {
                 method: "GET".into(),
                 params: Vec::new(),
                 headers: BTreeMap::new(),
+                body: None,
                 response: ResponseSpec {
                     path: "$.members".into(),
                     schema: vec![
@@ -259,6 +268,7 @@ fn slack() -> BundledSpec {
                     Some("public_channel,private_channel"),
                 )],
                 headers: BTreeMap::new(),
+                body: None,
                 response: ResponseSpec {
                     path: "$.channels".into(),
                     schema: vec![

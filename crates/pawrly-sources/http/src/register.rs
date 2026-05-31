@@ -12,7 +12,7 @@ use std::num::NonZeroU32;
 
 use crate::bundled;
 use crate::raw::RawHttpTableProvider;
-use crate::source::{AuthSpec, HttpSource, HttpTableSpec, RetryConfig};
+use crate::source::{AuthSpec, HttpSource, HttpTableSpec, RateLimitPolicy, RetryConfig};
 use crate::typed::HttpTableProvider;
 
 use governor::{Quota, RateLimiter};
@@ -94,7 +94,7 @@ pub async fn register_http_source(
     }
 
     let retry = parse_retry(def);
-    let limiter = parse_rate_limit(def);
+    let rate_limit = parse_rate_limit(def);
 
     let source = Arc::new(HttpSource {
         name: def.name.clone(),
@@ -103,7 +103,7 @@ pub async fn register_http_source(
         headers,
         client: HttpSource::build_client(),
         retry,
-        limiter,
+        rate_limit,
     });
 
     // 2. Ensure the schema provider exists on the catalog.
@@ -280,16 +280,38 @@ fn parse_retry(def: &SourceDef) -> RetryConfig {
     retry
 }
 
-/// Build a direct (un-keyed), in-memory rate limiter from
-/// `config.rate_limit.requests_per_second`. Returns `None` when unset or zero.
-fn parse_rate_limit(def: &SourceDef) -> Option<Arc<governor::DefaultDirectRateLimiter>> {
-    let rps = def
-        .config
-        .get("rate_limit")
-        .and_then(|r| r.get("requests_per_second"))
-        .and_then(serde_json::Value::as_u64)?;
-    let rps = NonZeroU32::new(u32::try_from(rps).ok()?)?;
-    Some(Arc::new(RateLimiter::direct(Quota::per_second(rps))))
+/// Build the rate-limit policy from `config.rate_limit`: a direct (un-keyed)
+/// token-bucket limiter from `requests_per_second`, plus the header-awareness
+/// fields (`remaining_header`, `reset_header`, `extra_statuses`).
+fn parse_rate_limit(def: &SourceDef) -> RateLimitPolicy {
+    let Some(rl) = def.config.get("rate_limit") else {
+        return RateLimitPolicy::default();
+    };
+    let limiter = rl
+        .get("requests_per_second")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|rps| NonZeroU32::new(u32::try_from(rps).ok()?))
+        .map(|rps| Arc::new(RateLimiter::direct(Quota::per_second(rps))));
+    let header = |key: &str| {
+        rl.get(key)
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+    };
+    let extra_statuses = rl
+        .get("extra_statuses")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| u16::try_from(v.as_u64()?).ok())
+                .collect()
+        })
+        .unwrap_or_default();
+    RateLimitPolicy {
+        limiter,
+        remaining_header: header("remaining_header"),
+        reset_header: header("reset_header"),
+        extra_statuses,
+    }
 }
 
 fn ensure_schema(
