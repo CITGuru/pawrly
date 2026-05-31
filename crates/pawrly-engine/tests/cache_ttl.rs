@@ -310,12 +310,18 @@ async fn corrupt_cache_file_self_heals() {
     assert_eq!(count(&svc).await, 5);
 
     // The bad file was moved under corrupt/ and a fresh cache file rewritten.
-    let corrupt_dir = cache_root(workspace.path()).join("corrupt").join("data").join("orders");
+    let corrupt_dir = cache_root(workspace.path())
+        .join("corrupt")
+        .join("data")
+        .join("orders");
     assert!(
         corrupt_dir.exists() && std::fs::read_dir(&corrupt_dir).unwrap().count() >= 1,
         "corrupt file should be quarantined"
     );
-    assert!(cache_file.exists(), "a fresh cache file should be rewritten");
+    assert!(
+        cache_file.exists(),
+        "a fresh cache file should be rewritten"
+    );
     assert_eq!(svc.cache_entries().await.unwrap().len(), 1);
 }
 

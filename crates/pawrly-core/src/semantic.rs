@@ -377,10 +377,8 @@ mod tests {
 
     #[test]
     fn measure_agg_unit_variant_from_bare_string() {
-        let m: Measure = serde_yaml::from_str(
-            "name: order_count\nagg: count_distinct\nexpr: id\n",
-        )
-        .unwrap();
+        let m: Measure =
+            serde_yaml::from_str("name: order_count\nagg: count_distinct\nexpr: id\n").unwrap();
         assert_eq!(m.agg, MeasureAgg::CountDistinct);
         assert_eq!(m.agg.label(), "count_distinct");
     }

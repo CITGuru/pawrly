@@ -60,11 +60,10 @@ pub fn load_auto(path: &Path) -> Result<Config, ConfigError> {
     // Read the secrets backends verbatim (before interpolation — backend defs
     // are literal and must not themselves depend on `${secret:…}`).
     let defs: Vec<crate::types::SecretsBackendDef> = match tree.get("secrets") {
-        Some(v) => serde_json::from_value(v.clone())
-            .map_err(|e| ConfigError::Schema {
-                path: "secrets".to_string(),
-                msg: e.to_string(),
-            })?,
+        Some(v) => serde_json::from_value(v.clone()).map_err(|e| ConfigError::Schema {
+            path: "secrets".to_string(),
+            msg: e.to_string(),
+        })?,
         None => Vec::new(),
     };
 

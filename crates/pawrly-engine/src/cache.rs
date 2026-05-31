@@ -191,9 +191,7 @@ impl CacheManager {
     pub fn quarantine(&self, key: &TableName, entry: &ManifestEntry) {
         let _ = self.with_locked_manifest(|m| {
             m.entries.retain(|e| {
-                !(e.source == key.schema
-                    && e.table == key.table
-                    && e.file_path == entry.file_path)
+                !(e.source == key.schema && e.table == key.table && e.file_path == entry.file_path)
             });
         });
         if !entry.file_path.exists() {

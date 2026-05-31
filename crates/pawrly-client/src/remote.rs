@@ -16,13 +16,12 @@ use pawrly_proto::arrow_helpers::decode_frame;
 use pawrly_proto::conv::{engine_error_to_status, status_to_engine_error};
 use pawrly_proto::v1::{
     self, AddSourceRequest, CancelRequest, DescribeModelRequest, ExplainRequest, HealthRequest,
-    InvalidateRequest, ListEntriesRequest, ListModelsRequest, ListSourcesRequest, ListTablesRequest,
-    RefreshCatalogRequest, RefreshRequest, ReloadConfigRequest, RemoveSourceRequest,
-    SchemaSnapshotRequest, TestSourceRequest, VacuumRequest,
+    InvalidateRequest, ListEntriesRequest, ListModelsRequest, ListSourcesRequest,
+    ListTablesRequest, RefreshCatalogRequest, RefreshRequest, ReloadConfigRequest,
+    RemoveSourceRequest, SchemaSnapshotRequest, TestSourceRequest, VacuumRequest,
     admin_service_client::AdminServiceClient, cache_service_client::CacheServiceClient,
     catalog_service_client::CatalogServiceClient, query_response::Payload as QueryPayload,
-    query_service_client::QueryServiceClient,
-    semantic_service_client::SemanticServiceClient,
+    query_service_client::QueryServiceClient, semantic_service_client::SemanticServiceClient,
     sources_service_client::SourcesServiceClient,
 };
 use tonic::transport::Channel;

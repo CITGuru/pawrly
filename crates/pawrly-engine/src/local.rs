@@ -168,8 +168,8 @@ impl LocalEngine {
     /// The secret-resolution chain is built from the config's `secrets:` block
     /// (defaulting to the `auto` chain: env, keyring, then a `.env` file).
     pub async fn from_config_file(path: &std::path::Path) -> Result<Self, EngineError> {
-        let cfg = pawrly_config::load_auto(path)
-            .map_err(|e| EngineError::Internal(e.to_string()))?;
+        let cfg =
+            pawrly_config::load_auto(path).map_err(|e| EngineError::Internal(e.to_string()))?;
         // `workspace_dir` only anchors relative *source* paths to the config
         // file's directory. The `.pawrly/` data dir is resolved separately from
         // `defaults.cache.storage` (default `~/.pawrly`), not from here.
@@ -227,8 +227,8 @@ fn cache_namespace(explicit: Option<&str>, workspace_dir: &std::path::Path) -> S
     }
     // Canonicalize so `./foo`, `foo`, and `/abs/foo` map to one id. Fall back
     // to the raw path if canonicalization fails (e.g. dir not yet created).
-    let canonical = std::fs::canonicalize(workspace_dir)
-        .unwrap_or_else(|_| workspace_dir.to_path_buf());
+    let canonical =
+        std::fs::canonicalize(workspace_dir).unwrap_or_else(|_| workspace_dir.to_path_buf());
     let hash = fnv1a_hex(canonical.as_os_str().as_encoded_bytes());
     let dirname = canonical
         .file_name()
@@ -676,8 +676,8 @@ impl EngineService for LocalEngine {
             ));
         };
 
-        let cfg = pawrly_config::load_auto(&path)
-            .map_err(|e| EngineError::Internal(e.to_string()))?;
+        let cfg =
+            pawrly_config::load_auto(&path).map_err(|e| EngineError::Internal(e.to_string()))?;
         let new_defs = cfg.into_engine_sources();
 
         // Snapshot current sources as (name -> serialized def) for diffing.

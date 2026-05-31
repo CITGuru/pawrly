@@ -156,16 +156,15 @@ impl SemanticCatalog {
         let plan = self.build_join_plan(&root, &referenced)?;
         let joined = referenced.len() > 1;
         let tz = q.time_zone.as_deref();
-        let alias_for = |model: &str| -> Option<String> {
-            joined.then(|| model.to_string())
-        };
+        let alias_for = |model: &str| -> Option<String> { joined.then(|| model.to_string()) };
 
         let mut select_items: Vec<String> = Vec::new();
         let mut dim_exprs: Vec<String> = Vec::new();
 
         for member in &q.dimensions {
             let model = self.model_for_member(member)?;
-            let expr = resolve_dimension_expr(model, member, alias_for(&model.name).as_deref(), tz)?;
+            let expr =
+                resolve_dimension_expr(model, member, alias_for(&model.name).as_deref(), tz)?;
             select_items.push(format!("{expr} AS {}", quote_ident(member)));
             dim_exprs.push(expr);
         }
@@ -183,7 +182,12 @@ impl SemanticCatalog {
         let mut wheres: Vec<String> = Vec::new();
         for f in &q.filters {
             let model = self.model_for_member(&f.member)?;
-            wheres.push(resolve_filter(model, f, alias_for(&model.name).as_deref(), tz)?);
+            wheres.push(resolve_filter(
+                model,
+                f,
+                alias_for(&model.name).as_deref(),
+                tz,
+            )?);
         }
         // Required predicates (RLS + always-on filters) for every model the
         // query touches, AND-ed in with params bound as escaped literals.
@@ -325,9 +329,7 @@ impl SemanticCatalog {
                 let target_table = self.qualified_table(&rel.target_model)?;
                 // `this.` aliases the declaring model; the target is referred
                 // to by its own model name (which is also its table alias).
-                let on = rel
-                    .join_predicate
-                    .replace("this.", &format!("{from}."));
+                let on = rel.join_predicate.replace("this.", &format!("{from}."));
                 edge.insert(
                     rel.target_model.clone(),
                     JoinStep {
@@ -380,10 +382,11 @@ impl SemanticCatalog {
             .models
             .get(model_name)
             .ok_or_else(|| SemanticError::UnknownModel(model_name.to_string()))?;
-        let table = TableName::parse(&model.source).ok_or_else(|| SemanticError::InvalidSource {
-            model: model.name.clone(),
-            source_table: model.source.clone(),
-        })?;
+        let table =
+            TableName::parse(&model.source).ok_or_else(|| SemanticError::InvalidSource {
+                model: model.name.clone(),
+                source_table: model.source.clone(),
+            })?;
         Ok(format!(
             "{}.{}",
             quote_ident(&table.schema),
@@ -787,7 +790,10 @@ mod tests {
             ..Default::default()
         };
         let sql = catalog().compile_sql(&q).unwrap();
-        assert!(sql.contains("SUM(total_amount) AS \"orders.revenue\""), "{sql}");
+        assert!(
+            sql.contains("SUM(total_amount) AS \"orders.revenue\""),
+            "{sql}"
+        );
         assert!(sql.contains("status AS \"orders.status\""), "{sql}");
         assert!(sql.contains("FROM \"shop\".\"orders\""), "{sql}");
         assert!(sql.contains("GROUP BY status"), "{sql}");
@@ -862,10 +868,7 @@ mod tests {
         }];
         let cat = SemanticCatalog::new(vec![orders_model(), customers]);
         let q = SemanticQuery {
-            measures: vec![
-                "orders.revenue".into(),
-                "customers.customer_count".into(),
-            ],
+            measures: vec!["orders.revenue".into(), "customers.customer_count".into()],
             ..Default::default()
         };
         assert!(matches!(
@@ -1011,8 +1014,14 @@ mod tests {
             sql.contains("ON orders.customer_id = customers.id"),
             "{sql}"
         );
-        assert!(sql.contains("SUM(orders.total_amount) AS \"orders.revenue\""), "{sql}");
-        assert!(sql.contains("customers.region AS \"customers.region\""), "{sql}");
+        assert!(
+            sql.contains("SUM(orders.total_amount) AS \"orders.revenue\""),
+            "{sql}"
+        );
+        assert!(
+            sql.contains("customers.region AS \"customers.region\""),
+            "{sql}"
+        );
         assert!(sql.contains("GROUP BY customers.region"), "{sql}");
     }
 
@@ -1111,8 +1120,7 @@ mod tests {
             measures: vec!["orders.revenue".into()],
             ..Default::default()
         };
-        q.params
-            .insert("tenant_id".into(), "x' OR '1'='1".into());
+        q.params.insert("tenant_id".into(), "x' OR '1'='1".into());
         let sql = rls_catalog().compile_sql(&q).unwrap();
         // The value is one escaped literal, not a SQL fragment.
         assert!(sql.contains("tenant_id = 'x'' OR ''1''=''1'"), "{sql}");

@@ -46,11 +46,7 @@ impl FileFormat {
     pub fn from_path(path: &Path) -> Self {
         let is_dotenv = path.extension().and_then(|e| e.to_str()) == Some("env")
             || path.file_name().and_then(|n| n.to_str()) == Some(".env");
-        if is_dotenv {
-            Self::Dotenv
-        } else {
-            Self::Yaml
-        }
+        if is_dotenv { Self::Dotenv } else { Self::Yaml }
     }
 }
 
@@ -81,10 +77,7 @@ impl FileStore {
     }
 
     /// Build the store with an explicit format.
-    pub fn with_format(
-        path: impl Into<PathBuf>,
-        format: FileFormat,
-    ) -> Result<Self, SecretError> {
+    pub fn with_format(path: impl Into<PathBuf>, format: FileFormat) -> Result<Self, SecretError> {
         let path = path.into();
         let cache = RwLock::new(load(&path, format)?);
         Ok(Self {
@@ -146,10 +139,7 @@ fn load(
         .collect())
 }
 
-fn parse_yaml(
-    path: &std::path::Path,
-    raw: &str,
-) -> Result<HashMap<String, String>, SecretError> {
+fn parse_yaml(path: &std::path::Path, raw: &str) -> Result<HashMap<String, String>, SecretError> {
     serde_yaml::from_str(raw).map_err(|e| SecretError::InvalidFile {
         path: path.to_path_buf(),
         msg: e.to_string(),
@@ -237,19 +227,37 @@ mod tests {
             store.get("GITHUB_TOKEN").unwrap().unwrap().expose_secret(),
             "ghp_abc"
         );
-        assert_eq!(store.get("LINEAR").unwrap().unwrap().expose_secret(), "lin_xyz");
-        assert_eq!(store.get("QUOTED").unwrap().unwrap().expose_secret(), "val ue");
+        assert_eq!(
+            store.get("LINEAR").unwrap().unwrap().expose_secret(),
+            "lin_xyz"
+        );
+        assert_eq!(
+            store.get("QUOTED").unwrap().unwrap().expose_secret(),
+            "val ue"
+        );
         assert_eq!(store.get("BARE").unwrap().unwrap().expose_secret(), "plain");
         assert!(store.get("MISSING").unwrap().is_none());
     }
 
     #[test]
     fn format_detected_from_extension() {
-        assert_eq!(FileFormat::from_path(Path::new("secrets.yaml")), FileFormat::Yaml);
-        assert_eq!(FileFormat::from_path(Path::new("secrets.yml")), FileFormat::Yaml);
-        assert_eq!(FileFormat::from_path(Path::new("creds.env")), FileFormat::Dotenv);
+        assert_eq!(
+            FileFormat::from_path(Path::new("secrets.yaml")),
+            FileFormat::Yaml
+        );
+        assert_eq!(
+            FileFormat::from_path(Path::new("secrets.yml")),
+            FileFormat::Yaml
+        );
+        assert_eq!(
+            FileFormat::from_path(Path::new("creds.env")),
+            FileFormat::Dotenv
+        );
         assert_eq!(FileFormat::from_path(Path::new(".env")), FileFormat::Dotenv);
-        assert_eq!(FileFormat::from_path(Path::new("/a/b/.env")), FileFormat::Dotenv);
+        assert_eq!(
+            FileFormat::from_path(Path::new("/a/b/.env")),
+            FileFormat::Dotenv
+        );
     }
 
     #[cfg(unix)]

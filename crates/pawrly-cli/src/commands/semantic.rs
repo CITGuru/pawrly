@@ -14,9 +14,7 @@ use std::path::PathBuf;
 
 use clap::{Args as ClapArgs, Subcommand};
 use pawrly_core::EngineServiceExt as _;
-use pawrly_core::semantic::{
-    FilterOp, OrderDir, SemanticFilter, SemanticOrder, SemanticQuery,
-};
+use pawrly_core::semantic::{FilterOp, OrderDir, SemanticFilter, SemanticOrder, SemanticQuery};
 
 use crate::commands::format::Format;
 
@@ -211,7 +209,8 @@ async fn query(
 
     let svc = crate::engine::build_engine(remote, no_remote, home, config).await?;
     let batches = svc.semantic_query_collect(q).await?;
-    args.format.write_batches(&mut std::io::stdout(), &batches)?;
+    args.format
+        .write_batches(&mut std::io::stdout(), &batches)?;
     Ok(())
 }
 

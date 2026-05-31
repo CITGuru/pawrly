@@ -1,7 +1,12 @@
 //! Acceptance: define a semantic model over a fixture file source and run a
 //! structured `semantic_query` end-to-end through `LocalEngine`.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, reason = "tests")]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "tests"
+)]
 
 use std::sync::Arc;
 

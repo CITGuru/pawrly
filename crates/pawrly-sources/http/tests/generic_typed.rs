@@ -13,7 +13,7 @@ use std::sync::Arc;
 use datafusion::catalog::{CatalogProvider, MemoryCatalogProvider};
 use datafusion::execution::config::SessionConfig;
 use datafusion::execution::context::SessionContext;
-use pawrly_core::{CachePolicy, SourceDef, TableDef, SourceKind};
+use pawrly_core::{CachePolicy, SourceDef, SourceKind, TableDef};
 use pawrly_sources_http::register_http_source;
 use serde_json::json;
 use wiremock::matchers::{method, path};

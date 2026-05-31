@@ -120,7 +120,7 @@ pub fn rollup_table_name(model: &str, preagg: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pawrly_core::semantic::{SemanticFilter, FilterOp};
+    use pawrly_core::semantic::{FilterOp, SemanticFilter};
 
     fn preagg(name: &str, dims: &[&str], measures: &[&str]) -> PreAggregation {
         PreAggregation {
@@ -161,7 +161,10 @@ mod tests {
             &["order_date.day", "status"],
             &["revenue", "order_count"],
         )]);
-        let q = query(&["orders.revenue"], &["orders.order_date.day", "orders.status"]);
+        let q = query(
+            &["orders.revenue"],
+            &["orders.order_date.day", "orders.status"],
+        );
         assert_eq!(match_rollup(&m, &q).map(|p| p.name.as_str()), Some("daily"));
     }
 
@@ -210,11 +213,18 @@ mod tests {
     #[test]
     fn smallest_covering_rollup_wins() {
         let m = model_with(vec![
-            preagg("wide", &["status", "country", "order_date.day"], &["revenue"]),
+            preagg(
+                "wide",
+                &["status", "country", "order_date.day"],
+                &["revenue"],
+            ),
             preagg("narrow", &["status"], &["revenue"]),
         ]);
         let q = query(&["orders.revenue"], &["orders.status"]);
-        assert_eq!(match_rollup(&m, &q).map(|p| p.name.as_str()), Some("narrow"));
+        assert_eq!(
+            match_rollup(&m, &q).map(|p| p.name.as_str()),
+            Some("narrow")
+        );
     }
 
     #[test]
@@ -226,6 +236,9 @@ mod tests {
 
     #[test]
     fn table_name_format() {
-        assert_eq!(rollup_table_name("orders", "daily"), "semantic_orders__daily");
+        assert_eq!(
+            rollup_table_name("orders", "daily"),
+            "semantic_orders__daily"
+        );
     }
 }

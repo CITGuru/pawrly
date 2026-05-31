@@ -513,9 +513,9 @@ mod tests {
         }
 
         fn has_semantic_err(c: &Config, needle: &str) -> bool {
-            validate(c).0.iter().any(|e| {
-                matches!(e, ConfigError::SemanticInvalid { msg, .. } if msg.contains(needle))
-            })
+            validate(c).0.iter().any(
+                |e| matches!(e, ConfigError::SemanticInvalid { msg, .. } if msg.contains(needle)),
+            )
         }
 
         #[test]
@@ -606,8 +606,8 @@ mod tests {
 
         // ---- rule 2: relationships ----
 
-        use pawrly_core::semantic::{PreAggregation, Relationship, RelationshipKind};
         use pawrly_core::safety::SafetyPolicy;
+        use pawrly_core::semantic::{PreAggregation, Relationship, RelationshipKind};
 
         fn rel(name: &str, target: &str) -> Relationship {
             Relationship {
@@ -695,8 +695,11 @@ mod tests {
                 DimensionType::Time,
                 vec![TimeGrain::Day, TimeGrain::Month],
             ));
-            m.pre_aggregations =
-                vec![preagg("monthly", &["order_date.month", "status"], &["revenue"])];
+            m.pre_aggregations = vec![preagg(
+                "monthly",
+                &["order_date.month", "status"],
+                &["revenue"],
+            )];
             let c = cfg_with(vec![m]);
             assert!(
                 !validate(&c)
