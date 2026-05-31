@@ -107,7 +107,20 @@ WHERE owner = 'withpawrly' AND repo = 'pawrly' AND state = 'open'
 LIMIT 20
 ```
 
-Some columns are **required filters** (above, `owner` and `repo`) — Pawrly returns a clear error if they're missing, rather than scanning an entire API. Supported authentication modes are `bearer`, `api_key`, and `basic`.
+Some columns are **required filters** (above, `owner` and `repo`) — Pawrly returns a clear error if they're missing, rather than scanning an entire API. Supported authentication modes are `bearer`, `api_key`, `basic`, and `oauth2` (client-credentials):
+
+```yaml
+    config:
+      auth:
+        type: oauth2
+        token_url:     https://login.example.com/oauth/token
+        client_id:     ${secret:CLIENT_ID}
+        client_secret: ${secret:CLIENT_SECRET}
+        scope:         read:data        # optional
+        audience:      https://api.example.com   # optional
+```
+
+The access token is fetched on first use, cached, and re-fetched on expiry, then sent as `Authorization: Bearer <token>`.
 
 **Generic HTTP** — point `kind: http` at any REST endpoint and declare your own
 tables. Each table gives an `endpoint` and a `response` describing how to turn
@@ -138,6 +151,7 @@ Field reference:
 - `endpoint` — path appended to `base_url`; may carry a query string and `{param}` placeholders.
 - `method` — defaults to `GET`.
 - `body` — request body for POST/PUT/GraphQL endpoints: `kind` (`json` — the default, sets `Content-Type: application/json` — or `form`) and `template` (body text with `{param}` placeholders filled from bound params/filters; other braces, e.g. JSON/GraphQL, are left untouched).
+- `requests` — conditional request shapes for one table, tried in order; the first whose `when_filters` are all bound replaces the default `endpoint`/`method`/`body` (e.g. a get-by-id endpoint when `number` is filtered, list otherwise). Each entry has `when_filters`, `endpoint`, optional `method`, and optional `body`.
 - `response.path` — JSONPath to the array of rows. `$` means the body *is* the array; `$.data` digs into a wrapper object.
 - `response.schema` — columns to extract per row. `type` ∈ `varchar`, `bigint`, `int`, `double`, `float`, `bool`, `date`, `timestamp`, `timestamptz` (ISO-8601 / RFC 3339 strings are parsed), and `json` (a nested object/array kept as raw JSON text). Add `source: $.nested.field` to read a different path, `source: $` to capture the whole row element (typically into a `json` column), or `source: param` to inject a request parameter as a column.
 - `response.allow_404_empty` — treat a `404` as an empty result set instead of an error.

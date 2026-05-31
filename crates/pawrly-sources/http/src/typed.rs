@@ -33,7 +33,7 @@ use serde_json::Value;
 
 use crate::paginate::{self, NextPage};
 use crate::source::{
-    AuthSpec, BodyKind, HttpSource, HttpTableSpec, RateLimitPolicy, ResponseColumn, schema_for,
+    BodyKind, HttpSource, HttpTableSpec, RateLimitPolicy, RequestBody, ResponseColumn, schema_for,
 };
 
 #[derive(Debug)]
@@ -82,6 +82,25 @@ impl HttpTableProvider {
             return false;
         };
         op == "=" || (param.accepts.iter().any(|a| a == op) && param.emit.contains_key(op))
+    }
+
+    /// Select the request shape (endpoint, method, body) for this scan: the
+    /// first conditional request whose `when_filters` are all bound, else the
+    /// table's default endpoint/method/body.
+    fn select_request(
+        &self,
+        params: &BTreeMap<String, String>,
+    ) -> (&str, &str, Option<&RequestBody>) {
+        for r in &self.spec.requests {
+            if r.when_filters.iter().all(|f| params.contains_key(f)) {
+                return (r.endpoint.as_str(), r.method.as_str(), r.body.as_ref());
+            }
+        }
+        (
+            self.spec.endpoint.as_str(),
+            self.spec.method.as_str(),
+            self.spec.body.as_ref(),
+        )
     }
 
     /// Whether a `Content-Type` is already pinned by the source or table headers
@@ -170,7 +189,9 @@ impl TableProvider for HttpTableProvider {
             }
         }
 
-        let method = self.spec.method.parse().unwrap_or(reqwest::Method::GET);
+        // Pick the request shape (endpoint/method/body) for this scan.
+        let (endpoint, method_str, body) = self.select_request(&params);
+        let method = method_str.parse().unwrap_or(reqwest::Method::GET);
 
         // Paginated fetch loop. `next_params`/`next_url` carry the target for the
         // upcoming request (initially the table endpoint + params). Each
@@ -213,7 +234,7 @@ impl TableProvider for HttpTableProvider {
 
             let url = match &next_url {
                 Some(u) => u.clone(),
-                None => build_url(&self.source.base_url, &self.spec.endpoint, &next_params)?,
+                None => build_url(&self.source.base_url, endpoint, &next_params)?,
             };
 
             let mut req = self.source.client.request(method.clone(), url);
@@ -223,21 +244,14 @@ impl TableProvider for HttpTableProvider {
             for (k, v) in &self.spec.headers {
                 req = req.header(k, v);
             }
-            match &self.source.auth {
-                AuthSpec::None => {}
-                AuthSpec::Bearer { token } => {
-                    req = req.bearer_auth(token);
-                }
-                AuthSpec::ApiKey { header, value } => {
-                    req = req.header(header, value);
-                }
-                AuthSpec::Basic { username, password } => {
-                    req = req.basic_auth(username, Some(password));
-                }
-            }
+            req = self
+                .source
+                .apply_auth(req)
+                .await
+                .map_err(|e| DataFusionError::External(Box::new(std::io::Error::other(e))))?;
 
             // Render and attach a request body for POST/PUT/GraphQL tables.
-            if let Some(body) = &self.spec.body {
+            if let Some(body) = body {
                 let rendered = render_template(&body.template, &next_params);
                 if !self.has_content_type() {
                     let content_type = match body.kind {

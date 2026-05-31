@@ -105,6 +105,7 @@ fn github() -> BundledSpec {
                 params: owner_repo_state.clone(),
                 headers: BTreeMap::new(),
                 body: None,
+                requests: Vec::new(),
                 response: ResponseSpec {
                     path: "$".into(),
                     schema: vec![
@@ -128,6 +129,7 @@ fn github() -> BundledSpec {
                 params: owner_repo_state,
                 headers: BTreeMap::new(),
                 body: None,
+                requests: Vec::new(),
                 response: ResponseSpec {
                     path: "$".into(),
                     schema: vec![
@@ -170,6 +172,7 @@ fn sentry() -> BundledSpec {
                 params: vec![required_param("org")],
                 headers: BTreeMap::new(),
                 body: None,
+                requests: Vec::new(),
                 response: ResponseSpec {
                     path: "$".into(),
                     schema: vec![
@@ -194,6 +197,7 @@ fn sentry() -> BundledSpec {
                 params: vec![required_param("org")],
                 headers: BTreeMap::new(),
                 body: None,
+                requests: Vec::new(),
                 response: ResponseSpec {
                     path: "$".into(),
                     schema: vec![
@@ -241,6 +245,7 @@ fn slack() -> BundledSpec {
                 params: Vec::new(),
                 headers: BTreeMap::new(),
                 body: None,
+                requests: Vec::new(),
                 response: ResponseSpec {
                     path: "$.members".into(),
                     schema: vec![
@@ -269,6 +274,7 @@ fn slack() -> BundledSpec {
                 )],
                 headers: BTreeMap::new(),
                 body: None,
+                requests: Vec::new(),
                 response: ResponseSpec {
                     path: "$.channels".into(),
                     schema: vec![

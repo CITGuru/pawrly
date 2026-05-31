@@ -7,7 +7,7 @@ use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use reqwest::header::HeaderMap;
 use serde::{Deserialize, Serialize};
 
-/// Auth declaration. Supports bearer + api-key + basic.
+/// Auth declaration. Supports bearer + api-key + basic + OAuth2 client-credentials.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AuthSpec {
@@ -24,6 +24,24 @@ pub enum AuthSpec {
         username: String,
         password: String,
     },
+    /// OAuth2 client-credentials grant. A token is fetched on first use and
+    /// re-fetched on expiry, then sent as `Authorization: Bearer <token>`.
+    Oauth2 {
+        token_url: String,
+        client_id: String,
+        client_secret: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        scope: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        audience: Option<String>,
+    },
+}
+
+/// A cached OAuth2 access token with its expiry.
+#[derive(Debug, Clone)]
+pub struct CachedToken {
+    pub token: String,
+    pub expires_at: std::time::SystemTime,
 }
 
 /// Parameter declaration on a typed HTTP table.
@@ -194,6 +212,21 @@ pub enum BodyKind {
     Form,
 }
 
+/// One conditional request shape, selected when all of `when_filters` are bound.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConditionalRequest {
+    /// Filter/param names that must all be bound to select this request.
+    pub when_filters: Vec<String>,
+    /// Endpoint template for this case (may carry `{param}` placeholders).
+    pub endpoint: String,
+    /// HTTP method for this case.
+    #[serde(default = "default_method")]
+    pub method: String,
+    /// Optional request body for this case.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body: Option<RequestBody>,
+}
+
 /// Per-table declaration for an HTTP source.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct HttpTableSpec {
@@ -205,9 +238,14 @@ pub struct HttpTableSpec {
     pub params: Vec<ParamSpec>,
     #[serde(default)]
     pub headers: BTreeMap<String, String>,
-    /// Optional request body (POST/PUT/GraphQL); absent means no body.
+    /// Optional request body (POST/PUT/GraphQL); absent means no body. This is
+    /// the body of the *default* request (see `requests`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub body: Option<RequestBody>,
+    /// Conditional requests, tried in order: the first whose `when_filters` are
+    /// all bound is used instead of the default `endpoint`/`method`/`body`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub requests: Vec<ConditionalRequest>,
     /// Response body shape (minimal).
     pub response: ResponseSpec,
     /// Optional pagination strategy; absent means single-page fetch.
@@ -319,6 +357,8 @@ pub struct HttpSource {
     pub retry: RetryConfig,
     /// Rate-limit policy (local throttle + header awareness).
     pub rate_limit: RateLimitPolicy,
+    /// Cached OAuth2 access token, populated on first use (when `auth` is OAuth2).
+    pub oauth_token: tokio::sync::Mutex<Option<CachedToken>>,
 }
 
 impl std::fmt::Debug for HttpSource {
@@ -339,6 +379,86 @@ impl HttpSource {
             .user_agent(format!("pawrly/{}", env!("CARGO_PKG_VERSION")))
             .build()
             .unwrap_or_else(|_| reqwest::Client::new())
+    }
+
+    /// Apply this source's auth to a request, fetching/refreshing an OAuth2
+    /// token when needed.
+    pub async fn apply_auth(
+        &self,
+        req: reqwest::RequestBuilder,
+    ) -> Result<reqwest::RequestBuilder, String> {
+        Ok(match &self.auth {
+            AuthSpec::None => req,
+            AuthSpec::Bearer { token } => req.bearer_auth(token),
+            AuthSpec::ApiKey { header, value } => req.header(header, value),
+            AuthSpec::Basic { username, password } => req.basic_auth(username, Some(password)),
+            AuthSpec::Oauth2 { .. } => req.bearer_auth(self.oauth_bearer().await?),
+        })
+    }
+
+    /// Return a valid OAuth2 access token, reusing the cached one until it is
+    /// within 30s of expiry, otherwise performing a client-credentials exchange.
+    async fn oauth_bearer(&self) -> Result<String, String> {
+        let AuthSpec::Oauth2 {
+            token_url,
+            client_id,
+            client_secret,
+            scope,
+            audience,
+        } = &self.auth
+        else {
+            return Err("oauth_bearer called for non-OAuth2 source".into());
+        };
+
+        let mut guard = self.oauth_token.lock().await;
+        let soon = std::time::SystemTime::now() + std::time::Duration::from_secs(30);
+        if let Some(cached) = guard.as_ref()
+            && cached.expires_at > soon
+        {
+            return Ok(cached.token.clone());
+        }
+
+        let mut form = vec![
+            ("grant_type", "client_credentials"),
+            ("client_id", client_id.as_str()),
+            ("client_secret", client_secret.as_str()),
+        ];
+        if let Some(s) = scope {
+            form.push(("scope", s.as_str()));
+        }
+        if let Some(a) = audience {
+            form.push(("audience", a.as_str()));
+        }
+
+        let resp = self
+            .client
+            .post(token_url)
+            .form(&form)
+            .send()
+            .await
+            .map_err(|e| format!("oauth token request failed: {e}"))?;
+        if !resp.status().is_success() {
+            return Err(format!("oauth token request returned {}", resp.status()));
+        }
+        let body: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| format!("oauth token response was not JSON: {e}"))?;
+        let token = body
+            .get("access_token")
+            .and_then(|v| v.as_str())
+            .ok_or("oauth token response missing `access_token`")?
+            .to_string();
+        // Default to a short-but-safe lifetime when `expires_in` is absent.
+        let expires_in = body.get("expires_in").and_then(|v| v.as_u64()).unwrap_or(300);
+        let expires_at =
+            std::time::SystemTime::now() + std::time::Duration::from_secs(expires_in);
+
+        *guard = Some(CachedToken {
+            token: token.clone(),
+            expires_at,
+        });
+        Ok(token)
     }
 }
 

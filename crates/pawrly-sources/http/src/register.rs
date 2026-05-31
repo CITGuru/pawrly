@@ -104,6 +104,7 @@ pub async fn register_http_source(
         client: HttpSource::build_client(),
         retry,
         rate_limit,
+        oauth_token: tokio::sync::Mutex::new(None),
     });
 
     // 2. Ensure the schema provider exists on the catalog.
@@ -255,6 +256,20 @@ fn parse_auth(def: &SourceDef) -> AuthSpec {
                     username: user.to_string(),
                     password: pass.to_string(),
                 };
+            }
+            "oauth2" => {
+                let s = |k: &str| auth.get(k).and_then(|v| v.as_str()).map(str::to_string);
+                if let (Some(token_url), Some(client_id), Some(client_secret)) =
+                    (s("token_url"), s("client_id"), s("client_secret"))
+                {
+                    return AuthSpec::Oauth2 {
+                        token_url,
+                        client_id,
+                        client_secret,
+                        scope: s("scope"),
+                        audience: s("audience"),
+                    };
+                }
             }
             _ => {}
         }
