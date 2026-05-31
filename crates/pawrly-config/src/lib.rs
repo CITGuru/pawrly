@@ -14,6 +14,7 @@ pub mod validator;
 pub use defaults::{Defaults, EngineDefaults, HttpDefaults, OptimizerDefaults, SafetyDefaults};
 pub use loader::{
     IncludeNode, MaskedConfig, assemble_config, include_tree, load, load_auto, load_str,
+    resolve_secret, secret_store,
 };
 pub use schema::json_schema;
 pub use secrets::build_store;

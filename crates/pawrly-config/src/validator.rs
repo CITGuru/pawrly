@@ -381,6 +381,65 @@ fn validate_source(src: &crate::types::SourceDef, errors: &mut ConfigErrors) {
                 "`kind: ai` requires `config.provider`".into(),
             ));
         }
+        SourceKind::Postgres | SourceKind::Mysql => {
+            let has_dsn = src.config.get("dsn").and_then(|v| v.as_str()).is_some();
+            let has_host = src.config.get("host").and_then(|v| v.as_str()).is_some();
+            let has_db = src
+                .config
+                .get("database")
+                .or_else(|| src.config.get("dbname"))
+                .and_then(|v| v.as_str())
+                .is_some();
+            if !(has_dsn || (has_host && has_db)) {
+                errors.push(ConfigError::Source(
+                    src.name.clone(),
+                    format!(
+                        "`kind: {}` requires `config.dsn` or both `config.host` and `config.database`",
+                        src.kind
+                    ),
+                ));
+            }
+        }
+        SourceKind::Snowflake => {
+            for key in ["account", "user", "password"] {
+                if src.config.get(key).and_then(|v| v.as_str()).is_none() {
+                    errors.push(ConfigError::Source(
+                        src.name.clone(),
+                        format!("`kind: snowflake` requires `config.{key}`"),
+                    ));
+                }
+            }
+        }
+        SourceKind::Iceberg
+        | SourceKind::Delta
+        | SourceKind::S3
+        | SourceKind::Gcs
+        | SourceKind::Azure => {
+            if src.tables.is_empty() {
+                errors.push(ConfigError::Source(
+                    src.name.clone(),
+                    format!(
+                        "`kind: {}` requires at least one `tables[]` entry",
+                        src.kind
+                    ),
+                ));
+            }
+            for t in &src.tables {
+                let has_loc = t
+                    .body
+                    .get("path")
+                    .or_else(|| t.body.get("location"))
+                    .and_then(|v| v.as_str())
+                    .is_some();
+                if !has_loc {
+                    errors.push(ConfigError::Table {
+                        source_name: src.name.clone(),
+                        table: t.name.clone(),
+                        msg: "requires a `path` or `location` in its config".into(),
+                    });
+                }
+            }
+        }
         _ => {}
     }
 }

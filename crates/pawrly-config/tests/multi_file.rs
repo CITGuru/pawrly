@@ -127,6 +127,8 @@ fn from_overlay_matches_worked_example() {
 description: Production warehouse
 config:
   account: acme.us-east-1
+  user: svc
+  password: pw
   database: ANALYTICS
   schema: PUBLIC
 cache:

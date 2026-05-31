@@ -38,6 +38,7 @@ pub async fn register_source(
     ctx: &SessionContext,
     catalog: &dyn CatalogProvider,
     workspace_dir: &std::path::Path,
+    pool: &std::sync::Arc<crate::duckdb_pool::DuckDbPool>,
 ) -> Result<RegisterReport, RegisterError> {
     match def.kind {
         SourceKind::File => {
@@ -124,25 +125,22 @@ pub async fn register_source(
                 }],
             })
         }
-        // Warehouse + lakehouse + object stores are recognized but
-        // require optional features (DuckDB extensions, delta-rs, iceberg-rs)
-        // that aren't enabled in this build. The architecture supports them
-        // via the same dispatch table; turning them on is a per-deployment
-        // build-time choice.
-        SourceKind::Snowflake
-        | SourceKind::Bigquery
-        | SourceKind::Redshift
+        // DuckDB-backed warehouses, lakehouse table formats, and object
+        // stores: all converge on the in-process DuckDB pool via ATTACH /
+        // scan-functions / object-store secrets.
+        SourceKind::Postgres
+        | SourceKind::Mysql
+        | SourceKind::Snowflake
         | SourceKind::Iceberg
         | SourceKind::Delta
         | SourceKind::S3
         | SourceKind::Gcs
-        | SourceKind::Azure => Err(RegisterError::Other(format!(
-            "source kind `{}` is recognized but requires the `lakehouse` build feature",
-            def.kind
-        ))),
-        SourceKind::Postgres | SourceKind::Mysql => Err(RegisterError::Other(format!(
-            "source kind `{}` requires the `duckdb-extensions` build feature. \
-             (`kind: sqlite` works in-process and is enabled.)",
+        | SourceKind::Azure => {
+            crate::duckdb_source::register_duckdb_source(def, pool, catalog).await
+        }
+        // Bigquery / Redshift are recognized but not yet wired to a backend.
+        SourceKind::Bigquery | SourceKind::Redshift => Err(RegisterError::Other(format!(
+            "source kind `{}` is not yet supported",
             def.kind
         ))),
     }

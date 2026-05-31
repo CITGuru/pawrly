@@ -4,7 +4,8 @@
 //! - Filter pushdown is done by lifting `WHERE col = literal` filters that
 //!   match a declared parameter and substituting them into the URL path /
 //!   query string.
-//! - No pagination; we fetch the first page only.
+//! - Pagination follows the table's `PaginationConfig` (link header, cursor,
+//!   page, or offset); absent config means a single-page fetch.
 //! - Required params must appear as `WHERE col = value` filters; otherwise
 //!   the scan returns a clear error.
 
@@ -27,6 +28,7 @@ use datafusion::logical_expr::{Expr, TableProviderFilterPushDown};
 use datafusion::physical_plan::ExecutionPlan;
 use serde_json::Value;
 
+use crate::paginate::{self, NextPage};
 use crate::source::{AuthSpec, HttpSource, HttpTableSpec, ResponseColumn, schema_for};
 
 #[derive(Debug)]
@@ -34,6 +36,9 @@ pub struct HttpTableProvider {
     pub source: Arc<HttpSource>,
     pub spec: Arc<HttpTableSpec>,
     pub schema: SchemaRef,
+    /// Hard cap on pagination calls, threaded from the table/source safety
+    /// policy. `None` means no cap.
+    pub max_pages: Option<u32>,
 }
 
 impl pawrly_core::DynamicFilterCapable for HttpTableProvider {
@@ -45,11 +50,20 @@ impl pawrly_core::DynamicFilterCapable for HttpTableProvider {
 
 impl HttpTableProvider {
     pub fn new(source: Arc<HttpSource>, spec: Arc<HttpTableSpec>) -> Self {
+        Self::with_max_pages(source, spec, None)
+    }
+
+    pub fn with_max_pages(
+        source: Arc<HttpSource>,
+        spec: Arc<HttpTableSpec>,
+        max_pages: Option<u32>,
+    ) -> Self {
         let schema = schema_for(&spec);
         Self {
             source,
             spec,
             schema,
+            max_pages,
         }
     }
 }
@@ -120,46 +134,100 @@ impl TableProvider for HttpTableProvider {
             }
         }
 
-        let url = build_url(&self.source.base_url, &self.spec.endpoint, &params)?;
+        let method = self.spec.method.parse().unwrap_or(reqwest::Method::GET);
 
-        let mut req = self.source.client.request(
-            self.spec.method.parse().unwrap_or(reqwest::Method::GET),
-            url,
-        );
-        for (k, v) in &self.source.headers {
-            req = req.header(k, v);
+        // Paginated fetch loop. `next_params`/`next_url` carry the target for the
+        // upcoming request (initially the table endpoint + params). Each
+        // iteration sends one page, accumulates rows, and consults `paginate`
+        // for the next.
+        let mut all_rows: Vec<Value> = Vec::new();
+        let mut next_params = params.clone();
+        if let Some(config) = &self.spec.pagination {
+            paginate::seed_initial(config, &mut next_params);
         }
-        for (k, v) in &self.spec.headers {
-            req = req.header(k, v);
+        let mut next_url: Option<url::Url> = None;
+        let mut page_index: usize = 0;
+
+        loop {
+            // Enforce the page cap before issuing the request for this page.
+            if let Some(max) = self.max_pages
+                && page_index as u64 >= max as u64
+            {
+                let err = pawrly_core::SafetyError::TooManyPages {
+                    table: self.spec.name.clone(),
+                    max_pages: max,
+                };
+                return Err(DataFusionError::External(Box::new(std::io::Error::other(
+                    err.to_string(),
+                ))));
+            }
+
+            // Rate limit: wait for a permit before each request.
+            if let Some(limiter) = &self.source.limiter {
+                limiter.until_ready().await;
+            }
+
+            let url = match &next_url {
+                Some(u) => u.clone(),
+                None => build_url(&self.source.base_url, &self.spec.endpoint, &next_params)?,
+            };
+
+            let mut req = self.source.client.request(method.clone(), url);
+            for (k, v) in &self.source.headers {
+                req = req.header(k, v);
+            }
+            for (k, v) in &self.spec.headers {
+                req = req.header(k, v);
+            }
+            match &self.source.auth {
+                AuthSpec::None => {}
+                AuthSpec::Bearer { token } => {
+                    req = req.bearer_auth(token);
+                }
+                AuthSpec::ApiKey { header, value } => {
+                    req = req.header(header, value);
+                }
+                AuthSpec::Basic { username, password } => {
+                    req = req.basic_auth(username, Some(password));
+                }
+            }
+
+            let resp = send_with_retry(req, &self.source.retry).await?;
+            let status = resp.status();
+            let headers = resp.headers().clone();
+            let body: Value = resp.json().await.map_err(|e| {
+                DataFusionError::External(Box::new(std::io::Error::other(format!(
+                    "json parse failed (status {status}): {e}"
+                ))))
+            })?;
+
+            let rows = extract_rows(&body, &self.spec.response.path)?;
+            let row_count = rows.len();
+            all_rows.extend(rows);
+
+            // Without a pagination config we fetch exactly one page.
+            let Some(config) = &self.spec.pagination else {
+                break;
+            };
+
+            match paginate::next_page(config, &next_params, &body, &headers, row_count, page_index)
+            {
+                Some(NextPage::Params(p)) => {
+                    next_params = p;
+                    next_url = None;
+                }
+                Some(NextPage::Url(u)) => {
+                    let parsed = url::Url::parse(&u).map_err(|e| {
+                        DataFusionError::Plan(format!("bad pagination url `{u}`: {e}"))
+                    })?;
+                    next_url = Some(parsed);
+                }
+                None => break,
+            }
+            page_index += 1;
         }
-        match &self.source.auth {
-            AuthSpec::None => {}
-            AuthSpec::Bearer { token } => {
-                req = req.bearer_auth(token);
-            }
-            AuthSpec::ApiKey { header, value } => {
-                req = req.header(header, value);
-            }
-            AuthSpec::Basic { username, password } => {
-                req = req.basic_auth(username, Some(password));
-            }
-        }
 
-        let resp = req.send().await.map_err(|e| {
-            DataFusionError::External(Box::new(std::io::Error::other(format!(
-                "http request failed: {e}"
-            ))))
-        })?;
-        let status = resp.status();
-        let body: Value = resp.json().await.map_err(|e| {
-            DataFusionError::External(Box::new(std::io::Error::other(format!(
-                "json parse failed (status {status}): {e}"
-            ))))
-        })?;
-
-        let rows = extract_rows(&body, &self.spec.response.path)?;
-
-        let batch = build_batch(&self.schema, &self.spec.response.schema, &rows, &params)?;
+        let batch = build_batch(&self.schema, &self.spec.response.schema, &all_rows, &params)?;
         let projected_schema = if let Some(p) = projection {
             let fields: Vec<Field> = p.iter().map(|i| self.schema.field(*i).clone()).collect();
             Arc::new(Schema::new(fields))
@@ -178,6 +246,89 @@ impl TableProvider for HttpTableProvider {
             .map_err(|e| DataFusionError::Plan(e.to_string()))?;
         Ok(exec)
     }
+}
+
+/// Send a request with retry/backoff on transient failures.
+///
+/// Retries on transport errors and HTTP 5xx with exponential backoff
+/// (`base * 2^attempt`, capped at `max_backoff`). For 429/503, honors a numeric
+/// `Retry-After` header (seconds) when present, otherwise falls back to the
+/// backoff. After exhausting `max_retries`, returns the last error wrapped as a
+/// `DataFusionError::External`.
+async fn send_with_retry(
+    req: reqwest::RequestBuilder,
+    retry: &crate::source::RetryConfig,
+) -> datafusion::common::Result<reqwest::Response> {
+    use reqwest::StatusCode;
+
+    let mut attempt: u32 = 0;
+    loop {
+        // Clone so we can re-issue on retry; if the body isn't cloneable we
+        // simply can't retry and send the original.
+        let send_target = match req.try_clone() {
+            Some(c) => c,
+            None => {
+                return req.send().await.map_err(|e| {
+                    DataFusionError::External(Box::new(std::io::Error::other(format!(
+                        "http request failed: {e}"
+                    ))))
+                });
+            }
+        };
+
+        match send_target.send().await {
+            Ok(resp) => {
+                let status = resp.status();
+                let retryable = status.is_server_error()
+                    || status == StatusCode::TOO_MANY_REQUESTS
+                    || status == StatusCode::SERVICE_UNAVAILABLE;
+                if !retryable || attempt >= retry.max_retries {
+                    return Ok(resp);
+                }
+                // Prefer an explicit Retry-After (seconds) for 429/503.
+                let wait_ms = if status == StatusCode::TOO_MANY_REQUESTS
+                    || status == StatusCode::SERVICE_UNAVAILABLE
+                {
+                    retry_after_ms(&resp).unwrap_or_else(|| backoff_ms(retry, attempt))
+                } else {
+                    backoff_ms(retry, attempt)
+                };
+                tokio::time::sleep(std::time::Duration::from_millis(wait_ms)).await;
+            }
+            Err(e) => {
+                if attempt >= retry.max_retries {
+                    return Err(DataFusionError::External(Box::new(std::io::Error::other(
+                        format!("http request failed: {e}"),
+                    ))));
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(backoff_ms(retry, attempt)))
+                    .await;
+            }
+        }
+        attempt += 1;
+    }
+}
+
+/// Exponential backoff for `attempt` (0-based), capped at `max_backoff_ms`.
+fn backoff_ms(retry: &crate::source::RetryConfig, attempt: u32) -> u64 {
+    let factor = 1u64.checked_shl(attempt).unwrap_or(u64::MAX);
+    retry
+        .base_backoff_ms
+        .saturating_mul(factor)
+        .min(retry.max_backoff_ms)
+}
+
+/// Parse a numeric `Retry-After` header (delay in seconds) into milliseconds.
+/// HTTP-date forms are ignored (we fall back to backoff).
+fn retry_after_ms(resp: &reqwest::Response) -> Option<u64> {
+    resp.headers()
+        .get(reqwest::header::RETRY_AFTER)?
+        .to_str()
+        .ok()?
+        .trim()
+        .parse::<u64>()
+        .ok()
+        .map(|secs| secs.saturating_mul(1000))
 }
 
 fn extract_eq_literal(expr: &Expr) -> Option<(String, String)> {

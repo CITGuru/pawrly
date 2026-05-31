@@ -73,6 +73,40 @@ pub fn load_auto(path: &Path) -> Result<Config, ConfigError> {
     finish(tree, &store)
 }
 
+/// Build the secret-resolution store from a config file's `secrets:` block,
+/// without loading the full config. Same chain `load_auto` uses (env / file /
+/// keyring / `auto`, in order), so `${secret:NAME}` references and the server's
+/// bearer token resolve identically.
+pub fn secret_store(path: &Path) -> Result<pawrly_secrets::LayeredStore, ConfigError> {
+    let raw = std::fs::read_to_string(path).map_err(|e| ConfigError::Io(e.to_string()))?;
+    let mut tree: serde_json::Value =
+        serde_yaml::from_str(&raw).map_err(|e| ConfigError::Yaml(e.to_string()))?;
+    assemble::assemble(&mut tree, path)?;
+    let defs: Vec<crate::types::SecretsBackendDef> = match tree.get("secrets") {
+        Some(v) => serde_json::from_value(v.clone()).map_err(|e| ConfigError::Schema {
+            path: "secrets".to_string(),
+            msg: e.to_string(),
+        })?,
+        None => Vec::new(),
+    };
+    let base_dir = path.parent().unwrap_or_else(|| Path::new("."));
+    crate::secrets::build_store(&defs, base_dir)
+}
+
+/// Resolve a single secret by `name` from a config's secret backends, returning
+/// the plain value. Used for non-`${secret:}` lookups such as the server's
+/// `--bearer-token-from` token.
+pub fn resolve_secret(path: &Path, name: &str) -> Result<Option<String>, ConfigError> {
+    use pawrly_secrets::SecretStore as _;
+    use secrecy::ExposeSecret as _;
+    let store = secret_store(path)?;
+    let value = store
+        .get(name)
+        .map_err(|e| ConfigError::Io(e.to_string()))?
+        .map(|s| s.expose_secret().to_string());
+    Ok(value)
+}
+
 /// Same as [`load`] but takes a YAML string. Useful in tests.
 ///
 /// `include:` / `from:` are unavailable here — there is no on-disk parent

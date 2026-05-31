@@ -1,15 +1,11 @@
 # Snowflake connection example.
 # yaml-language-server: $schema=../../schemas/pawrly.schema.json
 #
-# STATUS: config reference. Snowflake (like the other warehouse / lakehouse
-# kinds) requires the `lakehouse` build feature, which is OFF in the default
-# build. This file PARSES and resolves secrets today, but registering the
-# source errors with:
-#
-#   source kind `snowflake` is recognized but requires the `lakehouse` build feature
-#
-# So you can author and share this config now; connecting/querying needs a
-# build with `--features lakehouse`.
+# STATUS: working. Snowflake attaches read-only through the in-process DuckDB
+# engine via the community `snowflake` extension — no build feature required.
+# Registering the source installs/loads the extension and ATTACHes the account
+# (online; first run downloads the extension). This file PARSES and resolves
+# secrets today, and connects when reachable with valid credentials.
 #
 # CREDENTIALS: the `auto` secrets backend (below) resolves `${secret:NAME}` from,
 # in order: (1) process env vars, (2) the OS keyring (service `pawrly`), and
@@ -28,10 +24,10 @@
 # skipped with a warning. `.env` / `*.env` are gitignored. Exported env vars
 # always win over the file, so you can override any single value from the shell.
 #
-#   # Works in the default build — checks the config parses and secrets resolve:
+#   # Checks the config parses and secrets resolve (no network):
 #   pawrly validate examples/snowflake/pawrly.yaml        # -> ok: 1 sources, 0 tables
 #
-#   # With a lakehouse-enabled build, list the catalog and query:
+#   # With reachable Snowflake + valid creds, list the catalog and query:
 #   pawrly --config examples/snowflake/pawrly.yaml schema
 #   pawrly --config examples/snowflake/pawrly.yaml sql \
 #     "SELECT order_status, COUNT(*) AS n FROM warehouse.orders \
