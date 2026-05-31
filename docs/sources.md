@@ -35,6 +35,45 @@ sources:
 
 Once registered, query them like any table: `SELECT * FROM data.orders`. Files of different formats can be joined freely — the SQL is identical regardless of format.
 
+A per-table `path` may be a single file, a **glob**, or a **directory** — a glob or directory is read as one table unioning every matching file (the natural shape for a partitioned dataset):
+
+```yaml
+    tables:
+      - name: orders
+        path: ./data/orders/*.parquet     # all parts → one `orders` table
+        format: parquet
+```
+
+**Hive partitions** — for `key=value` directory layouts, declare `partition_cols` to expose the keys as queryable, prunable columns:
+
+```yaml
+      - name: events                        # events/dt=2026-05-31/region=us/*.parquet
+        path: ./lake/events
+        format: parquet
+        partition_cols:
+          - { name: dt,     type: date }
+          - { name: region, type: varchar }
+```
+
+```sql
+SELECT * FROM data.events WHERE dt = '2026-05-31'   -- only that dt= directory is read
+```
+
+**CSV options & explicit schema** — override the dialect, and (optionally) the inferred schema for headerless or mis-inferred files:
+
+```yaml
+      - name: metrics
+        path: ./data/metrics.tsv
+        format: csv
+        csv:
+          header: false          # default true
+          delimiter: "\t"        # default ","
+          quote: '"'
+        schema:                  # optional: name + type the columns
+          - { name: host,  type: varchar }
+          - { name: value, type: bigint }
+```
+
 ### `sqlite` — local SQLite databases
 
 Attaches a SQLite database file read-only and exposes its tables. Equality filters are pushed down into SQLite.

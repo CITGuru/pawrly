@@ -20,6 +20,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::catalog::{CatalogProvider, MemorySchemaProvider, SchemaProvider};
 use datafusion::execution::context::SessionContext;
 use pawrly_core::{ConfigError, SourceDef};
@@ -68,6 +69,118 @@ pub enum FileBuildError {
     EmptyGlob(String),
 }
 
+/// CSV dialect overrides for a `format: csv` table.
+#[derive(Debug, Clone)]
+struct CsvOptions {
+    has_header: bool,
+    delimiter: u8,
+    quote: u8,
+}
+
+impl Default for CsvOptions {
+    fn default() -> Self {
+        Self {
+            has_header: true,
+            delimiter: b',',
+            quote: b'"',
+        }
+    }
+}
+
+/// Per-table options parsed from a `kind: file` table declaration.
+#[derive(Debug, Clone, Default)]
+struct FileTableOptions {
+    /// CSV dialect (only consulted for `format: csv`).
+    csv: Option<CsvOptions>,
+    /// Hive partition columns (`key=value` directories) as (name, type).
+    partition_cols: Vec<(String, DataType)>,
+    /// Explicit file schema, overriding inference.
+    schema: Option<SchemaRef>,
+}
+
+/// Map a YAML type string to an Arrow `DataType` for file columns.
+fn file_arrow_type(s: &str) -> DataType {
+    match s.to_ascii_lowercase().as_str() {
+        "bool" | "boolean" => DataType::Boolean,
+        "int" | "int32" => DataType::Int32,
+        "bigint" | "int64" | "long" => DataType::Int64,
+        "float" | "float32" => DataType::Float32,
+        "double" | "float64" => DataType::Float64,
+        "date" => DataType::Date32,
+        _ => DataType::Utf8,
+    }
+}
+
+/// Read the first character of a string field as a single byte, e.g. a CSV
+/// delimiter. A tab is accepted as `"\t"`.
+fn first_byte(v: &serde_json::Value, key: &str) -> Option<u8> {
+    let s = v.get(key)?.as_str()?;
+    let s = if s == "\\t" { "\t" } else { s };
+    s.bytes().next()
+}
+
+/// Parse the options block from a table declaration's `config`.
+fn parse_table_options(
+    source_name: &str,
+    tdef: &pawrly_core::TableDef,
+) -> Result<FileTableOptions, FileBuildError> {
+    let cfg = &tdef.config;
+    let mut opts = FileTableOptions::default();
+
+    if let Some(csv) = cfg.get("csv") {
+        let d = CsvOptions::default();
+        opts.csv = Some(CsvOptions {
+            has_header: csv.get("header").and_then(|v| v.as_bool()).unwrap_or(d.has_header),
+            delimiter: first_byte(csv, "delimiter").unwrap_or(d.delimiter),
+            quote: first_byte(csv, "quote").unwrap_or(d.quote),
+        });
+    }
+
+    if let Some(parts) = cfg.get("partition_cols").and_then(|v| v.as_array()) {
+        for p in parts {
+            let name = p
+                .get("name")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| ConfigError::Table {
+                    source_name: source_name.to_string(),
+                    table: tdef.name.clone(),
+                    msg: "partition_cols entry is missing `name`".into(),
+                })?;
+            // Only hive (`key=value`) partitions are supported; segment
+            // (positional) partitions are not yet implemented.
+            if let Some(kind) = p.get("kind").and_then(|v| v.as_str())
+                && !kind.eq_ignore_ascii_case("hive")
+            {
+                return Err(ConfigError::Table {
+                    source_name: source_name.to_string(),
+                    table: tdef.name.clone(),
+                    msg: format!("partition kind `{kind}` is not supported (use `hive`)"),
+                }
+                .into());
+            }
+            let ty = p.get("type").and_then(|v| v.as_str()).unwrap_or("varchar");
+            opts.partition_cols
+                .push((name.to_string(), file_arrow_type(ty)));
+        }
+    }
+
+    if let Some(cols) = cfg.get("schema").and_then(|v| v.as_array()) {
+        let fields: Vec<Field> = cols
+            .iter()
+            .filter_map(|c| {
+                let name = c.get("name")?.as_str()?;
+                let ty = c.get("type").and_then(|v| v.as_str()).unwrap_or("varchar");
+                Some(Field::new(name, file_arrow_type(ty), true))
+            })
+            .collect();
+        if !fields.is_empty() {
+            opts.schema = Some(Arc::new(Schema::new(fields)));
+        }
+    }
+
+    Ok(opts)
+}
+
 /// Lightweight validation of a `kind: file` source's config.
 pub fn validate_file_def(def: &SourceDef) -> Result<(), ConfigError> {
     let top_path = def.config.get("path").and_then(|v| v.as_str());
@@ -106,6 +219,7 @@ pub async fn register_file_source(
             Some(s) => parse_format(s)?,
             None => infer_format_from_path(path_str)?,
         };
+        let options = parse_table_options(&def.name, tdef)?;
         let path = resolve_path(workspace_dir, path_str);
         register_one(
             ctx,
@@ -113,7 +227,7 @@ pub async fn register_file_source(
             &tdef.name,
             format,
             &path,
-            tdef.description.clone(),
+            &options,
         )
         .await?;
         summaries.push(FileSummary {
@@ -143,7 +257,15 @@ pub async fn register_file_source(
                     .and_then(|s| s.to_str())
                     .map(str::to_string)
                     .unwrap_or_else(|| "unnamed".to_string());
-                register_one(ctx, schema.as_ref(), &table_name, format, &path, None).await?;
+                register_one(
+                    ctx,
+                    schema.as_ref(),
+                    &table_name,
+                    format,
+                    &path,
+                    &FileTableOptions::default(),
+                )
+                .await?;
                 summaries.push(FileSummary {
                     name: table_name,
                     description: None,
@@ -191,7 +313,7 @@ async fn register_one(
     table_name: &str,
     format: FileFormat,
     path: &std::path::Path,
-    _description: Option<String>,
+    options: &FileTableOptions,
 ) -> Result<(), FileBuildError> {
     use datafusion::datasource::file_format::FileFormat as DfFileFormat;
     use datafusion::datasource::file_format::csv::CsvFormat;
@@ -201,38 +323,81 @@ async fn register_one(
         ListingOptions, ListingTable, ListingTableConfig, ListingTableUrl,
     };
 
-    // Canonicalize so DataFusion's URL parser knows the file is local + absolute.
-    let abs_path = std::fs::canonicalize(path)
-        .map_err(|e| FileBuildError::Io(format!("canonicalize {}: {e}", path.display())))?;
-    let url = ListingTableUrl::parse(abs_path.to_string_lossy().as_ref())
-        .map_err(|e| FileBuildError::DataFusion(format!("parse listing url: {e}")))?;
+    // A single concrete file is canonicalized (resolving symlinks, asserting it
+    // exists). A glob or directory is left as an absolute path so DataFusion can
+    // list every matching file into one table.
+    let path_str = path.to_string_lossy().into_owned();
+    let url = if is_glob(&path_str) || path.is_dir() {
+        let dir = if path.is_dir() && !path_str.ends_with('/') {
+            format!("{path_str}/")
+        } else {
+            path_str.clone()
+        };
+        ListingTableUrl::parse(&dir)
+            .map_err(|e| FileBuildError::DataFusion(format!("parse listing url: {e}")))?
+    } else {
+        let abs_path = std::fs::canonicalize(path)
+            .map_err(|e| FileBuildError::Io(format!("canonicalize {}: {e}", path.display())))?;
+        ListingTableUrl::parse(abs_path.to_string_lossy().as_ref())
+            .map_err(|e| FileBuildError::DataFusion(format!("parse listing url: {e}")))?
+    };
 
+    let csv = options.csv.clone().unwrap_or_default();
     let (format_impl, default_extension): (Arc<dyn DfFileFormat>, &str) = match format {
         FileFormat::Parquet => (Arc::new(ParquetFormat::default()), ".parquet"),
-        FileFormat::Csv => (Arc::new(CsvFormat::default().with_has_header(true)), ".csv"),
+        FileFormat::Csv => (
+            Arc::new(
+                CsvFormat::default()
+                    .with_has_header(csv.has_header)
+                    .with_delimiter(csv.delimiter)
+                    .with_quote(csv.quote),
+            ),
+            ".csv",
+        ),
         FileFormat::Json => (Arc::new(JsonFormat::default()), ".json"),
     };
 
-    let actual_extension = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(|e| format!(".{e}"))
-        .unwrap_or_else(|| default_extension.to_string());
+    // For a glob the extension lives in the pattern; for a bare directory we
+    // fall back to the format default.
+    let actual_extension = if path.is_dir() {
+        default_extension.to_string()
+    } else {
+        path.extension()
+            .and_then(|e| e.to_str())
+            .map(|e| format!(".{e}"))
+            .unwrap_or_else(|| default_extension.to_string())
+    };
 
-    let options = ListingOptions::new(format_impl).with_file_extension(actual_extension);
-    let resolved_schema = options
-        .infer_schema(&ctx.state(), &url)
-        .await
-        .map_err(|e| FileBuildError::DataFusion(format!("infer schema: {e}")))?;
+    let mut listing_options =
+        ListingOptions::new(format_impl).with_file_extension(actual_extension);
+    if !options.partition_cols.is_empty() {
+        listing_options =
+            listing_options.with_table_partition_cols(options.partition_cols.clone());
+    }
+
+    // An explicit schema overrides inference; otherwise infer from the files.
+    let file_schema = match &options.schema {
+        Some(s) => s.clone(),
+        None => listing_options
+            .infer_schema(&ctx.state(), &url)
+            .await
+            .map_err(|e| FileBuildError::DataFusion(format!("infer schema: {e}")))?,
+    };
+
     let cfg = ListingTableConfig::new(url)
-        .with_listing_options(options)
-        .with_schema(resolved_schema);
+        .with_listing_options(listing_options)
+        .with_schema(file_schema);
     let table = ListingTable::try_new(cfg)
         .map_err(|e| FileBuildError::DataFusion(format!("listing table: {e}")))?;
     schema
         .register_table(table_name.to_string(), Arc::new(table))
         .map_err(|e| FileBuildError::DataFusion(format!("register table: {e}")))?;
     Ok(())
+}
+
+/// Whether a path string contains shell-glob metacharacters.
+fn is_glob(s: &str) -> bool {
+    s.contains(['*', '?', '['])
 }
 
 fn parse_format(s: &str) -> Result<FileFormat, FileBuildError> {
