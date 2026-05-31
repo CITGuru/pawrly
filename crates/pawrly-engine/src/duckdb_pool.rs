@@ -259,24 +259,21 @@ mod tests {
 
     #[tokio::test]
     async fn pool_loads_extension_idempotently() {
-        // `LOAD json` reads from `~/.duckdb/extensions/<linked-version>/...`,
-        // so a pre-existing cache for a different DuckDB version makes the
-        // load fail. Run the full INSTALL+LOAD path here so the
-        // extension is fetched for whatever version libduckdb-sys is linked
-        // against. If the host is offline and the cache is stale/missing,
-        // skip rather than fail — this test exercises the in-process cache
-        // memo, not network availability.
-        let pool = DuckDbPool::with_offline(1, false).expect("pool");
-        if let Err(e) = pool.ensure_extension("json").await {
-            eprintln!(
-                "skipping pool_loads_extension_idempotently: \
-                 could not INSTALL+LOAD json (host offline and extension \
-                 cache stale or missing for the linked DuckDB version): {e}"
-            );
+        // `parquet` is statically linked into the `bundled` DuckDB build, so it
+        // `LOAD`s offline with no network and no `~/.duckdb/extensions` cache —
+        // unlike `json`, which DuckDB >= 1.5 ships as a separately-installed
+        // extension whose load depends on a per-version cache. This test
+        // exercises the in-process idempotency memo, not extension availability,
+        // so we stay offline and use the built-in. If even the built-in load
+        // fails on some build, skip rather than fail.
+        let pool = DuckDbPool::with_offline(1, true).expect("pool");
+        if let Err(e) = pool.ensure_extension("parquet").await {
+            eprintln!("skipping pool_loads_extension_idempotently: LOAD parquet failed: {e}");
             return;
         }
+        assert!(pool.extensions.lock().contains("parquet"));
         // Second call: should hit the in-memory memo and be a no-op.
-        pool.ensure_extension("json").await.expect("second load");
-        assert!(pool.extensions.lock().contains("json"));
+        pool.ensure_extension("parquet").await.expect("second load");
+        assert!(pool.extensions.lock().contains("parquet"));
     }
 }

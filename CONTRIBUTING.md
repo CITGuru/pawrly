@@ -27,9 +27,7 @@ Before any **destructive git op** — `git checkout <branch>`, `git switch
 
 `--include-untracked` is non-negotiable. A plain `git stash` does NOT save
 top-level untracked files/dirs, and `git checkout` / `git reset --hard`
-will silently delete them. This rule exists because of the apps/landing
-incident in the melt repo — see [POWA-224](/POWA/issues/POWA-224) and
-[POWA-227](/POWA/issues/POWA-227).
+will silently delete them. 
 
 The helper has a self-test (`scripts/preflight-destructive-git.sh
 self-test`) that proves it refuses to proceed and captures untracked
