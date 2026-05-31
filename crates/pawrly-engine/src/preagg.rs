@@ -1,5 +1,4 @@
-//! Semantic pre-aggregation (rollup) materialization — the S6 caller over the
-//! M6 cache machinery.
+//! Semantic pre-aggregation (rollup) materialization
 //!
 //! At boot, [`register_rollups`] turns each declared `PreAggregation` into a
 //! synthetic table `"semantic"."<model>__<preagg>"`. The table's provider runs
