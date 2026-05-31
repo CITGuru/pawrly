@@ -14,7 +14,23 @@
 //! is registered there, [`match_rollup`] is consulted but never satisfied in
 //! practice.
 
-use pawrly_core::semantic::{PreAggregation, SemanticModel, SemanticQuery, TimeGrain};
+use pawrly_core::semantic::{MeasureAgg, PreAggregation, SemanticModel, SemanticQuery, TimeGrain};
+
+/// The DataFusion / cache schema that materialized rollups are registered under.
+/// A rollup for `model`/`preagg` lives at `"semantic"."<model>__<preagg>"`.
+pub const ROLLUP_SCHEMA: &str = "semantic";
+
+/// True when an aggregate can be re-computed from a partial (rolled-up) value:
+/// `SUM`/`COUNT` add, `MIN`/`MAX` extend. `AVG`, `COUNT(DISTINCT)`, and custom
+/// SQL cannot be rolled up from a stored partial, so a query using them must
+/// read the base table.
+#[must_use]
+pub fn is_rollup_safe(agg: &MeasureAgg) -> bool {
+    matches!(
+        agg,
+        MeasureAgg::Sum | MeasureAgg::Count | MeasureAgg::Min | MeasureAgg::Max
+    )
+}
 
 /// A parsed member: dimension name plus an optional time grain, with the model
 /// prefix stripped. `"orders.order_date.month"` → `("order_date", Month)`;
@@ -110,11 +126,12 @@ pub fn match_rollup<'a>(model: &'a SemanticModel, q: &SemanticQuery) -> Option<&
         .min_by_key(|pre| pre.dimensions.len())
 }
 
-/// The synthetic table name a materialized rollup is registered under:
-/// `semantic_<model>__<preagg>`. The cache-layer materializer writes Parquet here.
+/// The table name (within [`ROLLUP_SCHEMA`]) a materialized rollup is registered
+/// under: `<model>__<preagg>`. The cache-layer materializer writes Parquet here
+/// and the compiler rewrites a covered query to `FROM "semantic"."<this>"`.
 #[must_use]
 pub fn rollup_table_name(model: &str, preagg: &str) -> String {
-    format!("semantic_{model}__{preagg}")
+    format!("{model}__{preagg}")
 }
 
 #[cfg(test)]
@@ -237,9 +254,18 @@ mod tests {
 
     #[test]
     fn table_name_format() {
-        assert_eq!(
-            rollup_table_name("orders", "daily"),
-            "semantic_orders__daily"
-        );
+        assert_eq!(rollup_table_name("orders", "daily"), "orders__daily");
+    }
+
+    #[test]
+    fn rollup_safe_aggregates() {
+        use pawrly_core::semantic::MeasureAgg;
+        assert!(is_rollup_safe(&MeasureAgg::Sum));
+        assert!(is_rollup_safe(&MeasureAgg::Count));
+        assert!(is_rollup_safe(&MeasureAgg::Min));
+        assert!(is_rollup_safe(&MeasureAgg::Max));
+        assert!(!is_rollup_safe(&MeasureAgg::Avg));
+        assert!(!is_rollup_safe(&MeasureAgg::CountDistinct));
+        assert!(!is_rollup_safe(&MeasureAgg::Custom { sql: "x".into() }));
     }
 }

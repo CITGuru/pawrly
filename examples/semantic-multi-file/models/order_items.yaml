@@ -14,3 +14,12 @@ models:
       - { name: qty,       agg: sum,            expr: quantity }
       - { name: line_count, agg: count,         expr: sku }
       - { name: skus,      agg: count_distinct, expr: sku }
+
+    # A pre-aggregation (S6): `qty`/`line_count` are additive and this model has
+    # no RLS, so a query for them by `sku` transparently reads the materialized
+    # rollup `"semantic"."order_items__by_sku"` instead of re-scanning the base.
+    # `skus` (count_distinct) can't be rolled up, so a query using it reads base.
+    pre_aggregations:
+      - name: by_sku
+        dimensions: [sku]
+        measures: [qty, line_count]

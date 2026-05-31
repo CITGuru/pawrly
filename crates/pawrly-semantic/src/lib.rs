@@ -853,6 +853,239 @@ impl SemanticCatalog {
             .and_then(|m| m.safety.as_ref())
             .and_then(|s| s.max_rows)
     }
+
+    // ---- S6: pre-aggregation materialization & rollup rewrite ----
+
+    /// The materialization SQL for one pre-aggregation: the base table grouped
+    /// at the pre-agg's own grain, each dimension stored under its bare name and
+    /// each measure under its own name. No RLS or user filters — the full rollup
+    /// is materialized once and row-level security is re-applied when a query
+    /// reads it.
+    pub fn compile_preagg_sql(&self, model: &str, preagg: &str) -> Result<String, SemanticError> {
+        let m = self
+            .models
+            .get(model)
+            .ok_or_else(|| SemanticError::UnknownModel(model.to_string()))?;
+        let pre = m
+            .pre_aggregations
+            .iter()
+            .find(|p| p.name == preagg)
+            .ok_or_else(|| {
+                SemanticError::Compile(format!("unknown pre-aggregation `{model}.{preagg}`"))
+            })?;
+
+        let mut select: Vec<String> = Vec::new();
+        let mut group: Vec<String> = Vec::new();
+        for d in &pre.dimensions {
+            let bare = d.split('.').next().unwrap_or(d.as_str());
+            let member = format!("{model}.{d}");
+            let expr = resolve_dimension_expr(m, &member, None, None)?;
+            select.push(format!("{expr} AS {}", quote_ident(bare)));
+            group.push(expr);
+        }
+        for name in &pre.measures {
+            let measure = find_measure(m, name)
+                .ok_or_else(|| SemanticError::UnknownMember(format!("{model}.{name}")))?;
+            select.push(format!(
+                "{} AS {}",
+                agg_sql(measure, None),
+                quote_ident(name)
+            ));
+        }
+
+        let from = self.qualified_table(model)?;
+        let mut sql = format!("SELECT {}\nFROM {from}", select.join(", "));
+        if !group.is_empty() {
+            sql.push_str("\nGROUP BY ");
+            sql.push_str(&group.join(", "));
+        }
+        Ok(sql)
+    }
+
+    /// Pick a pre-aggregation that can serve `q`, or `None` to read the base
+    /// table. A rollup is used only when the query is single-model and
+    /// single-fact, carries no RLS or time-zone handling, uses only additive
+    /// measures, and a declared pre-agg covers it. Freshness is the caller's
+    /// check (it consults the cache); a missing rollup never fails a query.
+    #[must_use]
+    pub fn candidate_rollup(&self, q: &SemanticQuery) -> Option<RollupMatch> {
+        let q = self.expand_segments(q).ok()?;
+        // The rollup is pre-truncated in its own zone; a tz query reads base.
+        if q.time_zone.is_some() {
+            return None;
+        }
+        let roots = self.measure_roots(&q).ok()?;
+        let [root] = roots.as_slice() else {
+            return None; // zero or multiple measure roots
+        };
+        let model = self.models.get(root)?;
+        // No joins: every referenced member must belong to the one model.
+        let referenced = self.referenced_models(&q).ok()?;
+        if referenced.iter().any(|m| m != root) {
+            return None;
+        }
+        // Conservative: a rollup would need to carry the RLS columns; skip.
+        if model
+            .safety
+            .as_ref()
+            .is_some_and(|s| !s.required_predicates.is_empty())
+        {
+            return None;
+        }
+        // Every measure must be re-aggregatable from a stored partial.
+        for member in &q.measures {
+            let name = measure_member_name(member)?;
+            let measure = find_measure(model, name)?;
+            if !crate::rollup::is_rollup_safe(&measure.agg) {
+                return None;
+            }
+        }
+        let pre = crate::rollup::match_rollup(model, &q)?;
+        Some(RollupMatch {
+            model: root.clone(),
+            preagg: pre.name.clone(),
+        })
+    }
+
+    /// Compile `q` to read the materialized rollup named by `r` instead of the
+    /// base table: dimensions resolve to (re-truncated) rollup columns, measures
+    /// re-aggregate the stored partials, and safety guard rails still apply.
+    /// `r` must have come from [`Self::candidate_rollup`] for this query.
+    pub fn compile_rollup_sql(
+        &self,
+        q: &SemanticQuery,
+        r: &RollupMatch,
+    ) -> Result<String, SemanticError> {
+        let q = self.expand_segments(q)?;
+        let model = self
+            .models
+            .get(&r.model)
+            .ok_or_else(|| SemanticError::UnknownModel(r.model.clone()))?;
+        let alias = r.model.as_str();
+        let table = format!(
+            "{}.{}",
+            quote_ident(crate::rollup::ROLLUP_SCHEMA),
+            quote_ident(&crate::rollup::rollup_table_name(&r.model, &r.preagg))
+        );
+
+        let mut select_items: Vec<String> = Vec::new();
+        let mut dim_exprs: Vec<String> = Vec::new();
+        for member in &q.dimensions {
+            let expr = rollup_dim_expr(member, alias)?;
+            select_items.push(format!("{expr} AS {}", quote_ident(member)));
+            dim_exprs.push(expr);
+        }
+        for member in &q.measures {
+            let name = measure_member_name(member)
+                .ok_or_else(|| SemanticError::UnknownMember(member.clone()))?;
+            let measure = find_measure(model, name)
+                .ok_or_else(|| SemanticError::UnknownMember(member.clone()))?;
+            let expr = combine_sql(&measure.agg, &rollup_col(alias, name));
+            select_items.push(format!("{expr} AS {}", quote_ident(member)));
+        }
+
+        self.enforce_filter_safety(&r.model, &q)?;
+
+        let mut wheres: Vec<String> = Vec::new();
+        let mut havings: Vec<String> = Vec::new();
+        for f in &q.filters {
+            if member_is_measure(model, &f.member) {
+                let name = measure_member_name(&f.member)
+                    .ok_or_else(|| SemanticError::UnknownMember(f.member.clone()))?;
+                let measure = find_measure(model, name)
+                    .ok_or_else(|| SemanticError::UnknownMember(f.member.clone()))?;
+                havings.push(apply_op(
+                    &combine_sql(&measure.agg, &rollup_col(alias, name)),
+                    f,
+                    true,
+                )?);
+            } else {
+                let expr = rollup_dim_expr(&f.member, alias)?;
+                wheres.push(apply_op(&expr, f, false)?);
+            }
+        }
+
+        let orders = self.resolve_orders(&q)?;
+        let limit = effective_limit(q.limit, self.max_rows(&r.model));
+
+        let mut sql = format!(
+            "SELECT {}\nFROM {table} AS {alias}",
+            select_items.join(", ")
+        );
+        if !wheres.is_empty() {
+            sql.push_str("\nWHERE ");
+            sql.push_str(&wheres.join(" AND "));
+        }
+        if !dim_exprs.is_empty() {
+            sql.push_str("\nGROUP BY ");
+            sql.push_str(&dim_exprs.join(", "));
+        }
+        if !havings.is_empty() {
+            sql.push_str("\nHAVING ");
+            sql.push_str(&havings.join(" AND "));
+        }
+        if !orders.is_empty() {
+            sql.push_str("\nORDER BY ");
+            sql.push_str(&orders.join(", "));
+        }
+        if let Some(limit) = limit {
+            sql.push_str(&format!("\nLIMIT {limit}"));
+        }
+        Ok(sql)
+    }
+}
+
+/// A pre-aggregation chosen to serve a query — see
+/// [`SemanticCatalog::candidate_rollup`].
+#[derive(Debug, Clone)]
+pub struct RollupMatch {
+    /// Owning model name.
+    pub model: String,
+    /// Pre-aggregation name.
+    pub preagg: String,
+}
+
+impl RollupMatch {
+    /// The schema the materialized rollup table lives in.
+    #[must_use]
+    pub fn schema(&self) -> &'static str {
+        crate::rollup::ROLLUP_SCHEMA
+    }
+
+    /// The rollup's table name within [`Self::schema`].
+    #[must_use]
+    pub fn table(&self) -> String {
+        crate::rollup::rollup_table_name(&self.model, &self.preagg)
+    }
+}
+
+/// A declared pre-aggregation to materialize, with its refresh cadence — the
+/// engine enumerates these at boot to register rollup tables.
+#[derive(Debug, Clone)]
+pub struct RollupSpec {
+    pub model: String,
+    pub preagg: String,
+    /// Background refresh interval; `None` materializes once (manual refresh).
+    pub refresh: Option<std::time::Duration>,
+}
+
+impl SemanticCatalog {
+    /// Every declared pre-aggregation across all models, sorted for determinism.
+    #[must_use]
+    pub fn rollups(&self) -> Vec<RollupSpec> {
+        let mut out: Vec<RollupSpec> = Vec::new();
+        for m in self.models.values() {
+            for p in &m.pre_aggregations {
+                out.push(RollupSpec {
+                    model: m.name.clone(),
+                    preagg: p.name.clone(),
+                    refresh: p.refresh,
+                });
+            }
+        }
+        out.sort_by(|a, b| (&a.model, &a.preagg).cmp(&(&b.model, &b.preagg)));
+        out
+    }
 }
 
 /// One directed edge in the [`Reach`] graph; a declared relationship yields a
@@ -914,6 +1147,54 @@ fn invert_kind(kind: RelationshipKind) -> RelationshipKind {
 fn member_is_measure(model: &SemanticModel, member: &str) -> bool {
     let parts: Vec<&str> = member.split('.').collect();
     parts.len() == 2 && find_measure(model, parts[1]).is_some()
+}
+
+/// The measure name from a two-part `model.measure` member; `None` for a
+/// grained or otherwise non-measure member.
+fn measure_member_name(member: &str) -> Option<&str> {
+    let parts: Vec<&str> = member.split('.').collect();
+    (parts.len() == 2).then(|| parts[1])
+}
+
+/// `alias."col"` — a qualified rollup column reference.
+fn rollup_col(alias: &str, col: &str) -> String {
+    format!("{alias}.{}", quote_ident(col))
+}
+
+/// Resolve a query dimension member against its rollup column, re-truncating to
+/// the requested grain. The rollup stores the dimension under its bare name at
+/// the pre-agg's (finer-or-equal) grain, so a coarser grain is a valid
+/// re-`DATE_TRUNC`; an ungrained member reads the stored column directly.
+fn rollup_dim_expr(member: &str, alias: &str) -> Result<String, SemanticError> {
+    let parts: Vec<&str> = member.split('.').collect();
+    let (dim, grain) = match parts.as_slice() {
+        [_model, dim] => (*dim, None),
+        [_model, dim, grain] => (*dim, Some(*grain)),
+        _ => return Err(SemanticError::UnknownMember(member.to_string())),
+    };
+    let col = rollup_col(alias, dim);
+    match grain {
+        None => Ok(col),
+        Some(g) => {
+            let grain = TimeGrain::parse(g).ok_or_else(|| SemanticError::InvalidGrain {
+                dim: dim.to_string(),
+                grain: g.to_string(),
+            })?;
+            Ok(format!("DATE_TRUNC('{}', {col})", grain.as_str()))
+        }
+    }
+}
+
+/// The re-aggregation of a rolled-up partial: `SUM`/`COUNT` both sum the stored
+/// per-group partials, `MIN`/`MAX` extend them. Only invoked for rollup-safe
+/// aggregates (see [`crate::rollup::is_rollup_safe`]); non-additive variants
+/// fall back to `SUM` rather than panicking.
+fn combine_sql(agg: &MeasureAgg, col: &str) -> String {
+    match agg {
+        MeasureAgg::Min => format!("MIN({col})"),
+        MeasureAgg::Max => format!("MAX({col})"),
+        _ => format!("SUM({col})"),
+    }
 }
 
 /// `"status"` from `"orders.status"` (the dimension segment of a member).
@@ -1214,7 +1495,8 @@ mod tests {
     use super::*;
     use pawrly_core::safety::SafetyPolicy;
     use pawrly_core::semantic::{
-        Dimension, DimensionType, Measure, MeasureAgg, Relationship, RelationshipKind, TimeGrain,
+        Dimension, DimensionType, Measure, MeasureAgg, PreAggregation, Relationship,
+        RelationshipKind, TimeGrain,
     };
 
     fn orders_model() -> SemanticModel {
@@ -2031,5 +2313,143 @@ mod tests {
             segment_catalog().compile_sql(&q),
             Err(SemanticError::UnknownSegment(_))
         ));
+    }
+
+    // ---- S6: pre-aggregation materialization & rollup rewrite ----
+
+    fn preagg(name: &str, dims: &[&str], measures: &[&str]) -> PreAggregation {
+        PreAggregation {
+            name: name.into(),
+            dimensions: dims.iter().map(|s| (*s).into()).collect(),
+            measures: measures.iter().map(|s| (*s).into()).collect(),
+            refresh: None,
+            partition_by: None,
+        }
+    }
+
+    fn preagg_orders_catalog() -> SemanticCatalog {
+        let mut orders = orders_model();
+        orders.pre_aggregations =
+            vec![preagg("daily", &["order_date.day", "status"], &["revenue"])];
+        SemanticCatalog::new(vec![orders])
+    }
+
+    #[test]
+    fn compiles_preagg_materialization() {
+        let sql = preagg_orders_catalog()
+            .compile_preagg_sql("orders", "daily")
+            .unwrap();
+        assert!(
+            sql.contains("DATE_TRUNC('day', ordered_at) AS \"order_date\""),
+            "{sql}"
+        );
+        assert!(sql.contains("status AS \"status\""), "{sql}");
+        assert!(sql.contains("SUM(total_amount) AS \"revenue\""), "{sql}");
+        assert!(sql.contains("FROM \"shop\".\"orders\""), "{sql}");
+        assert!(
+            sql.contains("GROUP BY DATE_TRUNC('day', ordered_at), status"),
+            "{sql}"
+        );
+    }
+
+    #[test]
+    fn candidate_rollup_matches_additive_query() {
+        let q = SemanticQuery {
+            measures: vec!["orders.revenue".into()],
+            dimensions: vec!["orders.status".into()],
+            ..Default::default()
+        };
+        let r = preagg_orders_catalog()
+            .candidate_rollup(&q)
+            .expect("rollup");
+        assert_eq!(r.model, "orders");
+        assert_eq!(r.preagg, "daily");
+        assert_eq!(r.schema(), "semantic");
+        assert_eq!(r.table(), "orders__daily");
+    }
+
+    #[test]
+    fn compiles_against_rollup_with_reaggregation() {
+        // A coarser grain than the rollup (day → month): re-truncate + re-sum.
+        let q = SemanticQuery {
+            measures: vec!["orders.revenue".into()],
+            dimensions: vec!["orders.order_date.month".into()],
+            ..Default::default()
+        };
+        let cat = preagg_orders_catalog();
+        let r = cat.candidate_rollup(&q).unwrap();
+        let sql = cat.compile_rollup_sql(&q, &r).unwrap();
+        assert!(
+            sql.contains("FROM \"semantic\".\"orders__daily\" AS orders"),
+            "{sql}"
+        );
+        assert!(
+            sql.contains("SUM(orders.\"revenue\") AS \"orders.revenue\""),
+            "{sql}"
+        );
+        assert!(
+            sql.contains("DATE_TRUNC('month', orders.\"order_date\")"),
+            "{sql}"
+        );
+    }
+
+    #[test]
+    fn rollup_skipped_for_nonadditive_measure() {
+        let mut orders = orders_model();
+        orders.measures.push(Measure {
+            name: "order_count".into(),
+            agg: MeasureAgg::CountDistinct,
+            expr: "id".into(),
+            filters: vec![],
+            format: None,
+            description: None,
+        });
+        orders.pre_aggregations = vec![preagg("by_status", &["status"], &["order_count"])];
+        let cat = SemanticCatalog::new(vec![orders]);
+        let q = SemanticQuery {
+            measures: vec!["orders.order_count".into()],
+            dimensions: vec!["orders.status".into()],
+            ..Default::default()
+        };
+        assert!(cat.candidate_rollup(&q).is_none());
+    }
+
+    #[test]
+    fn rollup_skipped_for_rls_model() {
+        let mut orders = orders_model();
+        orders.safety = Some(SafetyPolicy {
+            required_predicates: vec!["tenant_id = ${param:tenant_id}".into()],
+            ..Default::default()
+        });
+        orders.pre_aggregations = vec![preagg("by_status", &["status"], &["revenue"])];
+        let cat = SemanticCatalog::new(vec![orders]);
+        let q = SemanticQuery {
+            measures: vec!["orders.revenue".into()],
+            dimensions: vec!["orders.status".into()],
+            ..Default::default()
+        };
+        assert!(cat.candidate_rollup(&q).is_none());
+    }
+
+    #[test]
+    fn rollup_skipped_with_time_zone() {
+        let q = SemanticQuery {
+            measures: vec!["orders.revenue".into()],
+            dimensions: vec!["orders.status".into()],
+            time_zone: Some("America/New_York".into()),
+            ..Default::default()
+        };
+        assert!(preagg_orders_catalog().candidate_rollup(&q).is_none());
+    }
+
+    #[test]
+    fn rollup_skipped_when_dimension_uncovered() {
+        // country is not in the rollup, so it cannot serve this query.
+        let q = SemanticQuery {
+            measures: vec!["orders.revenue".into()],
+            dimensions: vec!["orders.country".into()],
+            ..Default::default()
+        };
+        assert!(preagg_orders_catalog().candidate_rollup(&q).is_none());
     }
 }
