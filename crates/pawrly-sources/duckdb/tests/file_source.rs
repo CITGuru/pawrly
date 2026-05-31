@@ -140,3 +140,61 @@ async fn hive_partition_column_is_queryable() {
         2
     );
 }
+
+/// A JSON-array file (`[ {…}, {…} ]`) is read via the in-memory decode path,
+/// auto-detected from its leading `[`.
+#[tokio::test]
+async fn json_array_file_auto_detected() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("facts.json"),
+        r#"[ { "fact": "a", "len": 1 }, { "fact": "b", "len": 2 } ]"#,
+    )
+    .unwrap();
+
+    let (ctx, catalog) = build_ctx().await;
+    let def = file_source(json!({ "path": "facts.json", "format": "json" }));
+    register_file_source(&def, &ctx, catalog.as_ref(), dir.path())
+        .await
+        .expect("register json array table");
+
+    assert_eq!(count(&ctx, "SELECT sum(len) FROM data.t").await, 3);
+}
+
+/// NDJSON still flows through the listing reader (auto-detect picks NDJSON when
+/// the file does not start with `[`).
+#[tokio::test]
+async fn ndjson_file_still_works() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("events.json"), "{\"id\":1}\n{\"id\":2}\n").unwrap();
+
+    let (ctx, catalog) = build_ctx().await;
+    let def = file_source(json!({ "path": "events.json", "format": "json" }));
+    register_file_source(&def, &ctx, catalog.as_ref(), dir.path())
+        .await
+        .expect("register ndjson table");
+
+    assert_eq!(count(&ctx, "SELECT count(*) FROM data.t").await, 2);
+}
+
+/// A glob of JSON-array files unions every element into one table.
+#[tokio::test]
+async fn json_array_glob_unions() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("data");
+    std::fs::create_dir_all(&data).unwrap();
+    std::fs::write(data.join("a.json"), r#"[ { "id": 1 }, { "id": 2 } ]"#).unwrap();
+    std::fs::write(data.join("b.json"), r#"[ { "id": 3 } ]"#).unwrap();
+
+    let (ctx, catalog) = build_ctx().await;
+    let def = file_source(json!({
+        "path": "data/*.json",
+        "format": "json",
+        "json": { "format": "array" }
+    }));
+    register_file_source(&def, &ctx, catalog.as_ref(), dir.path())
+        .await
+        .expect("register json array glob");
+
+    assert_eq!(count(&ctx, "SELECT count(*) FROM data.t").await, 3);
+}

@@ -74,6 +74,16 @@ SELECT * FROM data.events WHERE dt = '2026-05-31'   -- only that dt= directory i
           - { name: value, type: bigint }
 ```
 
+**JSON layout** — JSON files may be newline-delimited (NDJSON) or a single array `[ {…}, {…} ]`. The layout is auto-detected from the first non-whitespace byte; set it explicitly with a `json` block:
+
+```yaml
+      - name: facts
+        path: ./data/facts.json
+        format: json
+        json:
+          format: array          # array | ndjson | auto (default)
+```
+
 ### `sqlite` — local SQLite databases
 
 Attaches a SQLite database file read-only and exposes its tables. Equality filters are pushed down into SQLite.

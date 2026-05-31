@@ -87,11 +87,25 @@ impl Default for CsvOptions {
     }
 }
 
+/// On-disk layout for `format: json` files.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum JsonLayout {
+    /// Sniff the first non-whitespace byte: `[` is an array, else NDJSON.
+    #[default]
+    Auto,
+    /// A single JSON array of objects: `[ {…}, {…} ]`.
+    Array,
+    /// Newline-delimited JSON (one object per line).
+    Ndjson,
+}
+
 /// Per-table options parsed from a `kind: file` table declaration.
 #[derive(Debug, Clone, Default)]
 struct FileTableOptions {
     /// CSV dialect (only consulted for `format: csv`).
     csv: Option<CsvOptions>,
+    /// JSON layout (only consulted for `format: json`).
+    json_layout: JsonLayout,
     /// Hive partition columns (`key=value` directories) as (name, type).
     partition_cols: Vec<(String, DataType)>,
     /// Explicit file schema, overriding inference.
@@ -134,6 +148,16 @@ fn parse_table_options(
             delimiter: first_byte(csv, "delimiter").unwrap_or(d.delimiter),
             quote: first_byte(csv, "quote").unwrap_or(d.quote),
         });
+    }
+
+    if let Some(j) = cfg.get("json") {
+        opts.json_layout = match j.get("format").and_then(|v| v.as_str()) {
+            Some(s) if s.eq_ignore_ascii_case("array") => JsonLayout::Array,
+            Some(s) if s.eq_ignore_ascii_case("ndjson") || s.eq_ignore_ascii_case("jsonl") => {
+                JsonLayout::Ndjson
+            }
+            _ => JsonLayout::Auto,
+        };
     }
 
     if let Some(parts) = cfg.get("partition_cols").and_then(|v| v.as_array()) {
@@ -323,6 +347,13 @@ async fn register_one(
         ListingOptions, ListingTable, ListingTableConfig, ListingTableUrl,
     };
 
+    // JSON-array files aren't NDJSON, so DataFusion's listing reader can't parse
+    // them. They take a separate in-memory decode path.
+    if format == FileFormat::Json && resolve_json_layout(options.json_layout, path)? == JsonLayout::Array
+    {
+        return register_json_array(schema, table_name, path, options);
+    }
+
     // A single concrete file is canonicalized (resolving symlinks, asserting it
     // exists). A glob or directory is left as an absolute path so DataFusion can
     // list every matching file into one table.
@@ -398,6 +429,141 @@ async fn register_one(
 /// Whether a path string contains shell-glob metacharacters.
 fn is_glob(s: &str) -> bool {
     s.contains(['*', '?', '['])
+}
+
+/// Resolve a declared JSON layout, sniffing the first file when set to `Auto`.
+fn resolve_json_layout(
+    declared: JsonLayout,
+    path: &std::path::Path,
+) -> Result<JsonLayout, FileBuildError> {
+    if declared != JsonLayout::Auto {
+        return Ok(declared);
+    }
+    let files = collect_json_files(path)?;
+    let Some(first) = files.first() else {
+        return Ok(JsonLayout::Ndjson);
+    };
+    Ok(if first_nonws_is_array(first)? {
+        JsonLayout::Array
+    } else {
+        JsonLayout::Ndjson
+    })
+}
+
+/// Whether the first non-whitespace byte of a file is `[` (a JSON array).
+fn first_nonws_is_array(path: &std::path::Path) -> Result<bool, FileBuildError> {
+    use std::io::Read;
+    let mut f = std::fs::File::open(path)
+        .map_err(|e| FileBuildError::Io(format!("open {}: {e}", path.display())))?;
+    let mut buf = [0u8; 64];
+    let n = f
+        .read(&mut buf)
+        .map_err(|e| FileBuildError::Io(format!("read {}: {e}", path.display())))?;
+    Ok(buf[..n]
+        .iter()
+        .find(|b| !b.is_ascii_whitespace())
+        .is_some_and(|b| *b == b'['))
+}
+
+/// Collect every concrete `.json` file behind a path (a single file, a glob, or
+/// a directory walked recursively).
+fn collect_json_files(path: &std::path::Path) -> Result<Vec<PathBuf>, FileBuildError> {
+    let s = path.to_string_lossy().into_owned();
+    if is_glob(&s) {
+        let mut v: Vec<PathBuf> = glob::glob(&s)
+            .map_err(|e| FileBuildError::Io(format!("glob error: {e}")))?
+            .filter_map(Result::ok)
+            .filter(|p| p.is_file())
+            .collect();
+        v.sort();
+        if v.is_empty() {
+            return Err(FileBuildError::EmptyGlob(s));
+        }
+        Ok(v)
+    } else if path.is_dir() {
+        let pattern = format!("{}/**/*.json", s.trim_end_matches('/'));
+        let mut v: Vec<PathBuf> = glob::glob(&pattern)
+            .map_err(|e| FileBuildError::Io(format!("glob error: {e}")))?
+            .filter_map(Result::ok)
+            .filter(|p| p.is_file())
+            .collect();
+        v.sort();
+        if v.is_empty() {
+            return Err(FileBuildError::EmptyGlob(pattern));
+        }
+        Ok(v)
+    } else {
+        Ok(vec![path.to_path_buf()])
+    }
+}
+
+/// Register a JSON-array file (or glob/dir of them) as an in-memory table.
+///
+/// DataFusion's JSON reader only handles NDJSON, so we parse each array file,
+/// re-emit its elements as NDJSON, and decode that into Arrow batches held in a
+/// `MemTable`.
+fn register_json_array(
+    schema_provider: &dyn SchemaProvider,
+    table_name: &str,
+    path: &std::path::Path,
+    options: &FileTableOptions,
+) -> Result<(), FileBuildError> {
+    use datafusion::arrow::error::ArrowError;
+    use datafusion::arrow::json::ReaderBuilder;
+    use datafusion::arrow::json::reader::infer_json_schema_from_iterator;
+    use datafusion::arrow::record_batch::RecordBatch;
+    use datafusion::datasource::MemTable;
+    use std::io::Cursor;
+
+    let files = collect_json_files(path)?;
+    let mut elements: Vec<serde_json::Value> = Vec::new();
+    for file in &files {
+        let bytes = std::fs::read(file)
+            .map_err(|e| FileBuildError::Io(format!("read {}: {e}", file.display())))?;
+        let value: serde_json::Value = serde_json::from_slice(&bytes)
+            .map_err(|e| FileBuildError::Io(format!("parse json {}: {e}", file.display())))?;
+        match value {
+            serde_json::Value::Array(arr) => elements.extend(arr),
+            obj @ serde_json::Value::Object(_) => elements.push(obj),
+            _ => {
+                return Err(FileBuildError::Io(format!(
+                    "expected a JSON array or object in {}",
+                    file.display()
+                )));
+            }
+        }
+    }
+
+    let arrow_schema: SchemaRef = match &options.schema {
+        Some(s) => s.clone(),
+        None => {
+            let inferred =
+                infer_json_schema_from_iterator(elements.iter().map(Ok::<&serde_json::Value, ArrowError>))
+                    .map_err(|e| FileBuildError::DataFusion(format!("infer json schema: {e}")))?;
+            Arc::new(inferred)
+        }
+    };
+
+    // Re-emit the elements as NDJSON and decode into record batches.
+    let mut ndjson: Vec<u8> = Vec::new();
+    for el in &elements {
+        serde_json::to_writer(&mut ndjson, el)
+            .map_err(|e| FileBuildError::Io(format!("serialize json row: {e}")))?;
+        ndjson.push(b'\n');
+    }
+    let reader = ReaderBuilder::new(arrow_schema.clone())
+        .build(Cursor::new(ndjson))
+        .map_err(|e| FileBuildError::DataFusion(format!("json reader: {e}")))?;
+    let batches: Vec<RecordBatch> = reader
+        .collect::<Result<_, _>>()
+        .map_err(|e| FileBuildError::DataFusion(format!("decode json: {e}")))?;
+
+    let table = MemTable::try_new(arrow_schema, vec![batches])
+        .map_err(|e| FileBuildError::DataFusion(format!("mem table: {e}")))?;
+    schema_provider
+        .register_table(table_name.to_string(), Arc::new(table))
+        .map_err(|e| FileBuildError::DataFusion(format!("register table: {e}")))?;
+    Ok(())
 }
 
 fn parse_format(s: &str) -> Result<FileFormat, FileBuildError> {
