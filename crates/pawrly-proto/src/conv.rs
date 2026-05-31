@@ -641,6 +641,7 @@ impl From<core::semantic::SemanticModelDescription> for v1::ModelDescription {
             dimensions: m.dimensions.into_iter().map(Into::into).collect(),
             measures: m.measures.into_iter().map(Into::into).collect(),
             relationships: m.relationships.into_iter().map(Into::into).collect(),
+            segments: m.segments.into_iter().map(Into::into).collect(),
         }
     }
 }
@@ -673,7 +674,62 @@ impl TryFrom<v1::ModelDescription> for core::semantic::SemanticModelDescription 
             dimensions,
             measures,
             relationships,
+            segments: m.segments.into_iter().map(Into::into).collect(),
         })
+    }
+}
+
+/// A semantic filter, core → proto.
+fn semantic_filter_to_proto(f: core::semantic::SemanticFilter) -> v1::SemanticFilter {
+    v1::SemanticFilter {
+        member: f.member,
+        op: v1::FilterOp::from(f.op) as i32,
+        values: f.values,
+    }
+}
+
+/// A semantic filter, proto → core. An unrecognized/unspecified op defaults to
+/// `Equals` rather than failing an infallible conversion.
+fn semantic_filter_from_proto(f: v1::SemanticFilter) -> core::semantic::SemanticFilter {
+    core::semantic::SemanticFilter {
+        member: f.member,
+        op: v1::FilterOp::try_from(f.op)
+            .ok()
+            .and_then(|op| core::semantic::FilterOp::try_from(op).ok())
+            .unwrap_or(core::semantic::FilterOp::Equals),
+        values: f.values,
+    }
+}
+
+impl From<core::semantic::Segment> for v1::Segment {
+    fn from(s: core::semantic::Segment) -> Self {
+        Self {
+            name: s.name,
+            description: s.description.unwrap_or_default(),
+            filters: s
+                .filters
+                .into_iter()
+                .map(semantic_filter_to_proto)
+                .collect(),
+        }
+    }
+}
+
+impl From<v1::Segment> for core::semantic::Segment {
+    fn from(s: v1::Segment) -> Self {
+        Self {
+            name: s.name,
+            description: if s.description.is_empty() {
+                None
+            } else {
+                Some(s.description)
+            },
+            filters: s
+                .filters
+                .into_iter()
+                .map(semantic_filter_from_proto)
+                .collect(),
+        }
     }
 }
 
@@ -685,12 +741,9 @@ impl From<core::semantic::SemanticQuery> for v1::SemanticQueryRequest {
             filters: q
                 .filters
                 .into_iter()
-                .map(|f| v1::SemanticFilter {
-                    member: f.member,
-                    op: v1::FilterOp::from(f.op) as i32,
-                    values: f.values,
-                })
+                .map(semantic_filter_to_proto)
                 .collect(),
+            segments: q.segments,
             order_by: q
                 .order_by
                 .into_iter()
@@ -713,17 +766,7 @@ impl From<v1::SemanticQueryRequest> for core::semantic::SemanticQuery {
         let filters = q
             .filters
             .into_iter()
-            .map(|f| core::semantic::SemanticFilter {
-                member: f.member,
-                // A valid client always sends a real op; treat an
-                // unrecognized/unspecified op as Equals rather than failing the
-                // infallible request conversion.
-                op: v1::FilterOp::try_from(f.op)
-                    .ok()
-                    .and_then(|op| core::semantic::FilterOp::try_from(op).ok())
-                    .unwrap_or(core::semantic::FilterOp::Equals),
-                values: f.values,
-            })
+            .map(semantic_filter_from_proto)
             .collect();
         let order_by = q
             .order_by
@@ -741,6 +784,7 @@ impl From<v1::SemanticQueryRequest> for core::semantic::SemanticQuery {
             measures: q.measures,
             dimensions: q.dimensions,
             filters,
+            segments: q.segments,
             order_by,
             limit: q.limit,
             time_zone: q.time_zone,

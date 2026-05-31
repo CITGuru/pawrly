@@ -169,7 +169,27 @@ As a workspace grows, split `pawrly.yaml` so sources can live in their own files
       from: ./sources/warehouse.yaml
   ```
 
-Includes can chain; `from:` is not transitive. Cycles are detected and reported. `pawrly config show --tree` prints the assembled tree, and `pawrly source list` annotates each source with the file it came from. A runnable layout lives under `examples/multi-file/`.
+- **`semantic.include:`** — splices the *models* of other files into `semantic.models`. Each referenced file contains **only** models — either a top-level `models:` list or a bare sequence of model mappings — never sources, secrets, or other config. Globs are allowed and sorted lexicographically; inline `models:` come first, then the included files. Duplicate model names (within or across files) are rejected with both filenames.
+
+  ```yaml
+  semantic:
+    include:
+      - ./models/*.yaml      # each file holds only models
+    models:
+      - name: inline_model   # optional inline models still allowed
+        # ...
+  ```
+
+  ```yaml
+  # models/orders.yaml — a model-only file
+  models:
+    - name: orders
+      source: data.orders
+      dimensions: [{ name: status, expr: status, type: string }]
+      measures:  [{ name: revenue, agg: sum, expr: total_amount }]
+  ```
+
+Includes can chain; `from:` is not transitive. Cycles are detected and reported. Model `source:` references and relationships are validated against the **merged** config, so a model in one file may reference a source declared in another. `pawrly config show --tree` prints the assembled tree, and `pawrly source list` annotates each source with the file it came from. A runnable layout lives under `examples/multi-file/`.
 
 ## Defaults
 

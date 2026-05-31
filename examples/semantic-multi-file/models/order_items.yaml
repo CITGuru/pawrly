@@ -1,0 +1,16 @@
+# A model-only include file (top-level `models:` list form).
+#
+# A second fact, at a finer grain than orders (many items per order). Querying
+# order_items.qty alongside orders.revenue triggers aggregate-locality
+# compilation so the one-to-many join never over-counts revenue (§16).
+models:
+  - name: order_items
+    description: One row per line item on an order.
+    source: data.order_items
+    primary_key: [order_id, sku]
+    dimensions:
+      - { name: sku, expr: sku, type: string }
+    measures:
+      - { name: qty,       agg: sum,            expr: quantity }
+      - { name: line_count, agg: count,         expr: sku }
+      - { name: skus,      agg: count_distinct, expr: sku }

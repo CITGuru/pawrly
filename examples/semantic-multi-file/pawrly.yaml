@@ -1,0 +1,46 @@
+# Multi-file semantic-layer example.
+# yaml-language-server: $schema=../../schemas/pawrly.schema.json
+#
+# Same idea as examples/semantic/, but the models are split across files via
+# `semantic.include:` — one model per file under ./models/. Each include file
+# holds ONLY models (a top-level `models:` list or a bare sequence); it can
+# never carry sources, secrets, or other config.
+#
+# Assembly merges everything before validation, so a model in one file may
+# reference a `source:` declared here and a relationship may point at a model
+# defined in a sibling file (orders -> customers, orders -> order_items below).
+#
+# Try it (paths resolve relative to this file):
+#   pawrly --config examples/semantic-multi-file/pawrly.yaml semantic list
+#   pawrly --config examples/semantic-multi-file/pawrly.yaml semantic describe orders
+#
+#   # Single fact, grouped, with tenant row-level security (orders requires the param):
+#   pawrly --config examples/semantic-multi-file/pawrly.yaml semantic query \
+#     orders.revenue orders.order_count --by orders.status --param tenant_id=acme
+#
+#   # Multi-fact (revenue is one-per-order, qty is many-per-order): the compiler
+#   # pre-aggregates each fact at its own grain (aggregate-locality, §16) so the
+#   # one-to-many join never inflates revenue. orders' RLS applies in both CTEs.
+#   pawrly --config examples/semantic-multi-file/pawrly.yaml semantic query \
+#     orders.revenue order_items.qty --by orders.status --param tenant_id=acme
+#
+#   # Grouping revenue by item SKU is rejected (chasm trap) — an order's revenue
+#   # cannot be attributed to a SKU (PAWRLY_SEMANTIC_FANOUT):
+#   pawrly --config examples/semantic-multi-file/pawrly.yaml semantic query \
+#     orders.revenue --by order_items.sku --param tenant_id=acme
+
+version: 1
+name: semantic-multi-file
+
+sources:
+  - name: data
+    kind: file
+    description: Local CSV fixtures for the semantic example.
+    config:
+      path: ./data/*.csv
+
+semantic:
+  # Each glob match is a model-only file. Inline `models:` may also be listed
+  # here alongside the include — they are merged (inline first, then files).
+  include:
+    - ./models/*.yaml
