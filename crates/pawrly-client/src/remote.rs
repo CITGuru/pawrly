@@ -1,5 +1,6 @@
 //! `RemoteEngineClient` — implements `EngineService` over a tonic channel.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -24,32 +25,60 @@ use pawrly_proto::v1::{
     query_service_client::QueryServiceClient, semantic_service_client::SemanticServiceClient,
     sources_service_client::SourcesServiceClient,
 };
+use tonic::service::interceptor::InterceptedService;
 use tonic::transport::Channel;
+use tonic::{Request, Status};
 
-use crate::transport::Endpoint;
+use crate::transport::{ConnectError, Endpoint};
+
+/// Injects `authorization: Bearer <token>` into every outgoing request when a
+/// token is configured; a no-op otherwise.
+#[derive(Clone, Default)]
+pub struct BearerInjector {
+    token: Option<Arc<str>>,
+}
+
+impl tonic::service::Interceptor for BearerInjector {
+    fn call(&mut self, mut req: Request<()>) -> Result<Request<()>, Status> {
+        if let Some(token) = &self.token {
+            let value = format!("Bearer {token}")
+                .parse()
+                .map_err(|_| Status::invalid_argument("invalid bearer token"))?;
+            req.metadata_mut().insert("authorization", value);
+        }
+        Ok(req)
+    }
+}
+
+/// A channel with the bearer-injecting interceptor applied.
+type AuthChannel = InterceptedService<Channel, BearerInjector>;
 
 /// Pawrly engine accessed over gRPC.
 #[derive(Clone)]
 pub struct RemoteEngineClient {
-    query: QueryServiceClient<Channel>,
-    catalog: CatalogServiceClient<Channel>,
-    sources: SourcesServiceClient<Channel>,
-    cache: CacheServiceClient<Channel>,
-    semantic: SemanticServiceClient<Channel>,
-    admin: AdminServiceClient<Channel>,
+    query: QueryServiceClient<AuthChannel>,
+    catalog: CatalogServiceClient<AuthChannel>,
+    sources: SourcesServiceClient<AuthChannel>,
+    cache: CacheServiceClient<AuthChannel>,
+    semantic: SemanticServiceClient<AuthChannel>,
+    admin: AdminServiceClient<AuthChannel>,
 }
 
 impl RemoteEngineClient {
-    /// Open all service clients on the given endpoint.
-    pub async fn connect(endpoint: Endpoint) -> Result<Self, tonic::transport::Error> {
+    /// Open all service clients on the given endpoint, injecting its bearer
+    /// token (if any) into every request.
+    pub async fn connect(endpoint: Endpoint) -> Result<Self, ConnectError> {
+        let injector = BearerInjector {
+            token: endpoint.bearer_token().map(|t| Arc::from(t.as_str())),
+        };
         let channel = endpoint.connect().await?;
         Ok(Self {
-            query: QueryServiceClient::new(channel.clone()),
-            catalog: CatalogServiceClient::new(channel.clone()),
-            sources: SourcesServiceClient::new(channel.clone()),
-            cache: CacheServiceClient::new(channel.clone()),
-            semantic: SemanticServiceClient::new(channel.clone()),
-            admin: AdminServiceClient::new(channel),
+            query: QueryServiceClient::with_interceptor(channel.clone(), injector.clone()),
+            catalog: CatalogServiceClient::with_interceptor(channel.clone(), injector.clone()),
+            sources: SourcesServiceClient::with_interceptor(channel.clone(), injector.clone()),
+            cache: CacheServiceClient::with_interceptor(channel.clone(), injector.clone()),
+            semantic: SemanticServiceClient::with_interceptor(channel.clone(), injector.clone()),
+            admin: AdminServiceClient::with_interceptor(channel, injector),
         })
     }
 }

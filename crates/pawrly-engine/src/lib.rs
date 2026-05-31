@@ -9,6 +9,7 @@
 
 mod cache;
 mod duckdb_pool;
+mod duckdb_source;
 mod local;
 pub mod optimizer;
 mod preagg;

@@ -10,7 +10,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use pawrly_client::{Endpoint, RemoteEngineClient};
+use pawrly_client::{Endpoint, RemoteEngineClient, TlsConfig};
 use pawrly_core::EngineService;
 use pawrly_engine::{LocalEngine, LocalEngineConfig};
 
@@ -106,19 +106,34 @@ pub fn parse_endpoint(s: &str) -> anyhow::Result<Endpoint> {
             PathBuf::from(rest)
         };
         Ok(Endpoint::Uds { path })
-    } else if let Some(rest) = s.strip_prefix("tcp://") {
+    } else if let Some((rest, secure)) = s
+        .strip_prefix("tcps://")
+        .map(|r| (r, true))
+        .or_else(|| s.strip_prefix("tcp://").map(|r| (r, false)))
+    {
         let addr: std::net::SocketAddr = rest
             .parse()
             .map_err(|e| anyhow::anyhow!("invalid tcp endpoint `{rest}`: {e}"))?;
         Ok(Endpoint::Tcp {
             addr,
             bearer: std::env::var("PAWRLY_API_TOKEN").ok(),
-            tls: None,
+            tls: secure.then(tls_config_from_env),
         })
     } else {
         Err(anyhow::anyhow!(
-            "unrecognized endpoint `{s}`; use `uds:///path/to/sock` or `tcp://host:port`"
+            "unrecognized endpoint `{s}`; use `uds:///path/to/sock`, `tcp://host:port`, or `tcps://host:port` (TLS)"
         ))
+    }
+}
+
+/// Build the client TLS config from `PAWRLY_TLS_*` environment variables. With
+/// no `PAWRLY_TLS_CA`, verification falls back to tonic's compiled-in roots.
+fn tls_config_from_env() -> TlsConfig {
+    TlsConfig {
+        ca_cert: std::env::var_os("PAWRLY_TLS_CA").map(PathBuf::from),
+        client_cert: std::env::var_os("PAWRLY_TLS_CLIENT_CERT").map(PathBuf::from),
+        client_key: std::env::var_os("PAWRLY_TLS_CLIENT_KEY").map(PathBuf::from),
+        domain_name: std::env::var("PAWRLY_TLS_DOMAIN").ok(),
     }
 }
 
@@ -154,6 +169,26 @@ mod tests {
         let ep = parse_endpoint("tcp://127.0.0.1:8090").unwrap();
         match ep {
             Endpoint::Tcp { addr, .. } => assert_eq!(addr.port(), 8090),
+            _ => panic!("expected TCP endpoint"),
+        }
+    }
+
+    #[test]
+    fn parses_tcps_endpoint_with_tls() {
+        let ep = parse_endpoint("tcps://127.0.0.1:8443").unwrap();
+        match ep {
+            Endpoint::Tcp { addr, tls, .. } => {
+                assert_eq!(addr.port(), 8443);
+                assert!(tls.is_some(), "tcps:// must enable TLS");
+            }
+            _ => panic!("expected TCP endpoint"),
+        }
+    }
+
+    #[test]
+    fn plain_tcp_has_no_tls() {
+        match parse_endpoint("tcp://127.0.0.1:8090").unwrap() {
+            Endpoint::Tcp { tls, .. } => assert!(tls.is_none()),
             _ => panic!("expected TCP endpoint"),
         }
     }

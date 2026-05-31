@@ -8,10 +8,14 @@ use datafusion::catalog::{
 use datafusion::execution::context::SessionContext;
 use pawrly_core::{ConfigError, SourceDef};
 
+use std::num::NonZeroU32;
+
 use crate::bundled;
 use crate::raw::RawHttpTableProvider;
-use crate::source::{AuthSpec, HttpSource, HttpTableSpec};
+use crate::source::{AuthSpec, HttpSource, HttpTableSpec, RetryConfig};
 use crate::typed::HttpTableProvider;
+
+use governor::{Quota, RateLimiter};
 
 #[derive(Debug, thiserror::Error)]
 pub enum HttpBuildError {
@@ -89,12 +93,17 @@ pub async fn register_http_source(
         }
     }
 
+    let retry = parse_retry(def);
+    let limiter = parse_rate_limit(def);
+
     let source = Arc::new(HttpSource {
         name: def.name.clone(),
         base_url,
         auth,
         headers,
         client: HttpSource::build_client(),
+        retry,
+        limiter,
     });
 
     // 2. Ensure the schema provider exists on the catalog.
@@ -107,9 +116,21 @@ pub async fn register_http_source(
     // Bundled kinds ship their own table specs. Generic `kind: http` (and any
     // user-declared tables on a bundled kind) are read from `def.tables`, whose
     // opaque per-table `config` deserializes into an `HttpTableSpec`.
-    let mut tables: Vec<HttpTableSpec> = default_tables;
+    // The effective page cap falls back to the source-level safety policy when
+    // a table has no policy of its own.
+    let source_max_pages = def.safety.as_ref().and_then(|s| s.max_pages);
+
+    let mut tables: Vec<(HttpTableSpec, Option<u32>)> = default_tables
+        .into_iter()
+        .map(|spec| (spec, source_max_pages))
+        .collect();
     for t in &def.tables {
-        tables.push(table_spec_from_def(t)?);
+        let max_pages = t
+            .safety
+            .as_ref()
+            .and_then(|s| s.max_pages)
+            .or(source_max_pages);
+        tables.push((table_spec_from_def(t)?, max_pages));
     }
     if tables.is_empty() && !def.raw_table {
         tracing::warn!(
@@ -119,7 +140,7 @@ pub async fn register_http_source(
     }
 
     let mut summaries = Vec::with_capacity(tables.len());
-    for spec in tables {
+    for (spec, max_pages) in tables {
         let required: Vec<String> = spec
             .params
             .iter()
@@ -127,7 +148,8 @@ pub async fn register_http_source(
             .map(|p| p.name.clone())
             .collect();
         let description = spec.description.clone();
-        let provider = HttpTableProvider::new(source.clone(), Arc::new(spec.clone()));
+        let provider =
+            HttpTableProvider::with_max_pages(source.clone(), Arc::new(spec.clone()), max_pages);
         schema
             .register_table(spec.name.clone(), Arc::new(provider))
             .map_err(|e| HttpBuildError::DataFusion(format!("register table: {e}")))?;
@@ -238,6 +260,36 @@ fn parse_auth(def: &SourceDef) -> AuthSpec {
         }
     }
     AuthSpec::None
+}
+
+/// Parse the retry policy from `config.retry.{max_retries,base_backoff_ms,
+/// max_backoff_ms}`, falling back to [`RetryConfig::default`] for absent fields.
+fn parse_retry(def: &SourceDef) -> RetryConfig {
+    let mut retry = RetryConfig::default();
+    if let Some(r) = def.config.get("retry") {
+        if let Some(v) = r.get("max_retries").and_then(serde_json::Value::as_u64) {
+            retry.max_retries = v as u32;
+        }
+        if let Some(v) = r.get("base_backoff_ms").and_then(serde_json::Value::as_u64) {
+            retry.base_backoff_ms = v;
+        }
+        if let Some(v) = r.get("max_backoff_ms").and_then(serde_json::Value::as_u64) {
+            retry.max_backoff_ms = v;
+        }
+    }
+    retry
+}
+
+/// Build a direct (un-keyed), in-memory rate limiter from
+/// `config.rate_limit.requests_per_second`. Returns `None` when unset or zero.
+fn parse_rate_limit(def: &SourceDef) -> Option<Arc<governor::DefaultDirectRateLimiter>> {
+    let rps = def
+        .config
+        .get("rate_limit")
+        .and_then(|r| r.get("requests_per_second"))
+        .and_then(serde_json::Value::as_u64)?;
+    let rps = NonZeroU32::new(u32::try_from(rps).ok()?)?;
+    Some(Arc::new(RateLimiter::direct(Quota::per_second(rps))))
 }
 
 fn ensure_schema(

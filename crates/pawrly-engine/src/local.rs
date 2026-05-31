@@ -74,10 +74,6 @@ pub(crate) struct LocalEngineInner {
     pub(crate) refreshers: Mutex<HashMap<String, Vec<JoinHandle<()>>>>,
     /// Path the config was loaded from, when known. `reload_config` re-reads it.
     config_path: Option<PathBuf>,
-    #[allow(
-        dead_code,
-        reason = "wired in M3; consumed by DuckDB-backed sources in M7"
-    )]
     duckdb: Arc<DuckDbPool>,
 }
 
@@ -366,6 +362,7 @@ async fn register_source(inner: &Arc<LocalEngineInner>, def: SourceDef) -> Resul
         &inner.ctx,
         inner.catalog.as_ref(),
         &inner.workspace_dir,
+        &inner.duckdb,
     )
     .await
     .map_err(|e| EngineError::SourceRegistration {

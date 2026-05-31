@@ -7,10 +7,10 @@ mod auth;
 mod error;
 mod services;
 
-pub use auth::{AuthLayer, AuthMode};
+pub use auth::{AuthInterceptor, AuthMode};
 pub use error::ServerError;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use pawrly_core::EngineService;
@@ -20,7 +20,7 @@ use pawrly_proto::v1::{
     semantic_service_server::SemanticServiceServer, sources_service_server::SourcesServiceServer,
 };
 use tonic::transport::server::Router;
-use tonic::transport::{Channel, Endpoint, Server, Uri};
+use tonic::transport::{Channel, Endpoint, Identity, Server, ServerTlsConfig, Uri};
 
 use crate::services::{AdminSvc, CacheSvc, CatalogSvc, QuerySvc, SemanticSvc, SourcesSvc};
 
@@ -28,6 +28,8 @@ use crate::services::{AdminSvc, CacheSvc, CatalogSvc, QuerySvc, SemanticSvc, Sou
 pub struct ServerBuilder {
     engine: Arc<dyn EngineService>,
     auth: AuthMode,
+    /// PEM cert + key paths for TLS, loaded when the router is built.
+    tls: Option<(PathBuf, PathBuf)>,
 }
 
 impl ServerBuilder {
@@ -37,6 +39,7 @@ impl ServerBuilder {
         Self {
             engine,
             auth: AuthMode::None,
+            tls: None,
         }
     }
 
@@ -45,6 +48,15 @@ impl ServerBuilder {
     #[must_use]
     pub fn auth(mut self, auth: AuthMode) -> Self {
         self.auth = auth;
+        self
+    }
+
+    /// Serve over TLS, presenting the identity in the given PEM certificate and
+    /// private-key files. Applies to TCP transports; UDS already relies on file
+    /// permissions as its trust boundary.
+    #[must_use]
+    pub fn tls(mut self, cert: impl Into<PathBuf>, key: impl Into<PathBuf>) -> Self {
+        self.tls = Some((cert.into(), key.into()));
         self
     }
 
@@ -71,7 +83,7 @@ impl ServerBuilder {
 
         tracing::info!(socket = %path.display(), "pawrly-server listening on UDS");
         let stream = tokio_stream::wrappers::UnixListenerStream::new(listener);
-        self.router()
+        self.router()?
             .serve_with_incoming(stream)
             .await
             .map_err(ServerError::Transport)
@@ -83,8 +95,23 @@ impl ServerBuilder {
             return Err(ServerError::AuthRequiredForNonLoopback);
         }
         tracing::info!(%addr, "pawrly-server listening on TCP");
-        self.router()
+        self.router()?
             .serve(addr)
+            .await
+            .map_err(ServerError::Transport)
+    }
+
+    /// Serve on an already-bound TCP listener. Lets the caller pick an ephemeral
+    /// port and learn it via [`tokio::net::TcpListener::local_addr`] before
+    /// serving (used by tests and socket activation). The non-loopback auth
+    /// guard is the caller's responsibility on this path.
+    pub async fn serve_tcp_incoming(
+        self,
+        listener: tokio::net::TcpListener,
+    ) -> Result<(), ServerError> {
+        let stream = tokio_stream::wrappers::TcpListenerStream::new(listener);
+        self.router()?
+            .serve_with_incoming(stream)
             .await
             .map_err(ServerError::Transport)
     }
@@ -96,7 +123,7 @@ impl ServerBuilder {
         let client = Some(client);
 
         // Spawn the server on the duplex stream.
-        let router = self.router();
+        let router = self.router()?;
         tokio::spawn(async move {
             let stream = futures::stream::once(async move { Ok::<_, std::io::Error>(server) });
             if let Err(e) = router.serve_with_incoming(stream).await {
@@ -120,17 +147,45 @@ impl ServerBuilder {
         Ok(channel)
     }
 
-    fn router(self) -> Router {
-        // Auth layer is a placeholder; bearer enforcement is not yet wired.
-        let _ = self.auth;
+    fn router(self) -> Result<Router, ServerError> {
+        // Every service is wrapped with the same auth interceptor; in
+        // `AuthMode::None` it is a no-op, otherwise it enforces the bearer token.
+        let auth = AuthInterceptor::new(&self.auth);
+        let mut builder = Server::builder();
+        if let Some((cert, key)) = &self.tls {
+            let cert_pem = std::fs::read(cert).map_err(ServerError::Io)?;
+            let key_pem = std::fs::read(key).map_err(ServerError::Io)?;
+            let identity = Identity::from_pem(cert_pem, key_pem);
+            builder = builder
+                .tls_config(ServerTlsConfig::new().identity(identity))
+                .map_err(ServerError::Transport)?;
+        }
         let engine = self.engine;
-        Server::builder()
-            .add_service(QueryServiceServer::new(QuerySvc::new(engine.clone())))
-            .add_service(CatalogServiceServer::new(CatalogSvc::new(engine.clone())))
-            .add_service(SourcesServiceServer::new(SourcesSvc::new(engine.clone())))
-            .add_service(CacheServiceServer::new(CacheSvc::new(engine.clone())))
-            .add_service(SemanticServiceServer::new(SemanticSvc::new(engine.clone())))
-            .add_service(AdminServiceServer::new(AdminSvc::new(engine)))
+        Ok(builder
+            .add_service(QueryServiceServer::with_interceptor(
+                QuerySvc::new(engine.clone()),
+                auth.clone(),
+            ))
+            .add_service(CatalogServiceServer::with_interceptor(
+                CatalogSvc::new(engine.clone()),
+                auth.clone(),
+            ))
+            .add_service(SourcesServiceServer::with_interceptor(
+                SourcesSvc::new(engine.clone()),
+                auth.clone(),
+            ))
+            .add_service(CacheServiceServer::with_interceptor(
+                CacheSvc::new(engine.clone()),
+                auth.clone(),
+            ))
+            .add_service(SemanticServiceServer::with_interceptor(
+                SemanticSvc::new(engine.clone()),
+                auth.clone(),
+            ))
+            .add_service(AdminServiceServer::with_interceptor(
+                AdminSvc::new(engine),
+                auth,
+            )))
     }
 }
 

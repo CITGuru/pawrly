@@ -19,10 +19,19 @@ pub struct Args {
     #[arg(long)]
     pub socket: Option<PathBuf>,
 
-    /// Secret name (in the configured backend) holding the bearer token.
-    /// Required for non-loopback TCP. Only the bind-time check is enforced.
+    /// Name of the bearer token to require — resolved from the config's secret
+    /// backend, or an environment variable of the same name. Required for
+    /// non-loopback TCP; enforced on every request.
     #[arg(long)]
     pub bearer_token_from: Option<String>,
+
+    /// PEM certificate file to serve TLS with. Requires `--tls-key`.
+    #[arg(long, requires = "tls_key")]
+    pub tls_cert: Option<PathBuf>,
+
+    /// PEM private-key file for `--tls-cert`.
+    #[arg(long, requires = "tls_cert")]
+    pub tls_key: Option<PathBuf>,
 
     /// Idle timeout (humantime, e.g. `30m`). 0 means never.
     #[arg(long)]
@@ -34,21 +43,24 @@ pub struct Args {
 }
 
 pub async fn run(home: Option<PathBuf>, config: Option<PathBuf>, args: Args) -> anyhow::Result<()> {
+    // Resolve the bearer token before the config path is consumed below.
+    let auth_token = match &args.bearer_token_from {
+        Some(name) => Some(resolve_bearer_token(name, config.as_deref())?),
+        None => None,
+    };
+
     let engine = if config.is_some() {
         build_local(config).await?
     } else {
         local_engine_placeholder().await?
     };
     let mut builder = pawrly_server::ServerBuilder::new(engine);
-    if let Some(token_name) = &args.bearer_token_from {
-        // The intent is recorded but enforcement is not yet wired.
-        tracing::warn!(
-            ?token_name,
-            "bearer-token-from is recorded but not yet enforced"
-        );
-        builder = builder.auth(pawrly_server::AuthMode::Bearer {
-            token: format!("placeholder-{token_name}"),
-        });
+    if let Some(token) = auth_token {
+        builder = builder.auth(pawrly_server::AuthMode::Bearer { token });
+    }
+    // clap's `requires` guarantees both flags appear together.
+    if let (Some(cert), Some(key)) = (&args.tls_cert, &args.tls_key) {
+        builder = builder.tls(cert.clone(), key.clone());
     }
 
     if let Some(addr) = args.addr.as_deref() {
@@ -116,6 +128,26 @@ fn default_socket_path(home: Option<&std::path::Path>) -> anyhow::Result<PathBuf
         })
         .ok_or_else(|| anyhow::anyhow!("could not resolve $PAWRLY_HOME (no $HOME)"))?;
     Ok(h.join("sockets").join("pawrly.sock"))
+}
+
+/// Resolve the bearer token named by `--bearer-token-from`: first the config's
+/// secret backend (when a config is given — covers env / keyring / file), then
+/// a plain environment variable of the same name. Errors if neither yields one,
+/// since auth can't be enforced without the token.
+fn resolve_bearer_token(name: &str, config: Option<&std::path::Path>) -> anyhow::Result<String> {
+    if let Some(cfg) = config
+        && let Some(token) = pawrly_config::resolve_secret(cfg, name)?
+    {
+        return Ok(token);
+    }
+    if let Ok(token) = std::env::var(name)
+        && !token.is_empty()
+    {
+        return Ok(token);
+    }
+    anyhow::bail!(
+        "bearer token `{name}` not found in the config's secret backend or the `{name}` environment variable"
+    )
 }
 
 fn write_pid_file(path: &std::path::Path) -> anyhow::Result<()> {

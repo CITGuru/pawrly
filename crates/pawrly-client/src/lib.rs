@@ -10,4 +10,4 @@ mod remote;
 mod transport;
 
 pub use remote::RemoteEngineClient;
-pub use transport::Endpoint;
+pub use transport::{ConnectError, Endpoint, TlsConfig};

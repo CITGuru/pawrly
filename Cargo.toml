@@ -67,6 +67,7 @@ arrow-cast = "58"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "gzip"] }
 url = "2"
 jsonpath-rust = "0.7"
+governor = "0.6"
 
 # Test
 wiremock = "0.6"

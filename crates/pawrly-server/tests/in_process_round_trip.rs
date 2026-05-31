@@ -10,7 +10,7 @@
 
 use std::sync::Arc;
 
-use pawrly_client::{Endpoint, RemoteEngineClient};
+use pawrly_client::{Endpoint, RemoteEngineClient, TlsConfig};
 use pawrly_core::test_support::MockEngine;
 use pawrly_core::{ColumnSpec, EngineService, EngineServiceExt, SourceDef, SourceKind, TableName};
 use pawrly_server::ServerBuilder;
@@ -134,4 +134,130 @@ async fn server_rejects_non_loopback_tcp_without_auth() {
         res,
         Err(pawrly_server::ServerError::AuthRequiredForNonLoopback)
     ));
+}
+
+/// Start a bearer-protected server on an ephemeral loopback port; bind first so
+/// the OS accepts connections into the backlog and the client never races the
+/// serve loop. Returns the bound address.
+async fn spawn_bearer_server(token: &str) -> std::net::SocketAddr {
+    use pawrly_server::AuthMode;
+    let mock = Arc::new(MockEngine::new());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = ServerBuilder::new(mock as Arc<dyn EngineService>).auth(AuthMode::Bearer {
+        token: token.to_string(),
+    });
+    tokio::spawn(async move {
+        let _ = server.serve_tcp_incoming(listener).await;
+    });
+    addr
+}
+
+#[tokio::test]
+async fn bearer_token_required_over_tcp() {
+    let addr = spawn_bearer_server("s3cret-token").await;
+
+    // Correct token: requests succeed.
+    let ok: Arc<dyn EngineService> = Arc::new(
+        RemoteEngineClient::connect(Endpoint::Tcp {
+            addr,
+            bearer: Some("s3cret-token".into()),
+            tls: None,
+        })
+        .await
+        .expect("connect with token"),
+    );
+    assert!(ok.health().await.expect("health with token").ok);
+
+    // Wrong token: the interceptor rejects with Unauthenticated.
+    let bad: Arc<dyn EngineService> = Arc::new(
+        RemoteEngineClient::connect(Endpoint::Tcp {
+            addr,
+            bearer: Some("wrong".into()),
+            tls: None,
+        })
+        .await
+        .expect("connect with wrong token"),
+    );
+    let err = bad
+        .health()
+        .await
+        .expect_err("wrong token must be rejected");
+    assert!(
+        err.to_string().to_lowercase().contains("bearer"),
+        "expected a bearer-auth error, got {err:?}"
+    );
+
+    // No token at all: also rejected.
+    let none: Arc<dyn EngineService> = Arc::new(
+        RemoteEngineClient::connect(Endpoint::Tcp {
+            addr,
+            bearer: None,
+            tls: None,
+        })
+        .await
+        .expect("connect without token"),
+    );
+    assert!(
+        none.health().await.is_err(),
+        "missing token must be rejected"
+    );
+}
+
+#[tokio::test]
+async fn tls_round_trip_with_self_signed_cert() {
+    // A self-signed cert for "localhost", written to temp PEM files.
+    let rcgen::CertifiedKey { cert, key_pair } =
+        rcgen::generate_simple_self_signed(["localhost".to_string()]).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let cert_path = dir.path().join("cert.pem");
+    let key_path = dir.path().join("key.pem");
+    std::fs::write(&cert_path, cert.pem()).unwrap();
+    std::fs::write(&key_path, key_pair.serialize_pem()).unwrap();
+
+    let mock = Arc::new(MockEngine::new());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server =
+        ServerBuilder::new(mock as Arc<dyn EngineService>).tls(cert_path.clone(), key_path);
+    tokio::spawn(async move {
+        let _ = server.serve_tcp_incoming(listener).await;
+    });
+
+    // Client trusts the self-signed cert as its CA; the cert's SAN is
+    // "localhost" while we dial 127.0.0.1, so override the server name.
+    let tls = TlsConfig {
+        ca_cert: Some(cert_path),
+        domain_name: Some("localhost".into()),
+        ..Default::default()
+    };
+    let client: Arc<dyn EngineService> = Arc::new(
+        RemoteEngineClient::connect(Endpoint::Tcp {
+            addr,
+            bearer: None,
+            tls: Some(tls),
+        })
+        .await
+        .expect("TLS connect"),
+    );
+    assert!(client.health().await.expect("health over TLS").ok);
+
+    // A plaintext client must not be able to talk to the TLS server.
+    let plain = RemoteEngineClient::connect(Endpoint::Tcp {
+        addr,
+        bearer: None,
+        tls: None,
+    })
+    .await;
+    let plaintext_failed = match plain {
+        Ok(c) => {
+            let c: Arc<dyn EngineService> = Arc::new(c);
+            c.health().await.is_err()
+        }
+        Err(_) => true,
+    };
+    assert!(
+        plaintext_failed,
+        "a plaintext client must not talk to a TLS server"
+    );
 }
