@@ -74,10 +74,7 @@ async fn cron_loop(
     manager: Arc<CacheManager>,
     ctx: SessionContext,
 ) {
-    loop {
-        let Some(next) = schedule.upcoming(Utc).next() else {
-            break;
-        };
+    while let Some(next) = schedule.upcoming(Utc).next() {
         let wait = (next - Utc::now())
             .to_std()
             .unwrap_or(Duration::from_secs(0));
