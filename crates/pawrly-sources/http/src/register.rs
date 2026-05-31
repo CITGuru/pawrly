@@ -104,19 +104,19 @@ pub async fn register_http_source(
     //    User overrides not yet merged; we use bundled tables as-is
     //    when the source is bundled, else expect user-declared tables (none
     //    declared → empty).
-    let tables: Vec<HttpTableSpec> = if !default_tables.is_empty() {
-        default_tables
-    } else {
-        // Generic kind: http — user must declare tables under `tables:`.
-        // Not yet wired; surface a clear message.
-        if def.tables.is_empty() && !def.raw_table {
-            tracing::warn!(
-                source = %def.name,
-                "http source has no tables and raw_table is disabled; nothing to register"
-            );
-        }
-        Vec::new()
-    };
+    // Bundled kinds ship their own table specs. Generic `kind: http` (and any
+    // user-declared tables on a bundled kind) are read from `def.tables`, whose
+    // opaque per-table `config` deserializes into an `HttpTableSpec`.
+    let mut tables: Vec<HttpTableSpec> = default_tables;
+    for t in &def.tables {
+        tables.push(table_spec_from_def(t)?);
+    }
+    if tables.is_empty() && !def.raw_table {
+        tracing::warn!(
+            source = %def.name,
+            "http source has no tables and raw_table is disabled; nothing to register"
+        );
+    }
 
     let mut summaries = Vec::with_capacity(tables.len());
     for spec in tables {
@@ -158,6 +158,35 @@ pub async fn register_http_source(
         table_count: summaries.len() as u64 + raw_table_registered as u64,
         tables: summaries,
         raw_table_registered,
+    })
+}
+
+/// Build an [`HttpTableSpec`] from a user-declared `TableDef`. The table's
+/// `name` comes from the `TableDef`; the rest (`endpoint`, `method`, `params`,
+/// `headers`, `response`) is read from its opaque `config` JSON. The table
+/// name from the `config` body, if any, is overridden by the `TableDef.name`.
+fn table_spec_from_def(t: &pawrly_core::TableDef) -> Result<HttpTableSpec, HttpBuildError> {
+    let mut body = t.config.clone();
+    if !body.is_object() {
+        body = serde_json::Value::Object(serde_json::Map::new());
+    }
+    if let Some(map) = body.as_object_mut() {
+        // The TableDef owns the canonical name; inject it so the user doesn't
+        // repeat `name:` inside the table body.
+        map.insert(
+            "name".to_string(),
+            serde_json::Value::String(t.name.clone()),
+        );
+        if let Some(desc) = &t.description {
+            map.entry("description")
+                .or_insert_with(|| serde_json::Value::String(desc.clone()));
+        }
+    }
+    serde_json::from_value(body).map_err(|e| {
+        HttpBuildError::Config(ConfigError::Source(
+            t.name.clone(),
+            format!("invalid http table `{}`: {e}", t.name),
+        ))
     })
 }
 

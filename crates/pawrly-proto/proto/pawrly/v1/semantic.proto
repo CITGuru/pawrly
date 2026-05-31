@@ -1,0 +1,127 @@
+syntax = "proto3";
+package pawrly.v1;
+
+import "google/protobuf/duration.proto";
+import "pawrly/v1/query.proto"; // reuses QueryResponse + Error
+
+service SemanticService {
+  rpc ListModels(ListModelsRequest) returns (ListModelsResponse);
+  rpc DescribeModel(DescribeModelRequest) returns (DescribeModelResponse);
+  // Same streaming envelope as QueryService.Query.
+  rpc SemanticQuery(SemanticQueryRequest) returns (stream QueryResponse);
+}
+
+message ListModelsRequest {}
+message ListModelsResponse { repeated ModelInfo models = 1; }
+
+message ModelInfo {
+  string name = 1;
+  string description = 2;
+  string source = 3;
+  uint32 dimension_count = 4;
+  uint32 measure_count = 5;
+}
+
+message DescribeModelRequest { string name = 1; }
+message DescribeModelResponse { ModelDescription model = 1; }
+
+message ModelDescription {
+  string name = 1;
+  string description = 2;
+  string source = 3;
+  repeated string primary_key = 4;
+  repeated Dimension dimensions = 5;
+  repeated Measure measures = 6;
+  repeated Relationship relationships = 7;
+}
+
+message Relationship {
+  string name = 1;
+  RelationshipKind kind = 2;
+  string target = 3;          // target model name
+  string on = 4;              // join predicate; `this` = declaring model
+}
+
+enum RelationshipKind {
+  RELATIONSHIP_KIND_UNSPECIFIED = 0;
+  RELATIONSHIP_KIND_MANY_TO_ONE = 1;
+  RELATIONSHIP_KIND_ONE_TO_MANY = 2;
+  RELATIONSHIP_KIND_ONE_TO_ONE = 3;
+}
+
+message Dimension {
+  string name = 1;
+  string expr = 2;
+  DimensionType type = 3;
+  repeated TimeGrain grains = 4;
+  string description = 5;
+}
+
+enum DimensionType {
+  DIMENSION_TYPE_UNSPECIFIED = 0;
+  DIMENSION_TYPE_STRING = 1;
+  DIMENSION_TYPE_NUMBER = 2;
+  DIMENSION_TYPE_TIME = 3;
+  DIMENSION_TYPE_BOOL = 4;
+}
+
+enum TimeGrain {
+  TIME_GRAIN_UNSPECIFIED = 0;
+  TIME_GRAIN_HOUR = 1;
+  TIME_GRAIN_DAY = 2;
+  TIME_GRAIN_WEEK = 3;
+  TIME_GRAIN_MONTH = 4;
+  TIME_GRAIN_QUARTER = 5;
+  TIME_GRAIN_YEAR = 6;
+}
+
+message Measure {
+  string name = 1;
+  string agg = 2;            // label: "sum", "count_distinct", "custom", ...
+  string expr = 3;
+  repeated string filters = 4;
+  string format = 5;
+  string description = 6;
+  string custom_sql = 7;     // populated when agg == "custom"
+}
+
+message SemanticQueryRequest {
+  repeated string measures = 1;
+  repeated string dimensions = 2;
+  repeated SemanticFilter filters = 3;
+  repeated SemanticOrder order_by = 4;
+  optional uint64 limit = 5;
+  optional string time_zone = 6;
+  map<string, string> params = 7;  // reserved for RLS (later phase)
+  google.protobuf.Duration timeout = 8;
+  string trace_id = 9;
+}
+
+message SemanticFilter {
+  string member = 1;
+  FilterOp op = 2;
+  repeated string values = 3;
+}
+
+enum FilterOp {
+  FILTER_OP_UNSPECIFIED = 0;
+  FILTER_OP_EQUALS = 1;
+  FILTER_OP_NOT_EQUALS = 2;
+  FILTER_OP_IN = 3;
+  FILTER_OP_NOT_IN = 4;
+  FILTER_OP_GT = 5;
+  FILTER_OP_GTE = 6;
+  FILTER_OP_LT = 7;
+  FILTER_OP_LTE = 8;
+  FILTER_OP_IN_RANGE = 9;
+  FILTER_OP_CONTAINS = 10;
+  FILTER_OP_STARTS_WITH = 11;
+  FILTER_OP_ENDS_WITH = 12;
+  FILTER_OP_IS_NULL = 13;
+  FILTER_OP_IS_NOT_NULL = 14;
+}
+
+message SemanticOrder {
+  string member = 1;
+  bool desc = 2;
+}

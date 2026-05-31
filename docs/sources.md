@@ -1,0 +1,164 @@
+# Sources
+
+A **source** is a named set of tables backed by some external system or local files. Every source is exposed to the query engine as one or more tables, addressed in SQL as `<source>.<table>`. Sources are declared under `sources:` in [`pawrly.yaml`](./config.md).
+
+This page covers each source kind. The common shape — `name`, `kind`, `config`, `tables`, `cache`, `safety` — is described in [Configuration](./config.md).
+
+## Available today
+
+### `file` — Parquet, CSV, JSON
+
+Serves columnar and row files from disk. Point it at a glob, or define tables explicitly.
+
+```yaml
+sources:
+  - name: data
+    kind: file
+    config:
+      path: ./data/*.csv          # glob; table names derive from file names
+```
+
+Or per-table, with explicit formats and paths:
+
+```yaml
+sources:
+  - name: data
+    kind: file
+    tables:
+      - name: orders
+        path: ./data/orders.parquet
+        format: parquet           # parquet | csv | json
+      - name: events
+        path: ./data/events.json
+        format: json
+```
+
+Once registered, query them like any table: `SELECT * FROM data.orders`. Files of different formats can be joined freely — the SQL is identical regardless of format.
+
+### `sqlite` — local SQLite databases
+
+Attaches a SQLite database file read-only and exposes its tables. Equality filters are pushed down into SQLite.
+
+```yaml
+sources:
+  - name: app
+    kind: sqlite
+    config:
+      path: ./app.db
+```
+
+### HTTP — REST APIs
+
+Turns a REST API into SQL tables. Pawrly ships **bundled specs** for common services and also supports generic, user-defined HTTP tables.
+
+Bundled `github` (currently exposes a `pulls` table):
+
+```yaml
+sources:
+  - name: gh
+    kind: github
+    config:
+      token: ${secret:GITHUB_TOKEN}
+```
+
+```sql
+SELECT number, title, state
+FROM gh.pulls
+WHERE owner = 'withpawrly' AND repo = 'pawrly' AND state = 'open'
+LIMIT 20
+```
+
+Some columns are **required filters** (above, `owner` and `repo`) — Pawrly returns a clear error if they're missing, rather than scanning an entire API. Supported authentication modes are `bearer`, `api_key`, and `basic`.
+
+**Generic HTTP** — point `kind: http` at any REST endpoint and declare your own
+tables. Each table gives an `endpoint` and a `response` describing how to turn
+the JSON into rows:
+
+```yaml
+sources:
+  - name: cats
+    kind: http
+    config:
+      base_url: https://catfact.ninja
+    tables:
+      - name: facts
+        endpoint: /facts?limit=50        # relative to base_url
+        response:
+          path: $.data                   # JSONPath to the row array ($ = body is the array)
+          schema:
+            - { name: fact,   type: varchar }
+            - { name: length, type: bigint }
+```
+
+```sql
+SELECT length, fact FROM cats.facts ORDER BY length DESC LIMIT 5
+```
+
+Field reference:
+
+- `endpoint` — path appended to `base_url`; may carry a query string and `{param}` placeholders.
+- `method` — defaults to `GET`.
+- `response.path` — JSONPath to the array of rows. `$` means the body *is* the array; `$.data` digs into a wrapper object.
+- `response.schema` — columns to extract per row. `type` ∈ `varchar`, `bigint`, `int`, `double`, `float`, `bool`. Add `source: $.nested.field` to read a different path, or `source: param` to inject a request parameter as a column.
+- `params` — declared query/path parameters (`name`, `type`, `required`, `default`); a `required` param must appear as a SQL filter.
+
+A runnable end-to-end example **with caching** lives at [`examples/cache-http/`](../examples/cache-http/pawrly.yaml).
+
+There's also a raw escape hatch (`raw_table: true`) for endpoints without a typed spec, where you provide the request path as a filter and Pawrly hands back the JSON response as rows.
+
+### `ai` — OpenAI-compatible models
+
+Registers an AI provider so you can call a model from SQL. It exposes a `chat` function and a `models` table:
+
+```yaml
+sources:
+  - name: ai
+    kind: ai
+    config:
+      provider: openai
+      base_url: https://api.openai.com/v1
+      api_key: ${secret:OPENAI_API_KEY}
+      default_model: gpt-5-mini
+```
+
+```sql
+SELECT id,
+       ai.chat('gpt-5-mini', 'Summarize in one line: ' || body) AS summary
+FROM data.tickets
+LIMIT 5
+
+SELECT * FROM ai.models      -- name, model, provider
+```
+
+Any OpenAI-compatible endpoint works via `base_url`.
+
+## Caching any source
+
+Any source or table can opt into caching with a `cache:` block — useful for rate-limited APIs and expensive AI calls. See [Configuration → Caching](./config.md#caching).
+
+```yaml
+sources:
+  - name: gh
+    kind: github
+    config:
+      token: ${secret:GITHUB_TOKEN}
+    cache:
+      mode: ttl
+      ttl: 10m
+```
+
+See [`examples/cache-http/`](../examples/cache-http/pawrly.yaml) for a runnable cache-over-a-public-API walkthrough.
+
+## Planned source kinds
+
+The following kinds are recognized by the config and on the roadmap; today they return a clear "not available in this build" error so your config stays forward-compatible:
+
+- **Relational databases** — Postgres, MySQL, Excel.
+- **Warehouses & lakehouses** — Snowflake, Iceberg, Delta.
+- **Object stores** — S3, GCS, Azure.
+
+Declaring one of these validates fine; querying it tells you the kind isn't available yet. Check `examples/pawrly.yaml` for the full kitchen-sink configuration covering every kind.
+
+## Federation
+
+Because every source is a table in one DataFusion plan, you can join across kinds in a single statement — a local file against a SQLite table against a GitHub query — with no import step. The SQL is the same whether the data is local or remote.

@@ -64,6 +64,8 @@ enum Command {
     Cache(commands::cache::Args),
     /// Manage workspace sources (add, list, remove, refresh, test).
     Source(commands::source::Args),
+    /// Browse and query the semantic layer (list, describe, query).
+    Semantic(commands::semantic::Args),
     /// Run the Pawrly daemon (gRPC server).
     Serve(commands::serve::Args),
     /// Stop a running Pawrly daemon.
@@ -114,6 +116,9 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         }
         Command::Source(args) => {
             commands::source::run(cli.home, cli.config, cli.remote, cli.no_remote, args).await
+        }
+        Command::Semantic(args) => {
+            commands::semantic::run(cli.home, cli.config, cli.remote, cli.no_remote, args).await
         }
         Command::Serve(args) => commands::serve::run(cli.home, cli.config, args).await,
         Command::Stop(args) => commands::stop::run(cli.home, args).await,

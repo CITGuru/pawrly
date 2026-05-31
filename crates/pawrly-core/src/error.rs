@@ -69,6 +69,9 @@ pub enum EngineError {
     #[error("invalid SQL: {0}")]
     InvalidSql(String),
 
+    #[error("semantic plan error: {0}")]
+    SemanticPlan(String),
+
     #[error("query was cancelled")]
     Cancelled,
 
@@ -91,6 +94,7 @@ impl EngineError {
             Self::Timeout(_) => "PAWRLY_TIMEOUT",
             Self::OutOfMemory(_) => "PAWRLY_OOM",
             Self::InvalidSql(_) => "PAWRLY_INVALID_SQL",
+            Self::SemanticPlan(_) => "PAWRLY_SEMANTIC_PLAN",
             Self::Cancelled => "PAWRLY_CANCELLED",
             Self::Protocol(_) => "PAWRLY_PROTOCOL",
             Self::Internal(_) => "PAWRLY_INTERNAL",
@@ -153,6 +157,22 @@ pub enum SafetyError {
 
     #[error("refusing to scan `{table}`: would page more than {max_pages} times")]
     TooManyPages { table: String, max_pages: u32 },
+
+    /// A required predicate references `${param:NAME}` but the param was not
+    /// supplied on the request.
+    #[error("refusing to scan `{table}`: required predicate references unbound param `{name}`")]
+    UnboundParam { table: String, name: String },
+
+    /// A required predicate could not be applied (e.g. it references a column
+    /// the rollup-substituted scan does not expose).
+    #[error(
+        "refusing to scan `{table}`: required predicate `{predicate}` could not be applied: {reason}"
+    )]
+    PredicateUnsatisfied {
+        table: String,
+        predicate: String,
+        reason: String,
+    },
 }
 
 impl SafetyError {
@@ -164,6 +184,8 @@ impl SafetyError {
             Self::NoFilters { .. } => "PAWRLY_SAFETY_NO_FILTERS",
             Self::TooManyRows { .. } => "PAWRLY_SAFETY_TOO_MANY_ROWS",
             Self::TooManyPages { .. } => "PAWRLY_SAFETY_TOO_MANY_PAGES",
+            Self::UnboundParam { .. } => "PAWRLY_SAFETY_UNBOUND_PARAM",
+            Self::PredicateUnsatisfied { .. } => "PAWRLY_SAFETY_PREDICATE_UNSATISFIED",
         }
     }
 }
@@ -186,6 +208,9 @@ pub enum ConfigError {
 
     #[error("source `{0}`: {1}")]
     Source(String, String),
+
+    #[error("semantic model `{model}`: {msg}")]
+    SemanticInvalid { model: String, msg: String },
 
     #[error("unresolved secret reference: {0}")]
     UnresolvedSecret(String),
@@ -226,6 +251,7 @@ impl ConfigError {
             Self::Schema { .. } => "PAWRLY_CONFIG_SCHEMA",
             Self::Table { .. } => "PAWRLY_CONFIG_TABLE",
             Self::Source(_, _) => "PAWRLY_CONFIG_SOURCE",
+            Self::SemanticInvalid { .. } => "PAWRLY_CONFIG_SEMANTIC_INVALID",
             Self::UnresolvedSecret(_) => "PAWRLY_CONFIG_UNRESOLVED_SECRET",
             Self::UnresolvedEnv(_) => "PAWRLY_CONFIG_UNRESOLVED_ENV",
             Self::ReadFile { .. } => "PAWRLY_CONFIG_READ_FILE",

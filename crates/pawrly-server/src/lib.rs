@@ -17,12 +17,12 @@ use pawrly_core::EngineService;
 use pawrly_proto::v1::{
     admin_service_server::AdminServiceServer, cache_service_server::CacheServiceServer,
     catalog_service_server::CatalogServiceServer, query_service_server::QueryServiceServer,
-    sources_service_server::SourcesServiceServer,
+    semantic_service_server::SemanticServiceServer, sources_service_server::SourcesServiceServer,
 };
 use tonic::transport::server::Router;
 use tonic::transport::{Channel, Endpoint, Server, Uri};
 
-use crate::services::{AdminSvc, CacheSvc, CatalogSvc, QuerySvc, SourcesSvc};
+use crate::services::{AdminSvc, CacheSvc, CatalogSvc, QuerySvc, SemanticSvc, SourcesSvc};
 
 /// Builder for the Pawrly gRPC server.
 pub struct ServerBuilder {
@@ -129,6 +129,7 @@ impl ServerBuilder {
             .add_service(CatalogServiceServer::new(CatalogSvc::new(engine.clone())))
             .add_service(SourcesServiceServer::new(SourcesSvc::new(engine.clone())))
             .add_service(CacheServiceServer::new(CacheSvc::new(engine.clone())))
+            .add_service(SemanticServiceServer::new(SemanticSvc::new(engine.clone())))
             .add_service(AdminServiceServer::new(AdminSvc::new(engine)))
     }
 }

@@ -3,7 +3,8 @@
 //! Backends:
 //!
 //! * [`EnvStore`] — reads from process environment.
-//! * [`FileStore`] — reads a YAML map from disk; refuses files not at mode 0600.
+//! * [`FileStore`] — reads a YAML map or dotenv (`.env`) file from disk;
+//!   refuses files not at mode 0600.
 //! * [`KeyringStore`] — uses the OS keyring (`Keychain` on macOS, etc.).
 //! * [`LayeredStore`] — tries one backend after another; first hit wins.
 
@@ -19,7 +20,7 @@ mod keyring;
 mod layered;
 
 pub use env::EnvStore;
-pub use file::FileStore;
+pub use file::{FileFormat, FileStore};
 pub use keyring::KeyringStore;
 pub use layered::LayeredStore;
 

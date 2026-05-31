@@ -1,8 +1,8 @@
-//! Smoke tests for the configs under `examples/`. POWA-121.
+//! Smoke tests for the configs under `examples/`.
 //!
-//! These guard the M3 promise that the shipped example configs work
-//! out of the box. If a contributor adds a new file under `examples/`,
-//! they should also add a smoke check here.
+//! These guard that the shipped example configs work out of the box. If a
+//! contributor adds a new file under `examples/`, they should also add a
+//! smoke check here.
 
 #![allow(
     clippy::unwrap_used,

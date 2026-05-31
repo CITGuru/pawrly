@@ -1,5 +1,4 @@
-//! Strict-M3 acceptance for [POWA-118](/POWA/issues/POWA-118):
-//! `pawrly source` add/list/remove round-trip in local mode.
+//! Acceptance: `pawrly source` add/list/remove round-trip in local mode.
 
 #![allow(
     clippy::unwrap_used,

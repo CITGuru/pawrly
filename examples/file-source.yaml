@@ -1,7 +1,6 @@
-# M3 file-source example.
 # yaml-language-server: $schema=../schemas/pawrly.schema.json
 #
-# The smallest config that exercises the v0.1 golden path:
+# The smallest config that exercises the file source:
 #   pawrly --config examples/file-source.yaml schema
 #   pawrly --config examples/file-source.yaml sql 'SELECT COUNT(*) FROM data.orders'
 #

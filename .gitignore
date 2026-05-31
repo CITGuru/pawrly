@@ -22,8 +22,10 @@ secrets/
 *.pem
 *.key
 
-docs/
+docs/internal
 
 AGENTS.md
 CHANGELOG.md
 .claude/
+
+/assets/

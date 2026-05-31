@@ -13,6 +13,7 @@ workspace = true
 [dependencies]
 pawrly-core = { workspace = true }
 pawrly-config = { workspace = true }
+pawrly-semantic = { workspace = true }
 pawrly-secrets = { workspace = true }
 pawrly-sources-duckdb = { workspace = true }
 pawrly-sources-http = { workspace = true }

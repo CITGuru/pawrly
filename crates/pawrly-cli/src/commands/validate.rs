@@ -12,8 +12,7 @@ pub struct Args {
 }
 
 pub async fn run(args: Args) -> anyhow::Result<()> {
-    let secrets = pawrly_secrets::default_chain();
-    let cfg = pawrly_config::load(&args.path, &secrets)?;
+    let cfg = pawrly_config::load_auto(&args.path)?;
     let errs = pawrly_config::validate(&cfg);
     if errs.is_empty() {
         println!(

@@ -1,4 +1,4 @@
-//! M6 cache layer: opt-in per-table caching to Parquet + a JSON manifest.
+//! Cache layer: opt-in per-table caching to Parquet + a JSON manifest.
 //!
 //! Writes are atomic (write to `tmp/`, fsync, rename into place) and the
 //! manifest is guarded by a cross-process advisory lock, so the cache survives
@@ -85,16 +85,7 @@ impl std::fmt::Debug for CacheManager {
 impl CacheManager {
     pub fn new(root: PathBuf) -> std::io::Result<Self> {
         std::fs::create_dir_all(&root)?;
-        let path = root.join("manifest.json");
-        let manifest = if path.exists() {
-            let raw = std::fs::read_to_string(&path)?;
-            serde_json::from_str(&raw).unwrap_or_default()
-        } else {
-            Manifest {
-                version: 1,
-                entries: Vec::new(),
-            }
-        };
+        let manifest = Self::read_manifest_disk(&root);
         // Reclaim any in-progress writes abandoned by a dead process.
         clean_old_tmp(&root, TMP_MAX_AGE);
         Ok(Self {
@@ -172,15 +163,17 @@ impl CacheManager {
     }
 
     /// Drop a cache entry and delete its files. Returns `false` if no entry
-    /// existed for the name.
+    /// existed for the name. Mutates the authoritative on-disk manifest so a
+    /// concurrent writer's entries aren't clobbered.
     pub fn invalidate(&self, key: &TableName) -> Result<bool, EngineError> {
-        let removed = {
-            let mut m = self.manifest.lock();
-            m.entries
-                .iter()
-                .position(|e| e.source == key.schema && e.table == key.table)
-                .map(|i| m.entries.remove(i))
-        };
+        let removed = self
+            .with_locked_manifest(|m| {
+                m.entries
+                    .iter()
+                    .position(|e| e.source == key.schema && e.table == key.table)
+                    .map(|i| m.entries.remove(i))
+            })
+            .map_err(|e| EngineError::Internal(format!("cache manifest flush: {e}")))?;
         let Some(entry) = removed else {
             return Ok(false);
         };
@@ -188,9 +181,41 @@ impl CacheManager {
         if let Some(parent) = entry.file_path.parent() {
             let _ = std::fs::remove_dir(parent); // only succeeds if now empty
         }
-        self.flush()
-            .map_err(|e| EngineError::Internal(format!("cache manifest flush: {e}")))?;
         Ok(true)
+    }
+
+    /// Move a corrupt cached file aside to `corrupt/` and drop its manifest
+    /// entry, so the next read treats the table as a miss and re-fetches.
+    /// Best-effort: if the move fails the file is deleted instead. Called from
+    /// the read path when a cached Parquet file fails to open.
+    pub fn quarantine(&self, key: &TableName, entry: &ManifestEntry) {
+        let _ = self.with_locked_manifest(|m| {
+            m.entries.retain(|e| {
+                !(e.source == key.schema
+                    && e.table == key.table
+                    && e.file_path == entry.file_path)
+            });
+        });
+        if !entry.file_path.exists() {
+            return;
+        }
+        let dest_dir = self.root.join("corrupt").join(&key.schema).join(&key.table);
+        let moved = std::fs::create_dir_all(&dest_dir).is_ok()
+            && entry
+                .file_path
+                .file_name()
+                .map(|fname| {
+                    let dest = dest_dir.join(format!(
+                        "{}-{}",
+                        uuid::Uuid::new_v4(),
+                        fname.to_string_lossy()
+                    ));
+                    std::fs::rename(&entry.file_path, &dest).is_ok()
+                })
+                .unwrap_or(false);
+        if !moved {
+            let _ = std::fs::remove_file(&entry.file_path);
+        }
     }
 
     /// Reclaim space: drop expired TTL entries, delete orphaned data files, and
@@ -199,15 +224,17 @@ impl CacheManager {
         let mut report = VacuumReport::default();
         let now = Utc::now();
 
-        // 1. Drop expired TTL entries and their files.
-        let expired: Vec<ManifestEntry> = {
-            let mut m = self.manifest.lock();
-            let (keep, drop): (Vec<_>, Vec<_>) = std::mem::take(&mut m.entries)
-                .into_iter()
-                .partition(|e| e.expires_at.is_none_or(|exp| now < exp));
-            m.entries = keep;
-            drop
-        };
+        // 1. Drop expired TTL entries (against the on-disk manifest) and delete
+        //    their files.
+        let expired: Vec<ManifestEntry> = self
+            .with_locked_manifest(|m| {
+                let (keep, drop): (Vec<_>, Vec<_>) = std::mem::take(&mut m.entries)
+                    .into_iter()
+                    .partition(|e| e.expires_at.is_none_or(|exp| now < exp));
+                m.entries = keep;
+                drop
+            })
+            .map_err(|e| EngineError::Internal(format!("cache manifest flush: {e}")))?;
         for e in &expired {
             if let Ok(meta) = std::fs::metadata(&e.file_path) {
                 report.bytes_reclaimed += meta.len();
@@ -248,8 +275,6 @@ impl CacheManager {
         report.files_removed += tmp_files;
         report.bytes_reclaimed += tmp_bytes;
 
-        self.flush()
-            .map_err(|e| EngineError::Internal(format!("cache manifest flush: {e}")))?;
         Ok(report)
     }
 
@@ -283,43 +308,67 @@ impl CacheManager {
     }
 
     /// Replace any existing entry for this name with a new one and persist.
+    /// Mutates the authoritative on-disk manifest, so a concurrent writer's
+    /// entries survive (no last-writer-wins clobber).
     fn upsert(&self, entry: ManifestEntry) -> std::io::Result<()> {
-        {
-            let mut m = self.manifest.lock();
+        self.with_locked_manifest(move |m| {
             m.entries
                 .retain(|e| !(e.source == entry.source && e.table == entry.table));
             m.entries.push(entry);
-        }
-        self.flush()
+        })
     }
 
-    /// Persist the current in-memory manifest to disk atomically under the
-    /// cross-process advisory lock.
-    fn flush(&self) -> std::io::Result<()> {
-        let _serialize = self.flush_lock.lock();
-        let snapshot = self.manifest.lock().clone();
-        self.persist_manifest(&snapshot)
+    /// Read-modify-write the on-disk manifest under the cross-process advisory
+    /// lock: read the current state from disk (**not** our possibly-stale
+    /// in-memory copy), apply `f`, persist atomically, and refresh the in-memory
+    /// copy. This is what makes concurrent CLI + daemon writers *merge* rather
+    /// than clobber each other — each writer applies its delta on top of
+    /// whatever the other already committed.
+    fn with_locked_manifest<T>(&self, f: impl FnOnce(&mut Manifest) -> T) -> std::io::Result<T> {
+        let _serialize = self.flush_lock.lock(); // serialize in-process writers
+        let _file_lock = self.lock_manifest_file()?; // serialize cross-process writers
+        let mut manifest = Self::read_manifest_disk(&self.root);
+        let out = f(&mut manifest);
+        Self::write_manifest_disk(&self.root, &manifest)?;
+        *self.manifest.lock() = manifest;
+        Ok(out)
     }
 
-    fn persist_manifest(&self, manifest: &Manifest) -> std::io::Result<()> {
+    /// Open and exclusively lock `manifest.lock`. Releases when the handle drops.
+    fn lock_manifest_file(&self) -> std::io::Result<std::fs::File> {
         let lock_file = std::fs::OpenOptions::new()
             .create(true)
             .truncate(false)
             .write(true)
             .open(self.root.join("manifest.lock"))?;
-        lock_file.lock_exclusive()?; // released on drop
+        lock_file.lock_exclusive()?;
+        Ok(lock_file)
+    }
 
+    /// Read the manifest from disk, or a fresh empty one when absent/unreadable.
+    fn read_manifest_disk(root: &Path) -> Manifest {
+        let path = root.join("manifest.json");
+        std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|raw| serde_json::from_str(&raw).ok())
+            .unwrap_or(Manifest {
+                version: 1,
+                entries: Vec::new(),
+            })
+    }
+
+    /// Atomically persist a manifest: write to a tmp file, fsync, rename. The
+    /// caller must already hold the `manifest.lock` file lock.
+    fn write_manifest_disk(root: &Path, manifest: &Manifest) -> std::io::Result<()> {
         let body = serde_json::to_string_pretty(manifest)?;
-        let tmp_path = self
-            .root
-            .join(format!("manifest.json.tmp.{}", uuid::Uuid::new_v4()));
+        let tmp_path = root.join(format!("manifest.json.tmp.{}", uuid::Uuid::new_v4()));
         {
             let mut f = std::fs::File::create(&tmp_path)?;
             f.write_all(body.as_bytes())?;
             f.sync_all()?;
         }
-        std::fs::rename(&tmp_path, self.root.join("manifest.json"))?;
-        if let Ok(dir) = std::fs::File::open(&self.root) {
+        std::fs::rename(&tmp_path, root.join("manifest.json"))?;
+        if let Ok(dir) = std::fs::File::open(root) {
             let _ = dir.sync_all();
         }
         Ok(())
@@ -408,10 +457,19 @@ impl TableProvider for CachedTableProvider {
         filters: &[Expr],
         limit: Option<usize>,
     ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
-        // Cache hit?
+        // Cache hit? A corrupt file is quarantined and treated as a miss so the
+        // query self-heals by re-fetching rather than failing.
         if let Some(entry) = self.manager.fresh(&self.name) {
-            return read_parquet_as_exec(&entry.file_path, projection)
-                .map_err(|e| DataFusionError::Plan(format!("cache read: {e}")));
+            match read_parquet_as_exec(&entry.file_path, projection) {
+                Ok(exec) => return Ok(exec),
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e, table = %self.name, path = ?entry.file_path,
+                        "cache: corrupt parquet; quarantining and re-fetching"
+                    );
+                    self.manager.quarantine(&self.name, &entry);
+                }
+            }
         }
 
         // Cache miss: fetch live, materialise, write through, then return.
@@ -586,4 +644,82 @@ fn clean_old_tmp(root: &Path, max_age: Duration) -> (u64, u64) {
         }
     }
     (files, bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(root: &Path, source: &str, table: &str) -> ManifestEntry {
+        ManifestEntry {
+            source: source.into(),
+            table: table.into(),
+            written_at: Utc::now(),
+            expires_at: None,
+            row_count: 0,
+            size_bytes: 0,
+            file_path: root
+                .join("data")
+                .join(source)
+                .join(table)
+                .join("part-000000.parquet"),
+        }
+    }
+
+    #[test]
+    fn concurrent_writers_merge_instead_of_clobber() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().to_path_buf();
+        // Two managers over the same root, each created before the other writes
+        // — they hold independent (initially empty) in-memory manifests.
+        let a = CacheManager::new(root.clone()).unwrap();
+        let b = CacheManager::new(root.clone()).unwrap();
+
+        a.upsert(entry(&root, "s", "alpha")).unwrap();
+        // `b` never saw alpha in its in-memory copy; the old wholesale-flush
+        // would clobber it. The merge path reads disk first and keeps both.
+        b.upsert(entry(&root, "s", "beta")).unwrap();
+
+        let fresh = CacheManager::new(root).unwrap();
+        let tables: Vec<String> = fresh.list().into_iter().map(|e| e.name.table).collect();
+        assert!(tables.contains(&"alpha".to_string()), "{tables:?}");
+        assert!(tables.contains(&"beta".to_string()), "{tables:?}");
+    }
+
+    #[test]
+    fn invalidate_does_not_resurrect_other_entries() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().to_path_buf();
+        let mgr = CacheManager::new(root.clone()).unwrap();
+        mgr.upsert(entry(&root, "s", "alpha")).unwrap();
+        mgr.upsert(entry(&root, "s", "beta")).unwrap();
+
+        assert!(mgr.invalidate(&TableName::new("s", "alpha")).unwrap());
+
+        let fresh = CacheManager::new(root).unwrap();
+        let tables: Vec<String> = fresh.list().into_iter().map(|e| e.name.table).collect();
+        assert_eq!(tables, vec!["beta".to_string()], "alpha should stay gone");
+    }
+
+    #[test]
+    fn quarantine_moves_corrupt_file_and_drops_entry() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().to_path_buf();
+        let mgr = CacheManager::new(root.clone()).unwrap();
+
+        let e = entry(&root, "s", "t");
+        std::fs::create_dir_all(e.file_path.parent().unwrap()).unwrap();
+        std::fs::write(&e.file_path, b"this is not parquet").unwrap();
+        mgr.upsert(e.clone()).unwrap();
+        assert!(mgr.fresh(&TableName::new("s", "t")).is_some());
+
+        mgr.quarantine(&TableName::new("s", "t"), &e);
+
+        // Entry dropped, original file gone, one file now under corrupt/.
+        assert!(mgr.fresh(&TableName::new("s", "t")).is_none());
+        assert!(!e.file_path.exists());
+        let corrupt_dir = root.join("corrupt").join("s").join("t");
+        let moved = std::fs::read_dir(&corrupt_dir).unwrap().count();
+        assert_eq!(moved, 1);
+    }
 }

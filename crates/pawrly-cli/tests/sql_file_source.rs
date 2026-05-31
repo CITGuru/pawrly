@@ -169,9 +169,9 @@ fn daemon_mode_sql_round_trip() {
     assert!(stdout.contains("\"n\":\"5\""), "stdout={stdout}");
 }
 
-/// M3 acceptance: local (`--no-remote`) and daemon (`--remote`) modes must
+/// Acceptance: local (`--no-remote`) and daemon (`--remote`) modes must
 /// produce identical stdout, byte-for-byte, for the same SQL across every
-/// user-visible output format. POWA-120.
+/// user-visible output format.
 #[test]
 fn local_and_daemon_byte_for_byte_parity() {
     let tmp = TempDir::new().unwrap();

@@ -5,6 +5,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use chrono::Utc;
 use futures_util::StreamExt as _;
+use pawrly_core::semantic::{SemanticModelDescription, SemanticModelInfo, SemanticQuery};
 use pawrly_core::{
     CacheEntryInfo, CacheMode, CatalogSnapshot, EngineError, EngineService, HealthReport, QueryId,
     QueryRequest, QueryStream, RefreshCatalogOutcome, RefreshOutcome, ReloadReport, SourceDef,
@@ -14,12 +15,14 @@ use pawrly_core::{
 use pawrly_proto::arrow_helpers::decode_frame;
 use pawrly_proto::conv::{engine_error_to_status, status_to_engine_error};
 use pawrly_proto::v1::{
-    self, AddSourceRequest, CancelRequest, ExplainRequest, HealthRequest, InvalidateRequest,
-    ListEntriesRequest, ListSourcesRequest, ListTablesRequest, RefreshCatalogRequest,
-    RefreshRequest, ReloadConfigRequest, RemoveSourceRequest, SchemaSnapshotRequest,
-    TestSourceRequest, VacuumRequest, admin_service_client::AdminServiceClient,
-    cache_service_client::CacheServiceClient, catalog_service_client::CatalogServiceClient,
-    query_response::Payload as QueryPayload, query_service_client::QueryServiceClient,
+    self, AddSourceRequest, CancelRequest, DescribeModelRequest, ExplainRequest, HealthRequest,
+    InvalidateRequest, ListEntriesRequest, ListModelsRequest, ListSourcesRequest, ListTablesRequest,
+    RefreshCatalogRequest, RefreshRequest, ReloadConfigRequest, RemoveSourceRequest,
+    SchemaSnapshotRequest, TestSourceRequest, VacuumRequest,
+    admin_service_client::AdminServiceClient, cache_service_client::CacheServiceClient,
+    catalog_service_client::CatalogServiceClient, query_response::Payload as QueryPayload,
+    query_service_client::QueryServiceClient,
+    semantic_service_client::SemanticServiceClient,
     sources_service_client::SourcesServiceClient,
 };
 use tonic::transport::Channel;
@@ -33,11 +36,12 @@ pub struct RemoteEngineClient {
     catalog: CatalogServiceClient<Channel>,
     sources: SourcesServiceClient<Channel>,
     cache: CacheServiceClient<Channel>,
+    semantic: SemanticServiceClient<Channel>,
     admin: AdminServiceClient<Channel>,
 }
 
 impl RemoteEngineClient {
-    /// Open all five service clients on the given endpoint.
+    /// Open all service clients on the given endpoint.
     pub async fn connect(endpoint: Endpoint) -> Result<Self, tonic::transport::Error> {
         let channel = endpoint.connect().await?;
         Ok(Self {
@@ -45,6 +49,7 @@ impl RemoteEngineClient {
             catalog: CatalogServiceClient::new(channel.clone()),
             sources: SourcesServiceClient::new(channel.clone()),
             cache: CacheServiceClient::new(channel.clone()),
+            semantic: SemanticServiceClient::new(channel.clone()),
             admin: AdminServiceClient::new(channel),
         })
     }
@@ -373,6 +378,71 @@ impl EngineService for RemoteEngineClient {
             sources_removed: resp.sources_removed,
             sources_changed: resp.sources_changed,
         })
+    }
+
+    async fn list_semantic_models(&self) -> Result<Vec<SemanticModelInfo>, EngineError> {
+        let mut client = self.semantic.clone();
+        let resp = client
+            .list_models(ListModelsRequest {})
+            .await
+            .map_err(status_to_engine_error)?
+            .into_inner();
+        Ok(resp.models.into_iter().map(Into::into).collect())
+    }
+
+    async fn describe_semantic_model(
+        &self,
+        name: &str,
+    ) -> Result<SemanticModelDescription, EngineError> {
+        let mut client = self.semantic.clone();
+        let resp = client
+            .describe_model(DescribeModelRequest {
+                name: name.to_string(),
+            })
+            .await
+            .map_err(status_to_engine_error)?
+            .into_inner();
+        resp.model
+            .ok_or_else(|| EngineError::Protocol("DescribeModelResponse missing model".into()))?
+            .try_into()
+            .map_err(|e: pawrly_proto::conv::ConvError| EngineError::Protocol(e.to_string()))
+    }
+
+    async fn semantic_query(&self, q: SemanticQuery) -> Result<QueryStream, EngineError> {
+        let mut client = self.semantic.clone();
+        let proto: v1::SemanticQueryRequest = q.into();
+        let mut server_stream = client
+            .semantic_query(proto)
+            .await
+            .map_err(status_to_engine_error)?
+            .into_inner();
+
+        let stream = async_stream::try_stream! {
+            while let Some(frame) = server_stream.next().await {
+                let frame = frame.map_err(status_to_engine_error)?;
+                let Some(payload) = frame.payload else { continue; };
+                match payload {
+                    QueryPayload::Started(_) => continue,
+                    QueryPayload::IpcStream(bytes) => {
+                        let batches = decode_frame(&bytes)
+                            .map_err(|e| EngineError::Protocol(format!("ipc decode: {e}")))?;
+                        for b in batches {
+                            yield b;
+                        }
+                    }
+                    QueryPayload::Completed(_) => continue,
+                    QueryPayload::Error(err) => {
+                        let mut s = tonic::Status::internal(err.message.clone());
+                        if let Ok(v) = err.code.parse() {
+                            s.metadata_mut().insert("pawrly-error-code", v);
+                        }
+                        Err(status_to_engine_error(s))?;
+                    }
+                }
+            }
+        };
+
+        Ok(Box::pin(stream))
     }
 
     async fn health(&self) -> Result<HealthReport, EngineError> {

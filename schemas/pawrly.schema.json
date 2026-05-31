@@ -42,7 +42,7 @@
       ]
     },
     "include": {
-      "description": "Files (or glob patterns) whose `sources:` and optional `secrets:` are merged into this config before validation. Resolved relative to the declaring file. See docs/14-multi-file-sources.md.",
+      "description": "Files (or glob patterns) whose `sources:` and optional `secrets:` are merged into this config before validation. Resolved relative to the declaring file.",
       "type": "array",
       "items": {
         "type": "string"
@@ -60,6 +60,17 @@
       "items": {
         "$ref": "#/definitions/SecretsBackendDef"
       }
+    },
+    "semantic": {
+      "description": "Optional semantic layer. Absent = the layer is off and behavior is unchanged.",
+      "anyOf": [
+        {
+          "$ref": "#/definitions/SemanticConfig"
+        },
+        {
+          "type": "null"
+        }
+      ]
     },
     "sources": {
       "description": "Declared sources.",
@@ -91,6 +102,13 @@
             {
               "$ref": "#/definitions/CachePolicy"
             }
+          ]
+        },
+        "namespace": {
+          "description": "Sub-directory of `storage` that isolates this workspace's cached data. When unset, a stable id is derived from the workspace path so different workspaces sharing the same `storage` root never collide on identical `schema.table` names. Set it explicitly to pin a stable namespace (e.g. across a moved directory) or to deliberately share a cache between workspaces.",
+          "type": [
+            "string",
+            "null"
           ]
         },
         "storage": {
@@ -261,6 +279,49 @@
         }
       }
     },
+    "Dimension": {
+      "description": "A groupable attribute. `expr` is a raw SQL fragment over the base table.",
+      "type": "object",
+      "required": [
+        "expr",
+        "name",
+        "type"
+      ],
+      "properties": {
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "expr": {
+          "type": "string"
+        },
+        "grains": {
+          "description": "Valid time grains; meaningful only when `data_type == Time`.",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/TimeGrain"
+          }
+        },
+        "name": {
+          "type": "string"
+        },
+        "type": {
+          "$ref": "#/definitions/DimensionType"
+        }
+      }
+    },
+    "DimensionType": {
+      "description": "The kind of a dimension.",
+      "type": "string",
+      "enum": [
+        "string",
+        "number",
+        "time",
+        "bool"
+      ]
+    },
     "EngineDefaults": {
       "description": "Engine section under `defaults:`.",
       "type": "object",
@@ -310,6 +371,83 @@
         }
       }
     },
+    "Measure": {
+      "description": "An aggregation formula.",
+      "type": "object",
+      "required": [
+        "agg",
+        "expr",
+        "name"
+      ],
+      "properties": {
+        "agg": {
+          "$ref": "#/definitions/MeasureAgg"
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "expr": {
+          "description": "Raw SQL fragment the aggregate is applied to.",
+          "type": "string"
+        },
+        "filters": {
+          "description": "Measure-scoped predicates compiled into a `FILTER (WHERE ...)` clause.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "format": {
+          "description": "Display format hint for clients (e.g. `\"$#,##0.00\"`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        }
+      }
+    },
+    "MeasureAgg": {
+      "description": "The aggregation kind for a [`Measure`].\n\nExternally tagged: unit variants deserialize from a bare string (`agg: count_distinct`), and `Custom` from a map (`agg: { custom: { sql: \"...\" } }`).",
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "sum",
+            "count",
+            "count_distinct",
+            "avg",
+            "min",
+            "max"
+          ]
+        },
+        {
+          "type": "object",
+          "required": [
+            "custom"
+          ],
+          "properties": {
+            "custom": {
+              "type": "object",
+              "required": [
+                "sql"
+              ],
+              "properties": {
+                "sql": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
     "OptimizerDefaults": {
       "description": "Optimizer section under `defaults:`.",
       "type": "object",
@@ -319,7 +457,7 @@
           "type": "boolean"
         },
         "dynamic_filter_pushdown": {
-          "description": "Off in v1; flipped on after the dynamic-filter milestone (P10).",
+          "description": "Off in v1; enabled once dynamic-filter pushdown is implemented.",
           "default": false,
           "type": "boolean"
         },
@@ -328,6 +466,83 @@
           "type": "boolean"
         }
       }
+    },
+    "PreAggregation": {
+      "description": "A declared rollup: a pre-materialized grouping that the matcher can swap in for the base table when it covers the query.",
+      "type": "object",
+      "required": [
+        "dimensions",
+        "measures",
+        "name"
+      ],
+      "properties": {
+        "dimensions": {
+          "description": "Dimension members, possibly grained, e.g. `[\"order_date.day\", \"status\"]`.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "measures": {
+          "description": "Measure names defined on the owning model.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "name": {
+          "type": "string"
+        },
+        "partition_by": {
+          "description": "Optional partition member, e.g. `\"order_date.month\"`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "refresh": {
+          "description": "Refresh cadence; how often the materializer rebuilds the rollup.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "Relationship": {
+      "description": "A join from one model to another. `join_predicate` is a raw SQL fragment in which `this` aliases the declaring model and the target is referenced by its model name (e.g. `\"this.customer_id = customers.id\"`).",
+      "type": "object",
+      "required": [
+        "kind",
+        "name",
+        "on",
+        "target"
+      ],
+      "properties": {
+        "kind": {
+          "$ref": "#/definitions/RelationshipKind"
+        },
+        "name": {
+          "type": "string"
+        },
+        "on": {
+          "description": "SQL join condition; `this` = the declaring model's alias.",
+          "type": "string"
+        },
+        "target": {
+          "description": "Name of the model this relationship joins to.",
+          "type": "string"
+        }
+      }
+    },
+    "RelationshipKind": {
+      "description": "Cardinality of a [`Relationship`], which picks the join type: `*-to-one` joins are `INNER`, `*-to-many` are `LEFT`.",
+      "type": "string",
+      "enum": [
+        "many_to_one",
+        "one_to_many",
+        "one_to_one"
+      ]
     },
     "SafetyDefaults": {
       "description": "Safety section under `defaults:`.",
@@ -376,6 +591,13 @@
             "type": "string"
           }
         },
+        "required_predicates": {
+          "description": "Predicates AND-ed into every scan of the owning semantic model. May reference `${param:NAME}` placeholders, bound from `SemanticQuery::params` as escaped SQL literals at compile time (never interpolated as SQL fragments — see `pawrly-semantic`). Used for row-level security and always-on filters.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
         "timeout": {
           "description": "Per-query timeout override.",
           "type": [
@@ -405,13 +627,21 @@
           "additionalProperties": false
         },
         {
-          "description": "YAML file on disk.",
+          "description": "A file on disk — a YAML map or a dotenv (`.env`) file. The `format` defaults to auto-detection from the file extension. Relative paths resolve against the directory of the declaring config file.",
           "type": "object",
           "required": [
             "kind",
             "path"
           ],
           "properties": {
+            "format": {
+              "default": "auto",
+              "allOf": [
+                {
+                  "$ref": "#/definitions/SecretsFileFormat"
+                }
+              ]
+            },
             "kind": {
               "type": "string",
               "enum": [
@@ -443,8 +673,133 @@
             }
           },
           "additionalProperties": false
+        },
+        {
+          "description": "Convenience chain: process environment, then the OS keyring (service `pawrly`), then a `.env` file in the config directory if one exists. A missing or insecure `.env` is skipped (with a warning), never fatal.",
+          "type": "object",
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "auto"
+              ]
+            }
+          },
+          "additionalProperties": false
         }
       ]
+    },
+    "SecretsFileFormat": {
+      "description": "On-disk format of a [`SecretsBackendDef::File`] backend.",
+      "oneOf": [
+        {
+          "description": "Detect from the file extension (`.env` → dotenv, else YAML).",
+          "type": "string",
+          "enum": [
+            "auto"
+          ]
+        },
+        {
+          "description": "A YAML map of `KEY: value`.",
+          "type": "string",
+          "enum": [
+            "yaml"
+          ]
+        },
+        {
+          "description": "Dotenv-style `KEY=value` lines.",
+          "type": "string",
+          "enum": [
+            "dotenv"
+          ]
+        }
+      ]
+    },
+    "SemanticConfig": {
+      "description": "The `semantic:` config block — a set of business-named models.",
+      "type": "object",
+      "properties": {
+        "models": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/SemanticModel"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "SemanticModel": {
+      "description": "A logical entity anchored on one physical table.",
+      "type": "object",
+      "required": [
+        "dimensions",
+        "measures",
+        "name",
+        "source"
+      ],
+      "properties": {
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "dimensions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Dimension"
+          }
+        },
+        "measures": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Measure"
+          }
+        },
+        "name": {
+          "description": "Business name, e.g. `orders`. Used as the member prefix.",
+          "type": "string"
+        },
+        "pre_aggregations": {
+          "description": "Declared rollups. The rollup matcher rewrites the `FROM` clause to a materialized pre-agg when one covers the query; materialization itself is handled by the cache layer.",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/PreAggregation"
+          }
+        },
+        "primary_key": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "relationships": {
+          "description": "Joins to other models, walked by the compiler to answer queries whose members span models.",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Relationship"
+          }
+        },
+        "safety": {
+          "description": "Per-model guard rails. `required_predicates` (RLS) are AND-ed into every compiled query for this model.",
+          "anyOf": [
+            {
+              "$ref": "#/definitions/SafetyPolicy"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "source": {
+          "description": "`\"schema.table\"` reference to a table registered in the `pawrly` catalog (schema = source name). Parsed by the compiler, not at deserialization time, so a malformed value surfaces as a query-time error rather than a config-load panic.",
+          "type": "string"
+        }
+      }
     },
     "SourceDef": {
       "description": "One source declaration.",
@@ -475,7 +830,7 @@
           ]
         },
         "from": {
-          "description": "Optional path to a YAML file containing the rest of this source's body. Resolved relative to the declaring file. See docs/14-multi-file-sources.md.",
+          "description": "Optional path to a YAML file containing the rest of this source's body. Resolved relative to the declaring file.",
           "type": [
             "string",
             "null"
@@ -588,6 +943,18 @@
           ]
         }
       }
+    },
+    "TimeGrain": {
+      "description": "A time-bucketing grain applied via `DATE_TRUNC`.",
+      "type": "string",
+      "enum": [
+        "hour",
+        "day",
+        "week",
+        "month",
+        "quarter",
+        "year"
+      ]
     }
   }
 }

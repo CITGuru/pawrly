@@ -9,6 +9,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "proto/pawrly/v1/sources.proto",
         "proto/pawrly/v1/cache.proto",
         "proto/pawrly/v1/admin.proto",
+        "proto/pawrly/v1/semantic.proto",
     ];
 
     println!("cargo:rerun-if-changed={proto_root}");

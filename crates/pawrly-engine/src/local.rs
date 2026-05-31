@@ -9,12 +9,14 @@ use chrono::Utc;
 use datafusion::catalog::{CatalogProvider, MemoryCatalogProvider};
 use datafusion::execution::context::SessionContext;
 use parking_lot::{Mutex, RwLock};
+use pawrly_core::semantic::{SemanticModelDescription, SemanticModelInfo, SemanticQuery};
 use pawrly_core::{
     CacheEntryInfo, CachePolicy, CatalogSnapshot, ColumnSpec, EngineError, EngineService,
     HealthReport, QueryId, QueryRequest, QueryStream, RefreshCatalogOutcome, RefreshOutcome,
     ReloadReport, SchemaSummary, SourceDef, SourceInfo, SourceStatus, SourceTestReport,
     TableDescription, TableFilter, TableInfo, TableName, TableSummary, VacuumReport,
 };
+use pawrly_semantic::SemanticCatalog;
 use tokio::task::JoinHandle;
 
 use crate::cache::CacheManager;
@@ -63,6 +65,8 @@ struct LocalEngineInner {
     sources: RwLock<HashMap<String, RegisteredSource>>,
     workspace_dir: PathBuf,
     cache: Arc<CacheManager>,
+    /// Compiled semantic-layer models. Empty when no `semantic:` block exists.
+    semantic: Arc<SemanticCatalog>,
     /// Background cache refreshers keyed by source name (one entry per
     /// `refresh`/`cron` table). Aborted on shutdown, source removal, and before
     /// a source is re-registered so re-registration never leaks tasks.
@@ -111,7 +115,18 @@ impl LocalEngine {
             .map_err(|e| EngineError::Internal(format!("register default schema: {e}")))?;
         ctx.register_catalog(PAWRLY_CATALOG, catalog.clone());
 
-        let cache_root = cfg.workspace_dir.join(".pawrly").join("cache");
+        // The cache root comes from `defaults.cache.storage` (default
+        // `~/.pawrly/cache`), NOT the workspace dir, so cached data lives under
+        // `$HOME` regardless of where the CLI is invoked from. `~` / `~/` is
+        // expanded against `$HOME`. A per-workspace namespace segment is then
+        // appended so different workspaces sharing the same storage root never
+        // collide on identical `schema.table` keys.
+        let storage = expand_tilde(&cfg.config.defaults.cache.storage);
+        let namespace = cache_namespace(
+            cfg.config.defaults.cache.namespace.as_deref(),
+            &cfg.workspace_dir,
+        );
+        let cache_root = storage.join(namespace);
         let cache = Arc::new(
             CacheManager::new(cache_root)
                 .map_err(|e| EngineError::Internal(format!("cache init: {e}")))?,
@@ -119,12 +134,23 @@ impl LocalEngine {
 
         let duckdb = Arc::new(DuckDbPool::new(cfg.resolved_pool_size())?);
 
+        // Build the semantic catalog before the config is consumed into
+        // engine-side sources below.
+        let semantic_models = cfg
+            .config
+            .semantic
+            .as_ref()
+            .map(|s| s.models.clone())
+            .unwrap_or_default();
+        let semantic = Arc::new(SemanticCatalog::new(semantic_models));
+
         let inner = Arc::new(LocalEngineInner {
             ctx,
             catalog,
             sources: RwLock::new(HashMap::new()),
             workspace_dir: cfg.workspace_dir.clone(),
             cache,
+            semantic,
             refreshers: Mutex::new(HashMap::new()),
             config_path,
             duckdb,
@@ -139,11 +165,14 @@ impl LocalEngine {
     }
 
     /// Convenience: load a YAML config from disk and build an engine in one step.
-    /// Uses the default secret chain (env + keyring with service=pawrly).
+    /// The secret-resolution chain is built from the config's `secrets:` block
+    /// (defaulting to the `auto` chain: env, keyring, then a `.env` file).
     pub async fn from_config_file(path: &std::path::Path) -> Result<Self, EngineError> {
-        let secrets = pawrly_secrets::default_chain();
-        let cfg = pawrly_config::load(path, &secrets)
+        let cfg = pawrly_config::load_auto(path)
             .map_err(|e| EngineError::Internal(e.to_string()))?;
+        // `workspace_dir` only anchors relative *source* paths to the config
+        // file's directory. The `.pawrly/` data dir is resolved separately from
+        // `defaults.cache.storage` (default `~/.pawrly`), not from here.
         let workspace_dir = path
             .parent()
             .map(std::path::Path::to_path_buf)
@@ -168,6 +197,7 @@ impl LocalEngine {
             secrets: Vec::new(),
             include: Vec::new(),
             sources: Vec::new(),
+            semantic: None,
         };
         Self::new(LocalEngineConfig {
             config: cfg,
@@ -175,6 +205,127 @@ impl LocalEngine {
             duckdb_pool_size: None,
         })
         .await
+    }
+}
+
+/// Resolve the per-workspace cache namespace (a single path segment under the
+/// shared storage root).
+///
+/// With an explicit `namespace` set in config, it is sanitized and used as-is
+/// (so users can pin a stable id or deliberately share a cache). Otherwise a
+/// stable id `<dirname>-<hash>` is derived from the canonicalized workspace
+/// path, so distinct workspaces never collide on identical `schema.table`
+/// names while the same workspace always maps to the same directory.
+fn cache_namespace(explicit: Option<&str>, workspace_dir: &std::path::Path) -> String {
+    if let Some(ns) = explicit {
+        // Require a real alphanumeric character so a blank or all-whitespace
+        // value (which would sanitize to e.g. `---`) falls back to the derived
+        // id rather than becoming a meaningless directory name.
+        if ns.chars().any(|c| c.is_ascii_alphanumeric()) {
+            return sanitize_segment(ns);
+        }
+    }
+    // Canonicalize so `./foo`, `foo`, and `/abs/foo` map to one id. Fall back
+    // to the raw path if canonicalization fails (e.g. dir not yet created).
+    let canonical = std::fs::canonicalize(workspace_dir)
+        .unwrap_or_else(|_| workspace_dir.to_path_buf());
+    let hash = fnv1a_hex(canonical.as_os_str().as_encoded_bytes());
+    let dirname = canonical
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(sanitize_segment)
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "workspace".to_string());
+    format!("{dirname}-{hash}")
+}
+
+/// Keep a path segment filesystem-safe: alphanumerics, `_`, `-`, `.` pass
+/// through; every other character becomes `-`.
+fn sanitize_segment(s: &str) -> String {
+    s.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.') {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect()
+}
+
+/// FNV-1a 64-bit hash, rendered as 16 lowercase hex chars. Hand-rolled so the
+/// on-disk namespace is stable across Rust toolchain versions (unlike
+/// `std`'s `DefaultHasher`), which matters for a persistent directory name.
+fn fnv1a_hex(bytes: &[u8]) -> String {
+    const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut hash = OFFSET;
+    for &b in bytes {
+        hash ^= u64::from(b);
+        hash = hash.wrapping_mul(PRIME);
+    }
+    format!("{hash:016x}")
+}
+
+/// Expand a leading `~` / `~/` in a path against `$HOME`. Any other path is
+/// returned unchanged. Used to resolve the cache storage root so the default
+/// `~/.pawrly/cache` lands under `$HOME`, not the workspace.
+fn expand_tilde(path: &std::path::Path) -> PathBuf {
+    let s = path.to_string_lossy();
+    if s == "~" {
+        if let Some(home) = std::env::var_os("HOME") {
+            return PathBuf::from(home);
+        }
+    } else if let Some(rest) = s.strip_prefix("~/") {
+        if let Some(home) = std::env::var_os("HOME") {
+            return PathBuf::from(home).join(rest);
+        }
+    }
+    path.to_path_buf()
+}
+
+#[cfg(test)]
+mod cache_path_tests {
+    use super::{cache_namespace, fnv1a_hex, sanitize_segment};
+    use std::path::Path;
+
+    #[test]
+    fn explicit_namespace_is_sanitized_and_used() {
+        let ns = cache_namespace(Some("My Cache/v2"), Path::new("/whatever"));
+        assert_eq!(ns, "My-Cache-v2");
+    }
+
+    #[test]
+    fn blank_explicit_namespace_falls_back_to_derived() {
+        // An all-illegal-to-empty explicit value must not yield an empty segment.
+        let ns = cache_namespace(Some("   "), Path::new("/tmp"));
+        assert!(ns.contains('-') && !ns.starts_with('-'));
+    }
+
+    #[test]
+    fn derived_namespace_is_stable_and_distinct() {
+        // Same path → same id; different paths → different ids.
+        let a1 = cache_namespace(None, Path::new("/tmp/ws-a-does-not-exist"));
+        let a2 = cache_namespace(None, Path::new("/tmp/ws-a-does-not-exist"));
+        let b = cache_namespace(None, Path::new("/tmp/ws-b-does-not-exist"));
+        assert_eq!(a1, a2, "same workspace path must map to the same namespace");
+        assert_ne!(a1, b, "distinct workspaces must not collide");
+        assert!(a1.starts_with("ws-a-does-not-exist-"));
+    }
+
+    #[test]
+    fn fnv_is_16_hex_and_deterministic() {
+        let h = fnv1a_hex(b"hello");
+        assert_eq!(h.len(), 16);
+        assert_eq!(h, fnv1a_hex(b"hello"));
+        assert_ne!(h, fnv1a_hex(b"world"));
+        assert!(h.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn sanitize_keeps_safe_chars() {
+        assert_eq!(sanitize_segment("a_b-c.d1"), "a_b-c.d1");
+        assert_eq!(sanitize_segment("a/b\\c d"), "a-b-c-d");
     }
 }
 
@@ -525,8 +676,7 @@ impl EngineService for LocalEngine {
             ));
         };
 
-        let secrets = pawrly_secrets::default_chain();
-        let cfg = pawrly_config::load(&path, &secrets)
+        let cfg = pawrly_config::load_auto(&path)
             .map_err(|e| EngineError::Internal(e.to_string()))?;
         let new_defs = cfg.into_engine_sources();
 
@@ -569,6 +719,36 @@ impl EngineService for LocalEngine {
         }
 
         Ok(report)
+    }
+
+    async fn list_semantic_models(&self) -> Result<Vec<SemanticModelInfo>, EngineError> {
+        Ok(self.inner.semantic.list())
+    }
+
+    async fn describe_semantic_model(
+        &self,
+        name: &str,
+    ) -> Result<SemanticModelDescription, EngineError> {
+        self.inner
+            .semantic
+            .describe(name)
+            .ok_or_else(|| EngineError::SemanticPlan(format!("unknown semantic model `{name}`")))
+    }
+
+    async fn semantic_query(&self, q: SemanticQuery) -> Result<QueryStream, EngineError> {
+        // Compile to SQL and execute through the same DataFusion path as `query`.
+        let sql = self.inner.semantic.compile_sql(&q)?;
+        let df = self
+            .inner
+            .ctx
+            .sql(&sql)
+            .await
+            .map_err(|e| EngineError::InvalidSql(e.to_string()))?;
+        let stream = df
+            .execute_stream()
+            .await
+            .map_err(|e| EngineError::Internal(format!("datafusion: {e}")))?;
+        Ok(crate::stream::adapt(stream))
     }
 
     async fn health(&self) -> Result<HealthReport, EngineError> {

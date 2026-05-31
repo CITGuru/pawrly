@@ -4,7 +4,6 @@
 # Demonstrates both composition primitives:
 #   - `include:` splices whole `sources:` lists from other files (globs ok).
 #   - `from:`    loads one source's body from a partial-SourceDef file.
-# See docs/14-multi-file-sources.md.
 
 version: 1
 name: multi-file

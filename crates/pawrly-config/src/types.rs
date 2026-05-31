@@ -6,6 +6,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use pawrly_core::semantic::SemanticModel;
 use pawrly_core::{CachePolicy, SafetyPolicy, SourceKind};
 
 use crate::defaults::Defaults;
@@ -39,10 +40,23 @@ pub struct Config {
     /// Declared sources.
     #[serde(default)]
     pub sources: Vec<SourceDef>,
+
+    /// Optional semantic layer. Absent = the layer is off and behavior is
+    /// unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub semantic: Option<SemanticConfig>,
 }
 
 fn default_name() -> String {
     "default".to_string()
+}
+
+/// The `semantic:` config block — a set of business-named models.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SemanticConfig {
+    #[serde(default)]
+    pub models: Vec<SemanticModel>,
 }
 
 /// One secret backend in the resolution chain.
@@ -51,13 +65,36 @@ fn default_name() -> String {
 pub enum SecretsBackendDef {
     /// Process environment.
     Env,
-    /// YAML file on disk.
-    File { path: String },
+    /// A file on disk — a YAML map or a dotenv (`.env`) file. The `format`
+    /// defaults to auto-detection from the file extension. Relative paths
+    /// resolve against the directory of the declaring config file.
+    File {
+        path: String,
+        #[serde(default)]
+        format: SecretsFileFormat,
+    },
     /// OS keyring under the given service.
     Keyring {
         #[serde(default = "default_keyring_service")]
         service: String,
     },
+    /// Convenience chain: process environment, then the OS keyring (service
+    /// `pawrly`), then a `.env` file in the config directory if one exists.
+    /// A missing or insecure `.env` is skipped (with a warning), never fatal.
+    Auto,
+}
+
+/// On-disk format of a [`SecretsBackendDef::File`] backend.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum SecretsFileFormat {
+    /// Detect from the file extension (`.env` → dotenv, else YAML).
+    #[default]
+    Auto,
+    /// A YAML map of `KEY: value`.
+    Yaml,
+    /// Dotenv-style `KEY=value` lines.
+    Dotenv,
 }
 
 fn default_keyring_service() -> String {

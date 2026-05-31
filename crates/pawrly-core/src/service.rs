@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use crate::cache::{CacheEntryInfo, RefreshOutcome, VacuumReport};
 use crate::error::EngineError;
 use crate::schema::{CatalogSnapshot, TableDescription, TableFilter, TableInfo, TableName};
+use crate::semantic::{SemanticModelDescription, SemanticModelInfo, SemanticQuery};
 use crate::source::{
     HealthReport, RefreshCatalogOutcome, ReloadReport, SourceDef, SourceInfo, SourceTestReport,
 };
@@ -133,6 +134,21 @@ pub trait EngineService: Send + Sync + 'static {
 
     async fn reload_config(&self) -> Result<ReloadReport, EngineError>;
 
+    // -------- semantic --------
+
+    /// List the semantic models defined in the workspace.
+    async fn list_semantic_models(&self) -> Result<Vec<SemanticModelInfo>, EngineError>;
+
+    /// Return the full spec (dimensions, measures) for one model.
+    async fn describe_semantic_model(
+        &self,
+        name: &str,
+    ) -> Result<SemanticModelDescription, EngineError>;
+
+    /// Compile and execute a structured query, returning a streaming result
+    /// in the same shape as [`EngineService::query`].
+    async fn semantic_query(&self, q: SemanticQuery) -> Result<QueryStream, EngineError>;
+
     // -------- lifecycle --------
 
     async fn health(&self) -> Result<HealthReport, EngineError>;
@@ -163,6 +179,23 @@ pub trait EngineServiceExt: EngineService {
     async fn query_one(&self, sql: &str) -> Result<Option<RecordBatch>, EngineError> {
         let batches = self.query_collect(sql).await?;
         Ok(batches.into_iter().next())
+    }
+
+    /// Run a [`SemanticQuery`](crate::semantic::SemanticQuery) and collect every
+    /// batch. Same caveat as [`query_collect`](Self::query_collect): for small
+    /// result sets only.
+    async fn semantic_query_collect(
+        &self,
+        q: crate::semantic::SemanticQuery,
+    ) -> Result<Vec<RecordBatch>, EngineError> {
+        use futures_util::StreamExt as _;
+
+        let mut stream = self.semantic_query(q).await?;
+        let mut out = Vec::new();
+        while let Some(batch) = stream.next().await {
+            out.push(batch?);
+        }
+        Ok(out)
     }
 }
 

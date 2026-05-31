@@ -18,6 +18,7 @@ use crate::schema::{
     CatalogSnapshot, ColumnSpec, SchemaSummary, TableDescription, TableFilter, TableInfo,
     TableName, TableSummary,
 };
+use crate::semantic::{SemanticModelDescription, SemanticModelInfo, SemanticQuery};
 use crate::service::{EngineService, QueryRequest, QueryStream};
 use crate::source::{
     HealthReport, RefreshCatalogOutcome, ReloadReport, SourceDef, SourceInfo, SourceStatus,
@@ -277,6 +278,30 @@ impl EngineService for MockEngine {
 
     async fn reload_config(&self) -> Result<ReloadReport, EngineError> {
         Ok(ReloadReport::default())
+    }
+
+    async fn list_semantic_models(&self) -> Result<Vec<SemanticModelInfo>, EngineError> {
+        Ok(Vec::new())
+    }
+
+    async fn describe_semantic_model(
+        &self,
+        name: &str,
+    ) -> Result<SemanticModelDescription, EngineError> {
+        Err(EngineError::SemanticPlan(format!(
+            "unknown semantic model `{name}`"
+        )))
+    }
+
+    async fn semantic_query(&self, _q: SemanticQuery) -> Result<QueryStream, EngineError> {
+        // MockEngine returns no rows for semantic queries by default.
+        let batches: Vec<RecordBatch> = Vec::new();
+        let stream = async_stream::stream! {
+            for batch in batches {
+                yield Ok(batch);
+            }
+        };
+        Ok(Box::pin(stream))
     }
 
     async fn health(&self) -> Result<HealthReport, EngineError> {

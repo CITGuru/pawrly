@@ -30,6 +30,14 @@ pub struct SafetyPolicy {
     #[serde(with = "humantime_serde::option")]
     #[schemars(with = "Option<String>")]
     pub timeout: Option<Duration>,
+
+    /// Predicates AND-ed into every scan of the owning semantic model. May
+    /// reference `${param:NAME}` placeholders, bound from
+    /// `SemanticQuery::params` as escaped SQL literals at compile time (never
+    /// interpolated as SQL fragments — see `pawrly-semantic`). Used for
+    /// row-level security and always-on filters.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub required_predicates: Vec<String>,
 }
 
 impl SafetyPolicy {

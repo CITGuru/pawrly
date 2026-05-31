@@ -1,0 +1,9 @@
+id,tenant_id,customer_id,status,total_amount,ordered_at,shipping_country_code
+1,acme,10,paid,100.00,2026-01-15,US
+2,acme,10,paid,200.00,2026-01-20,US
+3,acme,20,refunded,50.00,2026-02-10,CA
+4,acme,20,paid,300.00,2026-02-15,GB
+5,acme,20,pending,120.00,2026-03-02,GB
+6,globex,30,paid,500.00,2026-01-05,US
+7,globex,30,pending,80.00,2026-02-02,DE
+8,globex,40,paid,420.00,2026-03-11,DE

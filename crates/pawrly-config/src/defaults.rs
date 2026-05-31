@@ -28,6 +28,14 @@ pub struct CacheDefaults {
     /// Default cache mode applied to tables that don't declare their own.
     #[serde(default)]
     pub mode: CachePolicy,
+    /// Sub-directory of `storage` that isolates this workspace's cached data.
+    /// When unset, a stable id is derived from the workspace path so different
+    /// workspaces sharing the same `storage` root never collide on identical
+    /// `schema.table` names. Set it explicitly to pin a stable namespace (e.g.
+    /// across a moved directory) or to deliberately share a cache between
+    /// workspaces.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub namespace: Option<String>,
 }
 
 impl Default for CacheDefaults {
@@ -35,6 +43,7 @@ impl Default for CacheDefaults {
         Self {
             storage: PathBuf::from("~/.pawrly/cache"),
             mode: CachePolicy::None,
+            namespace: None,
         }
     }
 }

@@ -5,6 +5,7 @@ members = [
     "crates/pawrly-config",
     "crates/pawrly-secrets",
     "crates/pawrly-proto",
+    "crates/pawrly-semantic",
     "crates/pawrly-engine",
     "crates/pawrly-server",
     "crates/pawrly-client",
@@ -31,6 +32,7 @@ pawrly-core = { path = "crates/pawrly-core" }
 pawrly-config = { path = "crates/pawrly-config" }
 pawrly-secrets = { path = "crates/pawrly-secrets" }
 pawrly-proto = { path = "crates/pawrly-proto" }
+pawrly-semantic = { path = "crates/pawrly-semantic" }
 pawrly-engine = { path = "crates/pawrly-engine" }
 pawrly-server = { path = "crates/pawrly-server" }
 pawrly-client = { path = "crates/pawrly-client" }

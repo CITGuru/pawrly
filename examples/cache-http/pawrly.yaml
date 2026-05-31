@@ -1,0 +1,65 @@
+# Caching a public HTTP API — the Cat Facts API (no auth required).
+# yaml-language-server: $schema=../../schemas/pawrly.schema.json
+#
+# Demonstrates `kind: http` over a public REST endpoint plus per-source caching:
+# the first query fetches live and writes Parquet to the cache; subsequent
+# queries within the TTL are served from disk without touching the network.
+#
+# Try it (cache path is independent of cwd — see docs/config.md):
+#   pawrly --config examples/cache-http/pawrly.yaml schema
+#   pawrly --config examples/cache-http/pawrly.yaml sql \
+#     'SELECT length, fact FROM cats.facts ORDER BY length DESC LIMIT 5'
+#
+#   # Inspect what got cached (one entry per queried table):
+#   pawrly --config examples/cache-http/pawrly.yaml cache list
+#
+#   # A second run of the same query is served from the cached Parquet:
+#   pawrly --config examples/cache-http/pawrly.yaml sql \
+#     'SELECT COUNT(*) AS n FROM cats.facts'
+#
+#   # Force a re-fetch before the TTL expires, or clear it:
+#   pawrly --config examples/cache-http/pawrly.yaml cache refresh cats.facts
+#   pawrly --config examples/cache-http/pawrly.yaml cache invalidate cats.facts
+
+version: 1
+name: cache-http-example
+
+sources:
+  - name: cats
+    kind: http
+    description: Cat Facts API (catfact.ninja) — public, no key.
+    config:
+      base_url: https://catfact.ninja
+
+    # Source-level cache: applies to every table below unless one overrides it.
+    # `ttl` serves cached data until it expires, then re-fetches on the next
+    # read. Swap for `mode: refresh, every: 1h` to keep it warm in the
+    # background, or `mode: none` to always go live.
+    cache:
+      mode: ttl
+      ttl: 1h
+
+    tables:
+      # GET https://catfact.ninja/facts?limit=50
+      # → {"current_page":1,"data":[{"fact":"...","length":114}, ...], ...}
+      # The row array lives at the top-level `data` key, so response.path = $.data.
+      - name: facts
+        endpoint: /facts?limit=50
+        response:
+          path: $.data
+          schema:
+            - { name: fact,   type: varchar }
+            - { name: length, type: bigint }
+
+      # GET https://catfact.ninja/breeds?limit=50
+      # → {"data":[{"breed","country","origin","coat","pattern"}], ...}
+      - name: breeds
+        endpoint: /breeds?limit=50
+        response:
+          path: $.data
+          schema:
+            - { name: breed,   type: varchar }
+            - { name: country, type: varchar }
+            - { name: origin,  type: varchar }
+            - { name: coat,    type: varchar }
+            - { name: pattern, type: varchar }

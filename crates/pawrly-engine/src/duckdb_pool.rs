@@ -4,7 +4,7 @@
 //! in `tokio::task::spawn_blocking`. A single shared in-memory database is
 //! held behind a `Mutex`; the `Semaphore` bounds how many in-flight callers
 //! contend for it. DuckDB itself parallelizes work within a single query, so
-//! one connection is sufficient for v1; M7 may revisit by holding multiple
+//! one connection is sufficient for now; we may revisit by holding multiple
 //! connections cloned from the same underlying database if pool contention
 //! becomes a measurable bottleneck.
 
@@ -261,7 +261,7 @@ mod tests {
     async fn pool_loads_extension_idempotently() {
         // `LOAD json` reads from `~/.duckdb/extensions/<linked-version>/...`,
         // so a pre-existing cache for a different DuckDB version makes the
-        // load fail (POWA-122). Run the full INSTALL+LOAD path here so the
+        // load fail. Run the full INSTALL+LOAD path here so the
         // extension is fetched for whatever version libduckdb-sys is linked
         // against. If the host is offline and the cache is stale/missing,
         // skip rather than fail — this test exercises the in-process cache

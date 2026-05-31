@@ -327,6 +327,7 @@ pub fn status_to_engine_error(status: tonic::Status) -> core::EngineError {
         "PAWRLY_UNKNOWN_TABLE" => core::EngineError::UnknownTable(msg),
         "PAWRLY_UNKNOWN_KIND" => core::EngineError::UnknownKind(msg),
         "PAWRLY_INVALID_SQL" => core::EngineError::InvalidSql(msg),
+        "PAWRLY_SEMANTIC_PLAN" => core::EngineError::SemanticPlan(msg),
         "PAWRLY_PROTOCOL" => core::EngineError::Protocol(msg),
         _ => core::EngineError::Internal(format!("{code}: {msg}")),
     }
@@ -336,7 +337,8 @@ fn grpc_code(err: &core::EngineError) -> tonic::Code {
     match err {
         core::EngineError::UnknownKind(_)
         | core::EngineError::UnknownTable(_)
-        | core::EngineError::InvalidSql(_) => tonic::Code::InvalidArgument,
+        | core::EngineError::InvalidSql(_)
+        | core::EngineError::SemanticPlan(_) => tonic::Code::InvalidArgument,
         core::EngineError::Safety(_) | core::EngineError::SourceRegistration { .. } => {
             tonic::Code::FailedPrecondition
         }
@@ -344,6 +346,406 @@ fn grpc_code(err: &core::EngineError) -> tonic::Code {
         core::EngineError::OutOfMemory(_) => tonic::Code::ResourceExhausted,
         core::EngineError::Cancelled => tonic::Code::Cancelled,
         core::EngineError::Protocol(_) | core::EngineError::Internal(_) => tonic::Code::Internal,
+    }
+}
+
+// ---- semantic ----
+
+impl From<core::semantic::DimensionType> for v1::DimensionType {
+    fn from(t: core::semantic::DimensionType) -> Self {
+        match t {
+            core::semantic::DimensionType::String => Self::String,
+            core::semantic::DimensionType::Number => Self::Number,
+            core::semantic::DimensionType::Time => Self::Time,
+            core::semantic::DimensionType::Bool => Self::Bool,
+        }
+    }
+}
+
+impl TryFrom<v1::DimensionType> for core::semantic::DimensionType {
+    type Error = ConvError;
+
+    fn try_from(t: v1::DimensionType) -> Result<Self, ConvError> {
+        match t {
+            v1::DimensionType::Unspecified => Err(ConvError::Invalid("DimensionType")),
+            v1::DimensionType::String => Ok(Self::String),
+            v1::DimensionType::Number => Ok(Self::Number),
+            v1::DimensionType::Time => Ok(Self::Time),
+            v1::DimensionType::Bool => Ok(Self::Bool),
+        }
+    }
+}
+
+impl From<core::semantic::TimeGrain> for v1::TimeGrain {
+    fn from(g: core::semantic::TimeGrain) -> Self {
+        match g {
+            core::semantic::TimeGrain::Hour => Self::Hour,
+            core::semantic::TimeGrain::Day => Self::Day,
+            core::semantic::TimeGrain::Week => Self::Week,
+            core::semantic::TimeGrain::Month => Self::Month,
+            core::semantic::TimeGrain::Quarter => Self::Quarter,
+            core::semantic::TimeGrain::Year => Self::Year,
+        }
+    }
+}
+
+impl TryFrom<v1::TimeGrain> for core::semantic::TimeGrain {
+    type Error = ConvError;
+
+    fn try_from(g: v1::TimeGrain) -> Result<Self, ConvError> {
+        match g {
+            v1::TimeGrain::Unspecified => Err(ConvError::Invalid("TimeGrain")),
+            v1::TimeGrain::Hour => Ok(Self::Hour),
+            v1::TimeGrain::Day => Ok(Self::Day),
+            v1::TimeGrain::Week => Ok(Self::Week),
+            v1::TimeGrain::Month => Ok(Self::Month),
+            v1::TimeGrain::Quarter => Ok(Self::Quarter),
+            v1::TimeGrain::Year => Ok(Self::Year),
+        }
+    }
+}
+
+impl From<core::semantic::FilterOp> for v1::FilterOp {
+    fn from(op: core::semantic::FilterOp) -> Self {
+        use core::semantic::FilterOp as F;
+        match op {
+            F::Equals => Self::Equals,
+            F::NotEquals => Self::NotEquals,
+            F::In => Self::In,
+            F::NotIn => Self::NotIn,
+            F::Gt => Self::Gt,
+            F::Gte => Self::Gte,
+            F::Lt => Self::Lt,
+            F::Lte => Self::Lte,
+            F::InRange => Self::InRange,
+            F::Contains => Self::Contains,
+            F::StartsWith => Self::StartsWith,
+            F::EndsWith => Self::EndsWith,
+            F::IsNull => Self::IsNull,
+            F::IsNotNull => Self::IsNotNull,
+        }
+    }
+}
+
+impl TryFrom<v1::FilterOp> for core::semantic::FilterOp {
+    type Error = ConvError;
+
+    fn try_from(op: v1::FilterOp) -> Result<Self, ConvError> {
+        use core::semantic::FilterOp as F;
+        Ok(match op {
+            v1::FilterOp::Unspecified => return Err(ConvError::Invalid("FilterOp")),
+            v1::FilterOp::Equals => F::Equals,
+            v1::FilterOp::NotEquals => F::NotEquals,
+            v1::FilterOp::In => F::In,
+            v1::FilterOp::NotIn => F::NotIn,
+            v1::FilterOp::Gt => F::Gt,
+            v1::FilterOp::Gte => F::Gte,
+            v1::FilterOp::Lt => F::Lt,
+            v1::FilterOp::Lte => F::Lte,
+            v1::FilterOp::InRange => F::InRange,
+            v1::FilterOp::Contains => F::Contains,
+            v1::FilterOp::StartsWith => F::StartsWith,
+            v1::FilterOp::EndsWith => F::EndsWith,
+            v1::FilterOp::IsNull => F::IsNull,
+            v1::FilterOp::IsNotNull => F::IsNotNull,
+        })
+    }
+}
+
+impl From<core::semantic::Dimension> for v1::Dimension {
+    fn from(d: core::semantic::Dimension) -> Self {
+        Self {
+            name: d.name,
+            expr: d.expr,
+            r#type: v1::DimensionType::from(d.data_type) as i32,
+            grains: d
+                .time_grains
+                .into_iter()
+                .map(|g| v1::TimeGrain::from(g) as i32)
+                .collect(),
+            description: d.description.unwrap_or_default(),
+        }
+    }
+}
+
+impl TryFrom<v1::Dimension> for core::semantic::Dimension {
+    type Error = ConvError;
+
+    fn try_from(d: v1::Dimension) -> Result<Self, ConvError> {
+        let data_type = v1::DimensionType::try_from(d.r#type)
+            .map_err(|_| ConvError::Invalid("Dimension.type"))?
+            .try_into()?;
+        let mut time_grains = Vec::with_capacity(d.grains.len());
+        for g in d.grains {
+            let grain = v1::TimeGrain::try_from(g)
+                .map_err(|_| ConvError::Invalid("Dimension.grains"))?
+                .try_into()?;
+            time_grains.push(grain);
+        }
+        Ok(Self {
+            name: d.name,
+            expr: d.expr,
+            data_type,
+            time_grains,
+            description: if d.description.is_empty() {
+                None
+            } else {
+                Some(d.description)
+            },
+        })
+    }
+}
+
+impl From<core::semantic::Measure> for v1::Measure {
+    fn from(m: core::semantic::Measure) -> Self {
+        let agg = m.agg.label().to_string();
+        let custom_sql = match &m.agg {
+            core::semantic::MeasureAgg::Custom { sql } => sql.clone(),
+            _ => String::new(),
+        };
+        Self {
+            name: m.name,
+            agg,
+            expr: m.expr,
+            filters: m.filters,
+            format: m.format.unwrap_or_default(),
+            description: m.description.unwrap_or_default(),
+            custom_sql,
+        }
+    }
+}
+
+impl TryFrom<v1::Measure> for core::semantic::Measure {
+    type Error = ConvError;
+
+    fn try_from(m: v1::Measure) -> Result<Self, ConvError> {
+        use core::semantic::MeasureAgg as A;
+        let agg = match m.agg.as_str() {
+            "sum" => A::Sum,
+            "count" => A::Count,
+            "count_distinct" => A::CountDistinct,
+            "avg" => A::Avg,
+            "min" => A::Min,
+            "max" => A::Max,
+            "custom" => A::Custom { sql: m.custom_sql },
+            _ => return Err(ConvError::Invalid("Measure.agg")),
+        };
+        Ok(Self {
+            name: m.name,
+            agg,
+            expr: m.expr,
+            filters: m.filters,
+            format: if m.format.is_empty() {
+                None
+            } else {
+                Some(m.format)
+            },
+            description: if m.description.is_empty() {
+                None
+            } else {
+                Some(m.description)
+            },
+        })
+    }
+}
+
+impl From<core::semantic::SemanticModelInfo> for v1::ModelInfo {
+    fn from(m: core::semantic::SemanticModelInfo) -> Self {
+        Self {
+            name: m.name,
+            description: m.description.unwrap_or_default(),
+            source: m.source,
+            dimension_count: m.dimension_count,
+            measure_count: m.measure_count,
+        }
+    }
+}
+
+impl From<v1::ModelInfo> for core::semantic::SemanticModelInfo {
+    fn from(m: v1::ModelInfo) -> Self {
+        Self {
+            name: m.name,
+            description: if m.description.is_empty() {
+                None
+            } else {
+                Some(m.description)
+            },
+            source: m.source,
+            dimension_count: m.dimension_count,
+            measure_count: m.measure_count,
+        }
+    }
+}
+
+impl From<core::semantic::RelationshipKind> for v1::RelationshipKind {
+    fn from(k: core::semantic::RelationshipKind) -> Self {
+        use core::semantic::RelationshipKind as K;
+        match k {
+            K::ManyToOne => Self::ManyToOne,
+            K::OneToMany => Self::OneToMany,
+            K::OneToOne => Self::OneToOne,
+        }
+    }
+}
+
+impl TryFrom<v1::RelationshipKind> for core::semantic::RelationshipKind {
+    type Error = ConvError;
+
+    fn try_from(k: v1::RelationshipKind) -> Result<Self, ConvError> {
+        use core::semantic::RelationshipKind as K;
+        Ok(match k {
+            v1::RelationshipKind::Unspecified => {
+                return Err(ConvError::Invalid("RelationshipKind"));
+            }
+            v1::RelationshipKind::ManyToOne => K::ManyToOne,
+            v1::RelationshipKind::OneToMany => K::OneToMany,
+            v1::RelationshipKind::OneToOne => K::OneToOne,
+        })
+    }
+}
+
+impl From<core::semantic::Relationship> for v1::Relationship {
+    fn from(r: core::semantic::Relationship) -> Self {
+        Self {
+            name: r.name,
+            kind: v1::RelationshipKind::from(r.kind) as i32,
+            target: r.target_model,
+            on: r.join_predicate,
+        }
+    }
+}
+
+impl TryFrom<v1::Relationship> for core::semantic::Relationship {
+    type Error = ConvError;
+
+    fn try_from(r: v1::Relationship) -> Result<Self, ConvError> {
+        let kind = v1::RelationshipKind::try_from(r.kind)
+            .map_err(|_| ConvError::Invalid("Relationship.kind"))?
+            .try_into()?;
+        Ok(Self {
+            name: r.name,
+            kind,
+            target_model: r.target,
+            join_predicate: r.on,
+        })
+    }
+}
+
+impl From<core::semantic::SemanticModelDescription> for v1::ModelDescription {
+    fn from(m: core::semantic::SemanticModelDescription) -> Self {
+        Self {
+            name: m.name,
+            description: m.description.unwrap_or_default(),
+            source: m.source,
+            primary_key: m.primary_key,
+            dimensions: m.dimensions.into_iter().map(Into::into).collect(),
+            measures: m.measures.into_iter().map(Into::into).collect(),
+            relationships: m.relationships.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+impl TryFrom<v1::ModelDescription> for core::semantic::SemanticModelDescription {
+    type Error = ConvError;
+
+    fn try_from(m: v1::ModelDescription) -> Result<Self, ConvError> {
+        let mut dimensions = Vec::with_capacity(m.dimensions.len());
+        for d in m.dimensions {
+            dimensions.push(d.try_into()?);
+        }
+        let mut measures = Vec::with_capacity(m.measures.len());
+        for ms in m.measures {
+            measures.push(ms.try_into()?);
+        }
+        let mut relationships = Vec::with_capacity(m.relationships.len());
+        for r in m.relationships {
+            relationships.push(r.try_into()?);
+        }
+        Ok(Self {
+            name: m.name,
+            description: if m.description.is_empty() {
+                None
+            } else {
+                Some(m.description)
+            },
+            source: m.source,
+            primary_key: m.primary_key,
+            dimensions,
+            measures,
+            relationships,
+        })
+    }
+}
+
+impl From<core::semantic::SemanticQuery> for v1::SemanticQueryRequest {
+    fn from(q: core::semantic::SemanticQuery) -> Self {
+        Self {
+            measures: q.measures,
+            dimensions: q.dimensions,
+            filters: q
+                .filters
+                .into_iter()
+                .map(|f| v1::SemanticFilter {
+                    member: f.member,
+                    op: v1::FilterOp::from(f.op) as i32,
+                    values: f.values,
+                })
+                .collect(),
+            order_by: q
+                .order_by
+                .into_iter()
+                .map(|o| v1::SemanticOrder {
+                    member: o.member,
+                    desc: matches!(o.direction, core::semantic::OrderDir::Desc),
+                })
+                .collect(),
+            limit: q.limit,
+            time_zone: q.time_zone,
+            params: q.params,
+            timeout: None,
+            trace_id: String::new(),
+        }
+    }
+}
+
+impl From<v1::SemanticQueryRequest> for core::semantic::SemanticQuery {
+    fn from(q: v1::SemanticQueryRequest) -> Self {
+        let filters = q
+            .filters
+            .into_iter()
+            .map(|f| core::semantic::SemanticFilter {
+                member: f.member,
+                // A valid client always sends a real op; treat an
+                // unrecognized/unspecified op as Equals rather than failing the
+                // infallible request conversion.
+                op: v1::FilterOp::try_from(f.op)
+                    .ok()
+                    .and_then(|op| core::semantic::FilterOp::try_from(op).ok())
+                    .unwrap_or(core::semantic::FilterOp::Equals),
+                values: f.values,
+            })
+            .collect();
+        let order_by = q
+            .order_by
+            .into_iter()
+            .map(|o| core::semantic::SemanticOrder {
+                member: o.member,
+                direction: if o.desc {
+                    core::semantic::OrderDir::Desc
+                } else {
+                    core::semantic::OrderDir::Asc
+                },
+            })
+            .collect();
+        Self {
+            measures: q.measures,
+            dimensions: q.dimensions,
+            filters,
+            order_by,
+            limit: q.limit,
+            time_zone: q.time_zone,
+            params: q.params,
+        }
     }
 }
 

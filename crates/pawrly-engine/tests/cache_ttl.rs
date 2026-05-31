@@ -31,10 +31,14 @@ fn cfg_yaml(yaml: &str) -> Config {
     pawrly_config::load_str(yaml, &secrets).unwrap()
 }
 
-fn orders_yaml() -> String {
+fn orders_yaml(workspace: &std::path::Path) -> String {
     let parquet_path = fixtures_dir().join("orders.parquet");
     format!(
         r#"version: 1
+defaults:
+  cache:
+    storage: "{}"
+    namespace: test
 sources:
   - name: data
     kind: file
@@ -48,6 +52,7 @@ sources:
         path: "{}"
         format: parquet
 "#,
+        storage_root(workspace).display(),
         fixtures_dir().display(),
         parquet_path.display(),
     )
@@ -55,7 +60,7 @@ sources:
 
 async fn build_engine(workspace: &std::path::Path) -> Arc<dyn EngineService> {
     let engine = LocalEngine::new(LocalEngineConfig {
-        config: cfg_yaml(&orders_yaml()),
+        config: cfg_yaml(&orders_yaml(workspace)),
         workspace_dir: workspace.to_path_buf(),
         duckdb_pool_size: None,
     })
@@ -64,8 +69,15 @@ async fn build_engine(workspace: &std::path::Path) -> Arc<dyn EngineService> {
     Arc::new(engine)
 }
 
-fn cache_root(workspace: &std::path::Path) -> PathBuf {
+/// The configured `storage` root (before the per-workspace namespace segment).
+fn storage_root(workspace: &std::path::Path) -> PathBuf {
     workspace.join(".pawrly").join("cache")
+}
+
+/// The actual cache root on disk: `storage/<namespace>`. These tests pin
+/// `namespace: test` so the path is deterministic.
+fn cache_root(workspace: &std::path::Path) -> PathBuf {
+    storage_root(workspace).join("test")
 }
 
 fn orders_cache_file(workspace: &std::path::Path) -> PathBuf {
@@ -83,6 +95,10 @@ async fn ttl_cache_round_trip_and_restart() {
 
     let yaml = format!(
         r#"version: 1
+defaults:
+  cache:
+    storage: "{}"
+    namespace: test
 sources:
   - name: data
     kind: file
@@ -96,6 +112,7 @@ sources:
         path: "{}"
         format: parquet
 "#,
+        storage_root(workspace.path()).display(),
         fixtures_dir().display(),
         parquet_path.display(),
     );
@@ -128,14 +145,7 @@ sources:
     }
 
     // 2. The cache file is on disk.
-    let cache_file = workspace
-        .path()
-        .join(".pawrly")
-        .join("cache")
-        .join("data")
-        .join("data")
-        .join("orders")
-        .join("part-000000.parquet");
+    let cache_file = orders_cache_file(workspace.path());
     assert!(
         cache_file.exists(),
         "cache file should exist at {}",
@@ -143,11 +153,7 @@ sources:
     );
 
     // 3. The manifest is on disk.
-    let manifest = workspace
-        .path()
-        .join(".pawrly")
-        .join("cache")
-        .join("manifest.json");
+    let manifest = cache_root(workspace.path()).join("manifest.json");
     assert!(manifest.exists(), "manifest.json should exist");
     let manifest_text = std::fs::read_to_string(&manifest).unwrap();
     assert!(manifest_text.contains("data"));
@@ -269,6 +275,48 @@ async fn vacuum_removes_orphans_keeps_live_and_recent_tmp() {
         1,
         "live entry must remain in the manifest"
     );
+}
+
+#[tokio::test]
+async fn corrupt_cache_file_self_heals() {
+    let workspace = TempDir::new().unwrap();
+    let svc = build_engine(workspace.path()).await;
+
+    // Populate the cache.
+    let count = |svc: &Arc<dyn EngineService>| {
+        let svc = svc.clone();
+        async move {
+            let batches = svc
+                .query_collect("SELECT COUNT(*) AS n FROM data.orders")
+                .await
+                .unwrap();
+            batches[0]
+                .column(0)
+                .as_any()
+                .downcast_ref::<arrow_array::Int64Array>()
+                .unwrap()
+                .value(0)
+        }
+    };
+    assert_eq!(count(&svc).await, 5);
+
+    // Corrupt the cached parquet file on disk.
+    let cache_file = orders_cache_file(workspace.path());
+    assert!(cache_file.exists());
+    std::fs::write(&cache_file, b"definitely not parquet").unwrap();
+
+    // The next query detects the corruption, quarantines the file, re-fetches
+    // live, and returns the correct result — no error surfaces.
+    assert_eq!(count(&svc).await, 5);
+
+    // The bad file was moved under corrupt/ and a fresh cache file rewritten.
+    let corrupt_dir = cache_root(workspace.path()).join("corrupt").join("data").join("orders");
+    assert!(
+        corrupt_dir.exists() && std::fs::read_dir(&corrupt_dir).unwrap().count() >= 1,
+        "corrupt file should be quarantined"
+    );
+    assert!(cache_file.exists(), "a fresh cache file should be rewritten");
+    assert_eq!(svc.cache_entries().await.unwrap().len(), 1);
 }
 
 #[tokio::test]

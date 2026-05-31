@@ -1,0 +1,93 @@
+# Semantic-layer example — the smallest runnable showcase of `semantic:`.
+# yaml-language-server: $schema=../../schemas/pawrly.schema.json
+#
+# Two CSV tables (orders, customers) auto-discovered from ./data/*.csv are
+# turned into two business models. See docs/internal/13-semantic.md for the full design.
+#
+# Try it (paths resolve relative to this file):
+#   pawrly --config examples/semantic/pawrly.yaml semantic list
+#   pawrly --config examples/semantic/pawrly.yaml semantic describe orders
+#
+#   # `orders` enforces tenant row-level security, so supply the param:
+#   pawrly --config examples/semantic/pawrly.yaml semantic query \
+#     orders.revenue orders.order_count --by orders.status --param tenant_id=acme
+#
+#   # Time grains + a measure-scoped filter:
+#   pawrly --config examples/semantic/pawrly.yaml semantic query \
+#     orders.revenue orders.paid_revenue --by orders.order_date.month \
+#     --param tenant_id=acme --order-by orders.order_date.month
+#
+#   # Cross-model join (orders -> customers via the `customer` relationship):
+#   pawrly --config examples/semantic/pawrly.yaml semantic query \
+#     orders.revenue --by customers.region --param tenant_id=acme
+#
+#   # Omit --param and the engine refuses to scan (RLS, PAWRLY_SAFETY_UNBOUND_PARAM):
+#   pawrly --config examples/semantic/pawrly.yaml semantic query \
+#     orders.revenue --by orders.status
+
+version: 1
+name: semantic-example
+
+sources:
+  - name: data
+    kind: file
+    description: Local CSV fixtures for the semantic example.
+    config:
+      path: ./data/*.csv
+
+semantic:
+  models:
+    # ----- orders: the fact model -------------------------------------------
+    - name: orders
+      description: One row per order placed.
+      source: data.orders
+      primary_key: [id]
+
+      dimensions:
+        - { name: status,     expr: status,                type: string }
+        - { name: country,    expr: shipping_country_code, type: string }
+        - { name: order_date, expr: ordered_at,            type: time, grains: [day, week, month, quarter, year] }
+
+      measures:
+        - { name: order_count,     agg: count_distinct, expr: id }
+        - { name: revenue,         agg: sum,            expr: total_amount, format: "$#,##0.00" }
+        # Measure-scoped filter → compiles to SUM(...) FILTER (WHERE status = 'paid').
+        - { name: paid_revenue,    agg: sum,            expr: total_amount, filters: ["status = 'paid'"], format: "$#,##0.00" }
+        - { name: avg_order_value, agg: avg,            expr: total_amount, format: "$#,##0.00" }
+        # `Custom` aggregates are also supported, e.g.:
+        # - { name: aov, agg: { custom: { sql: "SUM(total_amount) / NULLIF(COUNT(DISTINCT id), 0)" } }, expr: total_amount }
+
+      relationships:
+        - { name: customer, kind: many_to_one, target: customers, on: "this.customer_id = customers.id" }
+
+      # Declared rollup — matched today; materialized once the cache layer (M6) ships.
+      pre_aggregations:
+        - name: daily_by_status
+          dimensions: [order_date.day, status]
+          measures:   [revenue, order_count]
+          refresh:    1h
+          partition_by: order_date.month
+
+      safety:
+        # RLS: every compiled query is AND-ed with `tenant_id = <param>`, bound
+        # as an escaped literal (never string-substituted). Query without the
+        # param and the engine refuses to scan (PAWRLY_SAFETY_UNBOUND_PARAM).
+        required_predicates:
+          - "tenant_id = ${param:tenant_id}"
+        max_rows: 1000000
+        # Uncomment to also force every query to filter on a date:
+        # require_filters_on: [order_date]
+
+    # ----- customers: a dimension model -------------------------------------
+    # No RLS here: tenant isolation rides in through the `orders` join, and a
+    # second `tenant_id` predicate would currently render the column ambiguous
+    # in cross-model SQL (an unqualified-predicate limitation of the compiler).
+    - name: customers
+      description: One row per customer.
+      source: data.customers
+      primary_key: [id]
+      dimensions:
+        - { name: region,      expr: region,     type: string }
+        - { name: signup_date, expr: created_at, type: time, grains: [day, month] }
+      measures:
+        - { name: customer_count, agg: count_distinct, expr: id }

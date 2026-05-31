@@ -11,6 +11,7 @@ pub mod model;
 pub mod optimizer;
 pub mod safety;
 pub mod schema;
+pub mod semantic;
 pub mod service;
 pub mod source;
 
@@ -27,6 +28,11 @@ pub use safety::SafetyPolicy;
 pub use schema::{
     CatalogSnapshot, ColumnSpec, SchemaSummary, TableDescription, TableFilter, TableInfo,
     TableName, TableSpec, TableSummary,
+};
+pub use semantic::{
+    Dimension, DimensionType, FilterOp, Measure, MeasureAgg, OrderDir, SemanticFilter,
+    SemanticModel, SemanticModelDescription, SemanticModelInfo, SemanticOrder, SemanticQuery,
+    TimeGrain,
 };
 pub use service::{EngineService, EngineServiceExt, QueryId, QueryRequest, QueryStream};
 pub use source::{

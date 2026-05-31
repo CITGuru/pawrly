@@ -40,6 +40,40 @@ pub fn load(path: &Path, secrets: &dyn SecretStore) -> Result<Config, ConfigErro
     finish(tree, secrets)
 }
 
+/// Load and validate a `pawrly.yaml`, building the secret-resolution chain
+/// from the file's own `secrets:` block.
+///
+/// This is the entry point production callers should use: the `secrets:` block
+/// (env / file / keyring / auto backends, in order) determines how
+/// `${secret:NAME}` references resolve. When the block is omitted, the chain
+/// defaults to a single `auto` backend (env, then keyring, then a `.env` file
+/// in the config directory if present). Relative `file:` paths and the `auto`
+/// `.env` lookup resolve against the config file's directory.
+pub fn load_auto(path: &Path) -> Result<Config, ConfigError> {
+    let raw = std::fs::read_to_string(path).map_err(|e| ConfigError::Io(e.to_string()))?;
+    let mut tree: serde_json::Value =
+        serde_yaml::from_str(&raw).map_err(|e| ConfigError::Yaml(e.to_string()))?;
+
+    // Assemble multi-file sources before reading the secrets block.
+    assemble::assemble(&mut tree, path)?;
+
+    // Read the secrets backends verbatim (before interpolation — backend defs
+    // are literal and must not themselves depend on `${secret:…}`).
+    let defs: Vec<crate::types::SecretsBackendDef> = match tree.get("secrets") {
+        Some(v) => serde_json::from_value(v.clone())
+            .map_err(|e| ConfigError::Schema {
+                path: "secrets".to_string(),
+                msg: e.to_string(),
+            })?,
+        None => Vec::new(),
+    };
+
+    let base_dir = path.parent().unwrap_or_else(|| Path::new("."));
+    let store = crate::secrets::build_store(&defs, base_dir)?;
+
+    finish(tree, &store)
+}
+
 /// Same as [`load`] but takes a YAML string. Useful in tests.
 ///
 /// `include:` / `from:` are unavailable here — there is no on-disk parent

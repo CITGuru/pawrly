@@ -63,6 +63,7 @@ pub async fn build_local(config_path: Option<PathBuf>) -> anyhow::Result<Arc<dyn
         secrets: Vec::new(),
         include: Vec::new(),
         sources: Vec::new(),
+        semantic: None,
     };
     let engine = LocalEngine::new(LocalEngineConfig {
         config: cfg,

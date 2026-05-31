@@ -1,0 +1,80 @@
+# Snowflake connection example.
+# yaml-language-server: $schema=../../schemas/pawrly.schema.json
+#
+# STATUS: config reference. Snowflake (like the other warehouse / lakehouse
+# kinds) requires the `lakehouse` build feature, which is OFF in the default
+# build. This file PARSES and resolves secrets today, but registering the
+# source errors with:
+#
+#   source kind `snowflake` is recognized but requires the `lakehouse` build feature
+#
+# So you can author and share this config now; connecting/querying needs a
+# build with `--features lakehouse`.
+#
+# CREDENTIALS: the `auto` secrets backend (below) resolves `${secret:NAME}` from,
+# in order: (1) process env vars, (2) the OS keyring (service `pawrly`), and
+# (3) a `.env` file next to this config. Put your creds in `examples/snowflake/.env`:
+#
+#   # examples/snowflake/.env   (KEY=VALUE, dotenv style)
+#   SNOWFLAKE_ACCOUNT=acme-xy12345
+#   SNOWFLAKE_USER=ANALYST
+#   SNOWFLAKE_PASSWORD=...
+#   SNOWFLAKE_DATABASE=ANALYTICS
+#   SNOWFLAKE_SCHEMA=PUBLIC
+#   SNOWFLAKE_WAREHOUSE=COMPUTE_WH
+#   SNOWFLAKE_ROLE=REPORTER
+#
+# The `.env` must be mode 0600 (`chmod 600 examples/snowflake/.env`) or it is
+# skipped with a warning. `.env` / `*.env` are gitignored. Exported env vars
+# always win over the file, so you can override any single value from the shell.
+#
+#   # Works in the default build — checks the config parses and secrets resolve:
+#   pawrly validate examples/snowflake/pawrly.yaml        # -> ok: 1 sources, 0 tables
+#
+#   # With a lakehouse-enabled build, list the catalog and query:
+#   pawrly --config examples/snowflake/pawrly.yaml schema
+#   pawrly --config examples/snowflake/pawrly.yaml sql \
+#     "SELECT order_status, COUNT(*) AS n FROM warehouse.orders \
+#      WHERE order_date >= '2026-01-01' GROUP BY 1"
+#
+# Tables are discovered from the live database under the source's schema —
+# there is no `tables:` block to maintain (unlike `kind: file`, which can take
+# explicit table overrides).
+
+version: 1
+name: snowflake-example
+
+# Secret resolution. `auto` = env vars, then OS keyring (service `pawrly`), then
+# a `.env` file in this directory. To pin the chain explicitly instead, list
+# backends in order, e.g.:
+#   secrets:
+#     - kind: env
+#     - kind: file
+#       path: .env          # YAML map or dotenv; format auto-detected by extension
+#     - kind: keyring
+#       service: pawrly
+secrets:
+  - kind: auto
+
+sources:
+  - name: warehouse
+    kind: snowflake
+    description: Production analytics warehouse.
+    config:
+      account:   ${secret:SNOWFLAKE_ACCOUNT}    # Snowflake account identifier
+      user:      ${secret:SNOWFLAKE_USER}
+      password:  ${secret:SNOWFLAKE_PASSWORD}
+      database:  ${secret:SNOWFLAKE_DATABASE}
+      schema:    ${secret:SNOWFLAKE_SCHEMA}     # optional
+      warehouse: ${secret:SNOWFLAKE_WAREHOUSE}  # optional, recommended
+      role:      ${secret:SNOWFLAKE_ROLE}       # optional
+    # Cache the attached tables and refresh on a schedule instead of hitting
+    # Snowflake on every query. Drop this block to always query live.
+    cache:
+      mode: refresh
+      every: 1h
+    # Per-source guard rails (a SafetyPolicy). Refuse runaway scans and force a
+    # partition predicate so a query can't accidentally read a whole table.
+    safety:
+      max_rows: 5000000
+      require_filters_on: [order_date]
