@@ -59,18 +59,19 @@ impl std::fmt::Debug for LocalEngine {
     }
 }
 
-struct LocalEngineInner {
-    ctx: SessionContext,
-    catalog: Arc<MemoryCatalogProvider>,
+pub(crate) struct LocalEngineInner {
+    pub(crate) ctx: SessionContext,
+    pub(crate) catalog: Arc<MemoryCatalogProvider>,
     sources: RwLock<HashMap<String, RegisteredSource>>,
     workspace_dir: PathBuf,
-    cache: Arc<CacheManager>,
+    pub(crate) cache: Arc<CacheManager>,
     /// Compiled semantic-layer models. Empty when no `semantic:` block exists.
-    semantic: Arc<SemanticCatalog>,
+    pub(crate) semantic: Arc<SemanticCatalog>,
     /// Background cache refreshers keyed by source name (one entry per
-    /// `refresh`/`cron` table). Aborted on shutdown, source removal, and before
-    /// a source is re-registered so re-registration never leaks tasks.
-    refreshers: Mutex<HashMap<String, Vec<JoinHandle<()>>>>,
+    /// `refresh`/`cron` table) plus a `__rollups__` bucket for pre-agg
+    /// refreshers. Aborted on shutdown, source removal, and before a source is
+    /// re-registered so re-registration never leaks tasks.
+    pub(crate) refreshers: Mutex<HashMap<String, Vec<JoinHandle<()>>>>,
     /// Path the config was loaded from, when known. `reload_config` re-reads it.
     config_path: Option<PathBuf>,
     #[allow(
@@ -161,6 +162,9 @@ impl LocalEngine {
         for def in engine_sources {
             register_source(&inner, def).await?;
         }
+        // Register semantic pre-aggregations as cached rollup tables (after the
+        // base tables they aggregate exist).
+        crate::preagg::register_rollups(&inner).await?;
         Ok(Self { inner })
     }
 
@@ -205,6 +209,24 @@ impl LocalEngine {
             duckdb_pool_size: None,
         })
         .await
+    }
+
+    /// Compile a semantic query to SQL, transparently reading a materialized
+    /// rollup when a fresh one covers it. A covering-but-unmaterialized rollup
+    /// is built on demand (best-effort); on any miss the base table is used, so
+    /// a rollup never changes a result, only how it is computed.
+    async fn compile_semantic(&self, q: &SemanticQuery) -> Result<String, EngineError> {
+        if let Some(r) = self.inner.semantic.candidate_rollup(q) {
+            let key = TableName::new(r.schema().to_string(), r.table());
+            if !self.inner.cache.is_fresh(&key) {
+                // Materialize on first use; ignore failure and fall back to base.
+                let _ = self.inner.cache.refresh(&key, &self.inner.ctx).await;
+            }
+            if self.inner.cache.is_fresh(&key) {
+                return Ok(self.inner.semantic.compile_rollup_sql(q, &r)?);
+            }
+        }
+        Ok(self.inner.semantic.compile_sql(q)?)
     }
 }
 
@@ -736,8 +758,9 @@ impl EngineService for LocalEngine {
     }
 
     async fn semantic_query(&self, q: SemanticQuery) -> Result<QueryStream, EngineError> {
-        // Compile to SQL and execute through the same DataFusion path as `query`.
-        let sql = self.inner.semantic.compile_sql(&q)?;
+        // Compile to SQL — reading a materialized rollup when one covers the
+        // query — and execute through the same DataFusion path as `query`.
+        let sql = self.compile_semantic(&q).await?;
         let df = self
             .inner
             .ctx

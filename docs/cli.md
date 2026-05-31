@@ -61,10 +61,11 @@ Browse and query the [semantic layer](./semantic.md).
 
 ```
 pawrly semantic list                       # list models (--json)
-pawrly semantic describe <MODEL>           # dimensions, measures, relationships (--json)
+pawrly semantic describe <MODEL>           # dimensions, measures, relationships, segments (--json)
 pawrly semantic query <MEASURE>...         # run a structured query
     --by <MEMBER>                          # group-by dimension (repeatable)
     --where '<MEMBER> <OP> <VALUE>'        # filter (repeatable)
+    --segment <MODEL.SEGMENT>              # apply a named filter set (repeatable)
     --order-by <MEMBER[:desc]>             # ordering (repeatable)
     --param <NAME=VALUE>                   # bind a ${param:NAME} placeholder (repeatable)
     --limit <N>

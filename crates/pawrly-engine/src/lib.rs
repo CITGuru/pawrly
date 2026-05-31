@@ -11,6 +11,7 @@ mod cache;
 mod duckdb_pool;
 mod local;
 pub mod optimizer;
+mod preagg;
 mod registry;
 mod stream;
 

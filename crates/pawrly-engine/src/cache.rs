@@ -108,6 +108,13 @@ impl CacheManager {
             .insert(key, RegisteredInner { provider, policy });
     }
 
+    /// True when a fresh (unexpired) cache entry exists for `name`. Used by the
+    /// semantic layer to decide whether a materialized rollup can serve a query.
+    #[must_use]
+    pub fn is_fresh(&self, name: &TableName) -> bool {
+        self.fresh(name).is_some()
+    }
+
     /// Look up a fresh entry by table name, if any.
     fn fresh(&self, name: &TableName) -> Option<ManifestEntry> {
         let now = Utc::now();

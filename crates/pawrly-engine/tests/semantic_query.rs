@@ -348,6 +348,116 @@ semantic:
     Arc::new(engine)
 }
 
+/// A single model with a `(status, country)` pre-aggregation, so a query
+/// grouped by status alone must re-aggregate the stored partials.
+async fn build_preagg_engine() -> Arc<dyn EngineService> {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let dir = tmp.path().to_path_buf();
+    std::fs::write(
+        dir.join("orders.csv"),
+        "id,status,country,total_amount\n\
+         1,paid,US,100\n\
+         2,paid,CA,200\n\
+         3,refunded,US,50\n\
+         4,paid,US,300\n",
+    )
+    .unwrap();
+
+    let yaml = format!(
+        r#"version: 1
+sources:
+  - name: data
+    kind: file
+    config:
+      path: "{dir}/*.csv"
+semantic:
+  models:
+    - name: orders
+      source: data.orders
+      primary_key: [id]
+      dimensions:
+        - {{ name: status,  expr: status,  type: string }}
+        - {{ name: country, expr: country, type: string }}
+      measures:
+        - {{ name: revenue,  agg: sum,   expr: total_amount }}
+        - {{ name: orders_n, agg: count, expr: id }}
+      pre_aggregations:
+        - name: by_sc
+          dimensions: [status, country]
+          measures: [revenue, orders_n]
+"#,
+        dir = dir.display(),
+    );
+
+    let secrets = pawrly_secrets::StaticStore::new();
+    let cfg = pawrly_config::load_str(&yaml, &secrets).expect("config parse");
+    std::mem::forget(tmp);
+    let engine = LocalEngine::new(LocalEngineConfig {
+        config: cfg,
+        workspace_dir: dir,
+        duckdb_pool_size: None,
+    })
+    .await
+    .expect("engine");
+    Arc::new(engine)
+}
+
+#[tokio::test]
+async fn preagg_rollup_serves_query_and_reaggregates() {
+    let svc = build_preagg_engine().await;
+
+    let q = SemanticQuery {
+        measures: vec!["orders.revenue".into(), "orders.orders_n".into()],
+        dimensions: vec!["orders.status".into()],
+        order_by: vec![SemanticOrder {
+            member: "orders.status".into(),
+            direction: pawrly_core::semantic::OrderDir::Asc,
+        }],
+        ..Default::default()
+    };
+
+    let batches = collect(svc.semantic_query(q).await.expect("compile+run")).await;
+    let batch = one_batch(&batches);
+    assert_eq!(batch.num_rows(), 2);
+
+    let status = batch
+        .column(0)
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .expect("status col");
+    let revenue = batch
+        .column(1)
+        .as_any()
+        .downcast_ref::<Int64Array>()
+        .expect("revenue col");
+    let orders_n = batch
+        .column(2)
+        .as_any()
+        .downcast_ref::<Int64Array>()
+        .expect("orders_n col");
+
+    // paid spans (US 100+300, CA 200) → 600, count 3; refunded → 50, count 1.
+    assert_eq!(status.value(0), "paid");
+    assert_eq!(revenue.value(0), 600);
+    assert_eq!(orders_n.value(0), 3);
+    assert_eq!(status.value(1), "refunded");
+    assert_eq!(revenue.value(1), 50);
+    assert_eq!(orders_n.value(1), 1);
+
+    // The rollup was materialized — proving the query read it, not the base.
+    let entries = svc.cache_entries().await.expect("cache entries");
+    assert!(
+        entries
+            .iter()
+            .any(|e| e.name.schema == "semantic" && e.name.table == "orders__by_sc"),
+        "expected a materialized rollup entry, got {:?}",
+        entries
+            .iter()
+            .map(|e| e.name.to_string())
+            .collect::<Vec<_>>()
+    );
+}
+
 #[tokio::test]
 async fn multi_fact_aggregate_locality_does_not_over_count() {
     let svc = build_facts_engine().await;

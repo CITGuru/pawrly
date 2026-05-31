@@ -24,6 +24,12 @@
 #   # Omit --param and the engine refuses to scan (RLS, PAWRLY_SAFETY_UNBOUND_PARAM):
 #   pawrly --config examples/semantic/pawrly.yaml semantic query \
 #     orders.revenue --by orders.status
+#
+#   # Pre-aggregation (S6): `customers` has no RLS and `customer_total` is
+#   # additive, so this query reads the materialized rollup, not the base table.
+#   pawrly --config examples/semantic/pawrly.yaml semantic query \
+#     customers.customer_total --by customers.region
+#   pawrly --config examples/semantic/pawrly.yaml cache list   # shows the rollup
 
 version: 1
 name: semantic-example
@@ -60,7 +66,11 @@ semantic:
       relationships:
         - { name: customer, kind: many_to_one, target: customers, on: "this.customer_id = customers.id" }
 
-      # Declared rollup — matched today; materialized once the cache layer (M6) ships.
+      # Declared rollup (S6). It is registered as a cached table with a
+      # background refresher on the `refresh:` cadence (hourly). Because `orders`
+      # enforces RLS, its *queries* read the base table (a rollup would need to
+      # carry the RLS columns). The non-RLS `customers` rollup below is the one
+      # queries actually read — see `pawrly cache list` after running it.
       pre_aggregations:
         - name: daily_by_status
           dimensions: [order_date.day, status]
@@ -91,3 +101,14 @@ semantic:
         - { name: signup_date, expr: created_at, type: time, grains: [day, month] }
       measures:
         - { name: customer_count, agg: count_distinct, expr: id }
+        # An additive count — eligible for rollup acceleration (unlike the
+        # count_distinct above, which must read the base table).
+        - { name: customer_total, agg: count, expr: id }
+
+      # A pre-aggregation (S6) on a non-RLS model with an additive measure: a
+      # query for `customer_total` by `region` reads the materialized rollup
+      # `"semantic"."customers__by_region"` instead of re-scanning the base.
+      pre_aggregations:
+        - name: by_region
+          dimensions: [region]
+          measures:   [customer_total]
