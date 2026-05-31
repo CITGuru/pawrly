@@ -42,7 +42,8 @@ pub fn list_tools() -> Vec<Value> {
         json!({
             "name": "describe_semantic_model",
             "description": "Full spec for one semantic model: dimensions, measures, \
-                            relationships, and any required filters to satisfy up-front.",
+                            relationships, named segments (reusable filter sets you can \
+                            pass in `segments`), and any required filters to satisfy up-front.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

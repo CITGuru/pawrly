@@ -55,6 +55,15 @@ fn default_name() -> String {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SemanticConfig {
+    /// Files (or glob patterns) that contain *only* semantic models, merged
+    /// into `models` before validation. Each file is either a top-level
+    /// `models:` list or a bare YAML sequence of model mappings — never sources,
+    /// secrets, or other config. Resolved relative to the declaring file. The
+    /// loader consumes this during multi-file assembly, so it is always empty on
+    /// a fully-loaded `Config`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub include: Vec<String>,
+
     #[serde(default)]
     pub models: Vec<SemanticModel>,
 }

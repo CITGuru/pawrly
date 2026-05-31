@@ -1,0 +1,15 @@
+# A model-only include file (bare-sequence form — no `models:` wrapper).
+# Both forms are accepted; this one shows the terser style.
+#
+# No RLS here: tenant isolation is enforced through the `orders` join, and a
+# second `tenant_id` predicate would render the column ambiguous in cross-model
+# SQL.
+- name: customers
+  description: One row per customer.
+  source: data.customers
+  primary_key: [id]
+  dimensions:
+    - { name: region,      expr: region,     type: string }
+    - { name: signup_date, expr: created_at, type: time, grains: [day, month] }
+  measures:
+    - { name: customer_count, agg: count_distinct, expr: id }

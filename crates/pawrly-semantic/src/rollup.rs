@@ -142,6 +142,7 @@ mod tests {
             measures: vec![],
             relationships: vec![],
             pre_aggregations: pre,
+            segments: vec![],
             safety: None,
         }
     }

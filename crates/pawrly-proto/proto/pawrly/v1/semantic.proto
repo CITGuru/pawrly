@@ -33,6 +33,14 @@ message ModelDescription {
   repeated Dimension dimensions = 5;
   repeated Measure measures = 6;
   repeated Relationship relationships = 7;
+  repeated Segment segments = 8;
+}
+
+// A named, reusable set of filters a client can apply by name.
+message Segment {
+  string name = 1;
+  string description = 2;
+  repeated SemanticFilter filters = 3;
 }
 
 message Relationship {
@@ -95,6 +103,7 @@ message SemanticQueryRequest {
   map<string, string> params = 7;  // reserved for RLS (later phase)
   google.protobuf.Duration timeout = 8;
   string trace_id = 9;
+  repeated string segments = 10;   // named segments to expand, each `model.segment`
 }
 
 message SemanticFilter {

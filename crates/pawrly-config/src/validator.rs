@@ -236,6 +236,47 @@ fn validate_semantic(
                 }
             }
         }
+
+        // Rule 8: segment names are unique identifiers, carry at least one
+        // filter, and any filter that targets this model names a known member.
+        let mut segment_seen = std::collections::HashSet::new();
+        for seg in &model.segments {
+            if seg.name.is_empty() || !is_valid_identifier(&seg.name) {
+                errors.push(invalid(format!(
+                    "segment `{}` name must be a valid SQL identifier",
+                    seg.name
+                )));
+            }
+            if !segment_seen.insert(seg.name.clone()) {
+                errors.push(invalid(format!("duplicate segment `{}`", seg.name)));
+            }
+            if seg.filters.is_empty() {
+                errors.push(invalid(format!("segment `{}` has no filters", seg.name)));
+            }
+            for f in &seg.filters {
+                let (member_model, field) = match f.member.split_once('.') {
+                    Some((m, rest)) => (m, rest.split('.').next().unwrap_or(rest)),
+                    None => {
+                        errors.push(invalid(format!(
+                            "segment `{}` filter member `{}` must be `model.field`",
+                            seg.name, f.member
+                        )));
+                        continue;
+                    }
+                };
+                // Only self-references are checked here; cross-model members are
+                // resolved against the catalog at query time.
+                if member_model == model.name
+                    && !dim_seen.contains(field)
+                    && !measure_seen.contains(field)
+                {
+                    errors.push(invalid(format!(
+                        "segment `{}` references unknown member `{}`",
+                        seg.name, f.member
+                    )));
+                }
+            }
+        }
     }
 }
 
@@ -496,6 +537,7 @@ mod tests {
                 measures: vec![measure("revenue")],
                 relationships: vec![],
                 pre_aggregations: vec![],
+                segments: vec![],
                 safety: None,
             }
         }
@@ -507,7 +549,10 @@ mod tests {
                 SourceKind::Github,
                 serde_json::json!({"token": "x"}),
             )]);
-            c.semantic = Some(SemanticConfig { models });
+            c.semantic = Some(SemanticConfig {
+                include: Vec::new(),
+                models,
+            });
             c
         }
 
@@ -754,6 +799,68 @@ mod tests {
         }
 
         // ---- rule 7: custom-SQL measures ----
+
+        // ---- rule 8: segments ----
+
+        use pawrly_core::semantic::{FilterOp, Segment, SemanticFilter};
+
+        fn segment(name: &str, member: &str) -> Segment {
+            Segment {
+                name: name.into(),
+                description: None,
+                filters: vec![SemanticFilter {
+                    member: member.into(),
+                    op: FilterOp::Equals,
+                    values: vec!["paid".into()],
+                }],
+            }
+        }
+
+        #[test]
+        fn segment_valid_passes() {
+            let mut m = model("orders", "warehouse.orders");
+            m.segments = vec![segment("high_value", "orders.status")];
+            let c = cfg_with(vec![m]);
+            assert!(
+                !validate(&c)
+                    .0
+                    .iter()
+                    .any(|e| matches!(e, ConfigError::SemanticInvalid { .. })),
+                "{:?}",
+                validate(&c).0
+            );
+        }
+
+        #[test]
+        fn segment_unknown_self_member_rejected() {
+            let mut m = model("orders", "warehouse.orders");
+            m.segments = vec![segment("bad", "orders.nope")];
+            let c = cfg_with(vec![m]);
+            assert!(has_semantic_err(&c, "unknown member"));
+        }
+
+        #[test]
+        fn segment_empty_filters_rejected() {
+            let mut m = model("orders", "warehouse.orders");
+            m.segments = vec![Segment {
+                name: "empty".into(),
+                description: None,
+                filters: vec![],
+            }];
+            let c = cfg_with(vec![m]);
+            assert!(has_semantic_err(&c, "no filters"));
+        }
+
+        #[test]
+        fn segment_duplicate_rejected() {
+            let mut m = model("orders", "warehouse.orders");
+            m.segments = vec![
+                segment("dup", "orders.status"),
+                segment("dup", "orders.status"),
+            ];
+            let c = cfg_with(vec![m]);
+            assert!(has_semantic_err(&c, "duplicate segment"));
+        }
 
         #[test]
         fn custom_measure_empty_sql_rejected() {

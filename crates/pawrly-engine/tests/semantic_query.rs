@@ -141,6 +141,14 @@ async fn collect(stream: QueryStream) -> Vec<arrow_array::RecordBatch> {
     out
 }
 
+/// Concatenate a result into a single batch. A `FULL OUTER JOIN` (the
+/// aggregate-locality shape) can emit empty leading batches and spread rows
+/// across several, so tests must not assume all rows land in `batches[0]`.
+fn one_batch(batches: &[arrow_array::RecordBatch]) -> arrow_array::RecordBatch {
+    let schema = batches.first().expect("at least one batch").schema();
+    datafusion::arrow::compute::concat_batches(&schema, batches).expect("concat")
+}
+
 #[tokio::test]
 async fn list_and_describe_models() {
     let svc = build_engine().await;
@@ -270,6 +278,218 @@ async fn cross_model_join_runs() {
     assert_eq!(revenue.value(0), 350);
     assert_eq!(region.value(1), "US");
     assert_eq!(revenue.value(1), 300);
+}
+
+/// Two fact tables at different grains: `orders` (one row per order) and
+/// `order_items` (many rows per order), joined by a `one_to_many` relationship.
+/// The item counts are uneven so a fan-out bug would visibly inflate revenue.
+async fn build_facts_engine() -> Arc<dyn EngineService> {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let dir = tmp.path().to_path_buf();
+    std::fs::write(
+        dir.join("orders.csv"),
+        "id,status,total_amount\n\
+         1,paid,100\n\
+         2,paid,200\n\
+         3,refunded,50\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("order_items.csv"),
+        "order_id,sku,quantity\n\
+         1,A,2\n\
+         1,B,1\n\
+         2,A,4\n\
+         2,C,1\n\
+         2,B,2\n\
+         3,A,5\n",
+    )
+    .unwrap();
+
+    let yaml = format!(
+        r#"version: 1
+sources:
+  - name: data
+    kind: file
+    config:
+      path: "{dir}/*.csv"
+semantic:
+  models:
+    - name: orders
+      source: data.orders
+      primary_key: [id]
+      dimensions:
+        - {{ name: status, expr: status, type: string }}
+      measures:
+        - {{ name: revenue, agg: sum, expr: total_amount }}
+      relationships:
+        - {{ name: items, kind: one_to_many, target: order_items, on: "this.id = order_items.order_id" }}
+    - name: order_items
+      source: data.order_items
+      primary_key: [order_id, sku]
+      dimensions:
+        - {{ name: sku, expr: sku, type: string }}
+      measures:
+        - {{ name: qty, agg: sum, expr: quantity }}
+"#,
+        dir = dir.display(),
+    );
+
+    let secrets = pawrly_secrets::StaticStore::new();
+    let cfg = pawrly_config::load_str(&yaml, &secrets).expect("config parse");
+    std::mem::forget(tmp);
+    let engine = LocalEngine::new(LocalEngineConfig {
+        config: cfg,
+        workspace_dir: dir,
+        duckdb_pool_size: None,
+    })
+    .await
+    .expect("engine");
+    Arc::new(engine)
+}
+
+#[tokio::test]
+async fn multi_fact_aggregate_locality_does_not_over_count() {
+    let svc = build_facts_engine().await;
+
+    // revenue (one-per-order) and qty (many-per-order) grouped by status. A
+    // single GROUP BY over the joined tables would multiply each order's
+    // revenue by its item count; aggregate-locality aggregates each fact at its
+    // own grain so neither is inflated.
+    let q = SemanticQuery {
+        measures: vec!["orders.revenue".into(), "order_items.qty".into()],
+        dimensions: vec!["orders.status".into()],
+        order_by: vec![SemanticOrder {
+            member: "orders.status".into(),
+            direction: pawrly_core::semantic::OrderDir::Asc,
+        }],
+        ..Default::default()
+    };
+
+    let batches = collect(svc.semantic_query(q).await.expect("compile+run")).await;
+    let batch = one_batch(&batches);
+    assert_eq!(batch.num_rows(), 2);
+
+    let status = batch
+        .column(0)
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .expect("status col");
+    let revenue = batch
+        .column(1)
+        .as_any()
+        .downcast_ref::<Int64Array>()
+        .expect("revenue col");
+    let qty = batch
+        .column(2)
+        .as_any()
+        .downcast_ref::<Int64Array>()
+        .expect("qty col");
+
+    // paid: revenue 100+200 = 300 (NOT 100*2 + 200*3 = 800); qty 3+7 = 10.
+    assert_eq!(status.value(0), "paid");
+    assert_eq!(revenue.value(0), 300, "revenue must not fan out");
+    assert_eq!(qty.value(0), 10);
+    // refunded: revenue 50; qty 5.
+    assert_eq!(status.value(1), "refunded");
+    assert_eq!(revenue.value(1), 50);
+    assert_eq!(qty.value(1), 5);
+}
+
+#[tokio::test]
+async fn measure_having_filter_runs() {
+    let svc = build_facts_engine().await;
+
+    // A measure-member filter must compile to HAVING and execute: keep only the
+    // status groups whose total revenue exceeds 100 (paid=300 stays, refunded
+    // =50 drops).
+    let q = SemanticQuery {
+        measures: vec!["orders.revenue".into()],
+        dimensions: vec!["orders.status".into()],
+        filters: vec![SemanticFilter {
+            member: "orders.revenue".into(),
+            op: FilterOp::Gt,
+            values: vec!["100".into()],
+        }],
+        ..Default::default()
+    };
+
+    let batches = collect(svc.semantic_query(q).await.expect("compile+run")).await;
+    let batch = one_batch(&batches);
+    assert_eq!(batch.num_rows(), 1);
+    let status = batch
+        .column(0)
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .expect("status col");
+    let revenue = batch
+        .column(1)
+        .as_any()
+        .downcast_ref::<Int64Array>()
+        .expect("revenue col");
+    assert_eq!(status.value(0), "paid");
+    assert_eq!(revenue.value(0), 300);
+}
+
+#[tokio::test]
+async fn multi_fact_outer_measure_filter_runs() {
+    let svc = build_facts_engine().await;
+
+    // Multi-fact query with a measure threshold: the filter applies over the
+    // joined CTEs (keep status groups with revenue > 100).
+    let q = SemanticQuery {
+        measures: vec!["orders.revenue".into(), "order_items.qty".into()],
+        dimensions: vec!["orders.status".into()],
+        filters: vec![SemanticFilter {
+            member: "orders.revenue".into(),
+            op: FilterOp::Gt,
+            values: vec!["100".into()],
+        }],
+        ..Default::default()
+    };
+
+    let batches = collect(svc.semantic_query(q).await.expect("compile+run")).await;
+    let batch = one_batch(&batches);
+    assert_eq!(
+        batch.num_rows(),
+        1,
+        "only the paid group survives revenue > 100"
+    );
+    let status = batch
+        .column(0)
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .expect("status col");
+    let revenue = batch
+        .column(1)
+        .as_any()
+        .downcast_ref::<Int64Array>()
+        .expect("revenue col");
+    let qty = batch
+        .column(2)
+        .as_any()
+        .downcast_ref::<Int64Array>()
+        .expect("qty col");
+    assert_eq!(status.value(0), "paid");
+    assert_eq!(revenue.value(0), 300);
+    assert_eq!(qty.value(0), 10);
+}
+
+#[tokio::test]
+async fn fan_out_dimension_is_rejected() {
+    let svc = build_facts_engine().await;
+
+    // Grouping order revenue by item SKU is the chasm trap: an order's revenue
+    // cannot be attributed to a SKU. The compiler must refuse, not over-count.
+    let q = SemanticQuery {
+        measures: vec!["orders.revenue".into()],
+        dimensions: vec!["order_items.sku".into()],
+        ..Default::default()
+    };
+
+    let err = svc.semantic_query(q).await.err().expect("must reject");
+    let msg = err.to_string();
+    assert!(msg.contains("fans out"), "unexpected error: {msg}");
 }
 
 /// A single model guarded by an RLS `required_predicates` referencing a param.

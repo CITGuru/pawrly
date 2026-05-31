@@ -1,12 +1,15 @@
-//! Multi-file config assembly: `include:` and `from:` expansion.
+//! Multi-file config assembly: `include:`, `from:`, and `semantic.include:`.
 //!
 //! Runs before interpolation so secret resolution and validation operate on
-//! the fully-merged tree. Two orthogonal primitives:
+//! the fully-merged tree. Three orthogonal primitives:
 //!
 //! - `include:` — top-level field, splices the `sources:` (and optional
 //!   `secrets:`) lists of other YAML files (glob-aware) into this config.
 //! - `from:` — inside one source, loads the body of that source from another
 //!   YAML file, with inline fields overriding the loaded fragment.
+//! - `semantic.include:` — splices the *models* of other YAML files (glob-aware)
+//!   into `semantic.models`. Each referenced file contains only models (a
+//!   top-level `models:` list or a bare sequence), never sources or secrets.
 //!
 //! All relative paths resolve against the directory of the *declaring* file.
 
@@ -95,7 +98,111 @@ pub(crate) fn assemble(tree: &mut Value, root_path: &Path) -> Result<Vec<PathBuf
     } else {
         obj.insert("secrets".to_string(), Value::Array(secrets));
     }
+
+    // Stage 3: splice external model-only files into `semantic.models`.
+    assemble_semantic_models(obj, root_path)?;
+
     Ok(origins)
+}
+
+/// Splice the models of every file referenced by `semantic.include` into the
+/// root config's `semantic.models`. Inline models come first (origin = the root
+/// file), then each included file in glob order. Each include file must contain
+/// only models. Duplicate model names — within or across files — are rejected
+/// with a message naming both originating files.
+fn assemble_semantic_models(
+    obj: &mut serde_json::Map<String, Value>,
+    root_path: &Path,
+) -> Result<(), ConfigError> {
+    let Some(sem) = obj.get_mut("semantic").and_then(Value::as_object_mut) else {
+        return Ok(());
+    };
+    let patterns = parse_include_patterns(sem.get("include"), root_path)?;
+    sem.remove("include");
+    if patterns.is_empty() {
+        return Ok(());
+    }
+
+    let mut models: Vec<Value> = Vec::new();
+    let mut origins: Vec<PathBuf> = Vec::new();
+    if let Some(Value::Array(inline)) = sem.get("models") {
+        for m in inline {
+            models.push(m.clone());
+            origins.push(root_path.to_path_buf());
+        }
+    }
+
+    let base_dir = root_path.parent().unwrap_or_else(|| Path::new("."));
+    for pattern in patterns {
+        for matched in glob_paths(base_dir, &pattern)? {
+            for m in load_model_file(&matched)? {
+                models.push(m);
+                origins.push(matched.clone());
+            }
+        }
+    }
+
+    let mut seen: HashMap<String, PathBuf> = HashMap::new();
+    for (m, origin) in models.iter().zip(origins.iter()) {
+        if let Some(name) = m.get("name").and_then(Value::as_str) {
+            if let Some(prev) = seen.get(name) {
+                return Err(ConfigError::SemanticInvalid {
+                    model: name.to_string(),
+                    msg: format!(
+                        "duplicate model name (declared in `{}` and `{}`)",
+                        prev.display(),
+                        origin.display()
+                    ),
+                });
+            }
+            seen.insert(name.to_string(), origin.clone());
+        }
+    }
+
+    sem.insert("models".to_string(), Value::Array(models));
+    Ok(())
+}
+
+/// Read a model-only include file into its list of model mappings. The file is
+/// either a bare YAML sequence of models or a mapping whose sole key is
+/// `models:` — anything else (sources, secrets, version, …) is rejected so an
+/// include file cannot introduce non-model config.
+fn load_model_file(path: &Path) -> Result<Vec<Value>, ConfigError> {
+    let raw = std::fs::read_to_string(path).map_err(|e| ConfigError::ReadFile {
+        path: path.display().to_string(),
+        msg: e.to_string(),
+    })?;
+    let value: Value = serde_yaml::from_str(&raw)
+        .map_err(|e| ConfigError::Yaml(format!("{}: {e}", path.display())))?;
+
+    match value {
+        Value::Array(arr) => Ok(arr),
+        Value::Object(mut map) => {
+            let models = map.remove("models");
+            if !map.is_empty() {
+                let mut extra: Vec<&str> = map.keys().map(String::as_str).collect();
+                extra.sort_unstable();
+                return Err(ConfigError::Yaml(format!(
+                    "{}: a semantic include file may contain only models; \
+                     unexpected key(s): {}",
+                    path.display(),
+                    extra.join(", ")
+                )));
+            }
+            match models {
+                Some(Value::Array(arr)) => Ok(arr),
+                Some(Value::Null) | None => Ok(Vec::new()),
+                Some(_) => Err(ConfigError::Yaml(format!(
+                    "{}: `models` must be a list",
+                    path.display()
+                ))),
+            }
+        }
+        _ => Err(ConfigError::Yaml(format!(
+            "{}: a semantic include file must be a list of models or a mapping with `models:`",
+            path.display()
+        ))),
+    }
 }
 
 /// Build the `include:` graph rooted at `path` without merging or interpolating.
@@ -438,7 +545,12 @@ pub(crate) fn uses_file_primitives(tree: &Value) -> bool {
                 .any(|s| matches!(s.get("from"), Some(v) if !v.is_null()))
         })
         .unwrap_or(false);
-    has_include || has_from
+    let has_semantic_include = obj
+        .get("semantic")
+        .and_then(Value::as_object)
+        .map(|s| matches!(s.get("include"), Some(Value::Array(a)) if !a.is_empty()))
+        .unwrap_or(false);
+    has_include || has_from || has_semantic_include
 }
 
 #[cfg(test)]

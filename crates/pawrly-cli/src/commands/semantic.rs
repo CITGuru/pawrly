@@ -68,6 +68,11 @@ pub struct QueryArgs {
     #[arg(long = "where", value_name = "PREDICATE")]
     pub wheres: Vec<String>,
 
+    /// Apply a named segment (reusable filter set), as `model.segment`.
+    /// Repeatable.
+    #[arg(long = "segment", value_name = "MODEL.SEGMENT")]
+    pub segments: Vec<String>,
+
     /// Order by a selected member; append `:desc` for descending. Repeatable.
     #[arg(long = "order-by", value_name = "MEMBER")]
     pub order_by: Vec<String>,
@@ -201,6 +206,7 @@ async fn query(
         measures: args.measures,
         dimensions: args.by,
         filters,
+        segments: args.segments,
         order_by,
         limit: args.limit,
         time_zone: args.time_zone,

@@ -66,6 +66,33 @@ fn shipped_multi_file_example_loads() {
 }
 
 #[test]
+fn shipped_semantic_multi_file_example_loads() {
+    let path = workspace_dir()
+        .join("examples")
+        .join("semantic-multi-file")
+        .join("pawrly.yaml");
+
+    let cfg = load(&path, &StaticStore::new()).unwrap_or_else(|e| panic!("load failed: {e}"));
+    let sem = cfg.semantic.expect("semantic block");
+    let names: Vec<&str> = sem.models.iter().map(|m| m.name.as_str()).collect();
+    for expected in ["orders", "customers", "order_items"] {
+        assert!(
+            names.contains(&expected),
+            "missing `{expected}` in {names:?}"
+        );
+    }
+    // The cross-file relationship resolved into the merged config.
+    let orders = sem.models.iter().find(|m| m.name == "orders").unwrap();
+    assert!(
+        orders
+            .relationships
+            .iter()
+            .any(|r| r.target_model == "order_items"),
+        "orders should relate to order_items across files"
+    );
+}
+
+#[test]
 fn include_glob_concatenates_in_lexicographic_order() {
     let dir = tempfile::tempdir().unwrap();
     write(
@@ -392,6 +419,175 @@ fn include_tree_reflects_graph() {
 #[test]
 fn load_str_rejects_include() {
     let yaml = "version: 1\ninclude:\n  - ./x.yaml\n";
+    let err = pawrly_config::load_str(yaml, &StaticStore::new()).unwrap_err();
+    assert!(matches!(err, ConfigError::Io(msg) if msg.contains("requires a file path")));
+}
+
+// ---- semantic.include: model-only multi-file ----
+
+/// A root config with a `data` file source and a `semantic.include` glob.
+const SEMANTIC_ROOT: &str = "\
+version: 1
+sources:
+  - name: data
+    kind: file
+    config:
+      path: ./data/*.csv
+semantic:
+  include:
+    - ./models/*.yaml
+";
+
+/// One model as a top-level `models:` list entry.
+fn model_file(name: &str, table: &str) -> String {
+    format!(
+        "models:\n  - name: {name}\n    source: data.{table}\n    \
+         dimensions:\n      - {{ name: status, expr: status, type: string }}\n    \
+         measures:\n      - {{ name: revenue, agg: sum, expr: total }}\n"
+    )
+}
+
+#[test]
+fn semantic_models_split_across_files_merge() {
+    let dir = tempfile::tempdir().unwrap();
+    write(dir.path(), "pawrly.yaml", SEMANTIC_ROOT);
+    write(
+        dir.path(),
+        "models/orders.yaml",
+        &model_file("orders", "orders"),
+    );
+    write(
+        dir.path(),
+        "models/customers.yaml",
+        &model_file("customers", "customers"),
+    );
+
+    let cfg = load(&dir.path().join("pawrly.yaml"), &StaticStore::new())
+        .unwrap_or_else(|e| panic!("load failed: {e}"));
+    let sem = cfg.semantic.expect("semantic block");
+    let names: Vec<&str> = sem.models.iter().map(|m| m.name.as_str()).collect();
+    assert!(names.contains(&"orders"), "{names:?}");
+    assert!(names.contains(&"customers"), "{names:?}");
+    // The include key is consumed by assembly.
+    assert!(sem.include.is_empty());
+}
+
+#[test]
+fn semantic_include_accepts_bare_sequence() {
+    let dir = tempfile::tempdir().unwrap();
+    write(dir.path(), "pawrly.yaml", SEMANTIC_ROOT);
+    // A bare YAML sequence of models (no `models:` wrapper).
+    write(
+        dir.path(),
+        "models/orders.yaml",
+        "- name: orders\n  source: data.orders\n  \
+         dimensions:\n    - { name: status, expr: status, type: string }\n  \
+         measures:\n    - { name: revenue, agg: sum, expr: total }\n",
+    );
+
+    let cfg = load(&dir.path().join("pawrly.yaml"), &StaticStore::new()).unwrap();
+    let sem = cfg.semantic.unwrap();
+    assert_eq!(sem.models.len(), 1);
+    assert_eq!(sem.models[0].name, "orders");
+}
+
+#[test]
+fn semantic_include_merges_with_inline_models() {
+    let dir = tempfile::tempdir().unwrap();
+    write(
+        dir.path(),
+        "pawrly.yaml",
+        "version: 1
+sources:
+  - name: data
+    kind: file
+    config:
+      path: ./data/*.csv
+semantic:
+  include:
+    - ./models/*.yaml
+  models:
+    - name: inline_model
+      source: data.inline
+      dimensions:
+        - { name: status, expr: status, type: string }
+      measures:
+        - { name: revenue, agg: sum, expr: total }
+",
+    );
+    write(
+        dir.path(),
+        "models/orders.yaml",
+        &model_file("orders", "orders"),
+    );
+
+    let cfg = load(&dir.path().join("pawrly.yaml"), &StaticStore::new()).unwrap();
+    let sem = cfg.semantic.unwrap();
+    let names: Vec<&str> = sem.models.iter().map(|m| m.name.as_str()).collect();
+    assert!(names.contains(&"inline_model"), "{names:?}");
+    assert!(names.contains(&"orders"), "{names:?}");
+}
+
+#[test]
+fn duplicate_model_across_files_names_both_files() {
+    let dir = tempfile::tempdir().unwrap();
+    write(dir.path(), "pawrly.yaml", SEMANTIC_ROOT);
+    write(dir.path(), "models/a.yaml", &model_file("dup", "orders"));
+    write(dir.path(), "models/b.yaml", &model_file("dup", "customers"));
+
+    let err = load(&dir.path().join("pawrly.yaml"), &StaticStore::new()).unwrap_err();
+    match err {
+        ConfigError::SemanticInvalid { model, msg } => {
+            assert_eq!(model, "dup");
+            assert!(msg.contains("a.yaml"), "msg: {msg}");
+            assert!(msg.contains("b.yaml"), "msg: {msg}");
+        }
+        other => panic!("expected SemanticInvalid, got {other:?}"),
+    }
+}
+
+#[test]
+fn semantic_include_file_with_sources_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    write(dir.path(), "pawrly.yaml", SEMANTIC_ROOT);
+    // An include file that also declares a `sources:` block must be refused.
+    write(
+        dir.path(),
+        "models/sneaky.yaml",
+        "sources:\n  - name: evil\n    kind: github\nmodels: []\n",
+    );
+
+    let err = load(&dir.path().join("pawrly.yaml"), &StaticStore::new()).unwrap_err();
+    match err {
+        ConfigError::Yaml(msg) => {
+            assert!(msg.contains("only models"), "msg: {msg}");
+            assert!(msg.contains("sources"), "msg: {msg}");
+        }
+        other => panic!("expected Yaml error, got {other:?}"),
+    }
+}
+
+#[test]
+fn semantic_include_model_validated_against_sources() {
+    let dir = tempfile::tempdir().unwrap();
+    write(dir.path(), "pawrly.yaml", SEMANTIC_ROOT);
+    // `nope` is not a configured source, so cross-file validation must fail.
+    write(
+        dir.path(),
+        "models/bad.yaml",
+        &model_file("orders", "orders").replace("data.orders", "nope.orders"),
+    );
+
+    let err = load(&dir.path().join("pawrly.yaml"), &StaticStore::new()).unwrap_err();
+    assert!(
+        matches!(&err, ConfigError::SemanticInvalid { msg, .. } if msg.contains("unknown source")),
+        "got {err:?}"
+    );
+}
+
+#[test]
+fn load_str_rejects_semantic_include() {
+    let yaml = "version: 1\nsemantic:\n  include:\n    - ./models/x.yaml\n";
     let err = pawrly_config::load_str(yaml, &StaticStore::new()).unwrap_err();
     assert!(matches!(err, ConfigError::Io(msg) if msg.contains("requires a file path")));
 }

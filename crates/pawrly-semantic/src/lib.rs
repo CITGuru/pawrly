@@ -17,9 +17,9 @@ use std::sync::Arc;
 pub mod rollup;
 
 use pawrly_core::semantic::{
-    Dimension, DimensionType, FilterOp, Measure, MeasureAgg, OrderDir, SemanticFilter,
-    SemanticModel, SemanticModelDescription, SemanticModelInfo, SemanticOrder, SemanticQuery,
-    TimeGrain,
+    Dimension, DimensionType, FilterOp, Measure, MeasureAgg, OrderDir, RelationshipKind,
+    SemanticFilter, SemanticModel, SemanticModelDescription, SemanticModelInfo, SemanticOrder,
+    SemanticQuery, TimeGrain,
 };
 use pawrly_core::{EngineError, SafetyError, TableName};
 
@@ -40,6 +40,34 @@ pub enum SemanticError {
 
     #[error("model `{model}` is not reachable from root `{root}` via any relationship")]
     UnreachableModel { root: String, model: String },
+
+    /// `PAWRLY_SEMANTIC_FANOUT` — grouping or joining `measure` across `via`
+    /// traverses a `one_to_many` edge, which would multiply the measure's rows
+    /// and silently over-count. The query must be reshaped (drop the fan-out
+    /// member, or aggregate that fact separately).
+    #[error(
+        "measure `{measure}` fans out through `{via}` (a one-to-many join would \
+         multiply its rows and over-count); aggregate that fact separately"
+    )]
+    FanOut { measure: String, via: String },
+
+    /// `PAWRLY_SEMANTIC_DISCONNECTED` — `member`'s model cannot be reached from
+    /// any measure root via the declared relationships, so there is no
+    /// non-arbitrary way to join it in.
+    #[error("member `{member}` is not connected to any measure root via a declared relationship")]
+    DisconnectedMember { member: String },
+
+    /// `PAWRLY_SEMANTIC_AMBIGUOUS_PATH` — two equal-length join paths connect
+    /// `from` and `to`; the model needs an explicit relationship to pick one.
+    #[error(
+        "ambiguous join path between `{from}` and `{to}`; \
+         declare an explicit relationship to disambiguate"
+    )]
+    AmbiguousJoinPath { from: String, to: String },
+
+    /// A query referenced a segment that no model defines.
+    #[error("unknown segment `{0}` (expected `model.segment`)")]
+    UnknownSegment(String),
 
     #[error("relationship cycle through `{0}`")]
     RelationshipCycle(String),
@@ -134,33 +162,131 @@ impl SemanticCatalog {
             dimensions: m.dimensions.clone(),
             measures: m.measures.clone(),
             relationships: m.relationships.clone(),
+            segments: m.segments.clone(),
         })
     }
 
     /// Compile a query into a SQL string over the `pawrly` catalog.
     ///
-    /// A single-model query emits the original unqualified, unaliased form
-    /// (`FROM "schema"."table"`, `GROUP BY status`). A query whose members
-    /// span related models switches to an aliased form — every base table gets
-    /// `AS <model>` and bare-column expressions are qualified with that alias
-    /// so joins are unambiguous. Complex (non-bare-identifier) expressions are
-    /// passed through verbatim; in a joined model the author should qualify
-    /// them, exactly as for raw `required_predicates`.
+    /// Queries with zero or one measure root compile to the original
+    /// `FROM … JOIN … GROUP BY` form (unqualified and unaliased for a single
+    /// model; aliased once joins are in play). Queries whose measures span two
+    /// or more fact roots compile to **aggregate-locality** form (§16): each
+    /// fact is pre-aggregated at the shared-dimension grain in its own CTE and
+    /// the CTEs are `FULL OUTER JOIN`-ed on the shared keys, so a `one_to_many`
+    /// join can never inflate another fact's aggregate.
+    ///
+    /// A member that would fan out a measure (be reached across a `one_to_many`
+    /// edge), one that is unreachable from a measure root, or an ambiguous join
+    /// path are all rejected with a typed error rather than compiled to
+    /// silently-wrong SQL.
     pub fn compile_sql(&self, q: &SemanticQuery) -> Result<String, SemanticError> {
+        let q = self.expand_segments(q)?;
+        let q = &q;
+
         if q.measures.is_empty() && q.dimensions.is_empty() {
             return Err(SemanticError::EmptyQuery);
         }
 
-        let root = self.resolve_root(q)?;
+        let measure_roots = self.measure_roots(q)?;
+        if measure_roots.len() >= 2 {
+            self.compile_aggregate_locality(q, &measure_roots)
+        } else {
+            let has_measures = !measure_roots.is_empty();
+            let root = match measure_roots.into_iter().next() {
+                Some(r) => r,
+                None => member_model(q.dimensions.first().ok_or(SemanticError::EmptyQuery)?)?
+                    .to_string(),
+            };
+            self.compile_single(q, &root, has_measures)
+        }
+    }
+
+    /// Expand any `model.segment` references into their predicates, AND-ed in
+    /// alongside the query's own filters. Returns the query unchanged when it
+    /// selects no segments.
+    fn expand_segments(&self, q: &SemanticQuery) -> Result<SemanticQuery, SemanticError> {
+        if q.segments.is_empty() {
+            return Ok(q.clone());
+        }
+        let mut out = q.clone();
+        for seg_ref in &q.segments {
+            let (model_name, seg_name) = seg_ref
+                .split_once('.')
+                .ok_or_else(|| SemanticError::UnknownSegment(seg_ref.clone()))?;
+            let model = self
+                .models
+                .get(model_name)
+                .ok_or_else(|| SemanticError::UnknownModel(model_name.to_string()))?;
+            let seg = model
+                .segments
+                .iter()
+                .find(|s| s.name == seg_name)
+                .ok_or_else(|| SemanticError::UnknownSegment(seg_ref.clone()))?;
+            out.filters.extend(seg.filters.iter().cloned());
+        }
+        out.segments.clear();
+        Ok(out)
+    }
+
+    /// Distinct models owning the query's measures, in first-appearance order.
+    fn measure_roots(&self, q: &SemanticQuery) -> Result<Vec<String>, SemanticError> {
+        let mut roots: Vec<String> = Vec::new();
+        for member in &q.measures {
+            let model = member_model(member)?.to_string();
+            if !self.models.contains_key(&model) {
+                return Err(SemanticError::UnknownModel(model));
+            }
+            if !roots.contains(&model) {
+                roots.push(model);
+            }
+        }
+        Ok(roots)
+    }
+
+    /// Compile a single-fact query (`root` owns every measure, or there are no
+    /// measures and `root` anchors the dimensions). Lookups (`many_to_one` /
+    /// `one_to_one`) join in; a member reached across a `one_to_many` edge fans
+    /// out the measure and is rejected.
+    fn compile_single(
+        &self,
+        q: &SemanticQuery,
+        root: &str,
+        has_measures: bool,
+    ) -> Result<String, SemanticError> {
         let referenced = self.referenced_models(q)?;
-        let plan = self.build_join_plan(&root, &referenced)?;
+        let reach = self.reachability(root);
+        // Validate connectivity, ambiguity, and (when aggregating) fan-out.
+        for model in &referenced {
+            if model == root {
+                continue;
+            }
+            let node = reach
+                .nodes
+                .get(model)
+                .ok_or_else(|| SemanticError::DisconnectedMember {
+                    member: self.first_member_for_model(q, model),
+                })?;
+            if node.ambiguous {
+                return Err(SemanticError::AmbiguousJoinPath {
+                    from: root.to_string(),
+                    to: model.clone(),
+                });
+            }
+            if has_measures && node.fans_out {
+                return Err(SemanticError::FanOut {
+                    measure: self.first_measure_member(q, root),
+                    via: model.clone(),
+                });
+            }
+        }
+
         let joined = referenced.len() > 1;
         let tz = q.time_zone.as_deref();
         let alias_for = |model: &str| -> Option<String> { joined.then(|| model.to_string()) };
 
         let mut select_items: Vec<String> = Vec::new();
         let mut dim_exprs: Vec<String> = Vec::new();
-
         for member in &q.dimensions {
             let model = self.model_for_member(member)?;
             let expr =
@@ -174,25 +300,27 @@ impl SemanticCatalog {
             select_items.push(format!("{expr} AS {}", quote_ident(member)));
         }
 
-        let from = self.render_from(&root, &plan, joined)?;
+        let needed = self.needed_models(&reach, &referenced, root)?;
+        let from = self.render_from(root, &reach, &needed, joined)?;
 
         // Safety guard rails on the user-supplied filters (root model).
-        self.enforce_filter_safety(&root, q)?;
+        self.enforce_filter_safety(root, q)?;
 
+        // Row-level filters (dimensions) → WHERE; aggregate-level filters
+        // (measures) → HAVING.
         let mut wheres: Vec<String> = Vec::new();
+        let mut havings: Vec<String> = Vec::new();
         for f in &q.filters {
             let model = self.model_for_member(&f.member)?;
-            wheres.push(resolve_filter(
-                model,
-                f,
-                alias_for(&model.name).as_deref(),
-                tz,
-            )?);
+            let alias = alias_for(&model.name);
+            if member_is_measure(model, &f.member) {
+                havings.push(resolve_measure_filter(model, f, alias.as_deref())?);
+            } else {
+                wheres.push(resolve_filter(model, f, alias.as_deref(), tz)?);
+            }
         }
-        // Required predicates (RLS + always-on filters) for every model the
-        // query touches, AND-ed in with params bound as escaped literals.
+        // Required predicates (RLS + always-on filters) for every touched model.
         for model_name in &referenced {
-            // `referenced` is built only from models present in the catalog.
             let Some(model) = self.models.get(model_name) else {
                 continue;
             };
@@ -203,7 +331,243 @@ impl SemanticCatalog {
             }
         }
 
-        // ORDER BY — every term must reference a selected member.
+        let orders = self.resolve_orders(q)?;
+        let limit = effective_limit(q.limit, self.max_rows(root));
+
+        let mut sql = format!("SELECT {}\nFROM {from}", select_items.join(", "));
+        if !wheres.is_empty() {
+            sql.push_str("\nWHERE ");
+            sql.push_str(&wheres.join(" AND "));
+        }
+        if !dim_exprs.is_empty() {
+            sql.push_str("\nGROUP BY ");
+            sql.push_str(&dim_exprs.join(", "));
+        }
+        if !havings.is_empty() {
+            sql.push_str("\nHAVING ");
+            sql.push_str(&havings.join(" AND "));
+        }
+        if !orders.is_empty() {
+            sql.push_str("\nORDER BY ");
+            sql.push_str(&orders.join(", "));
+        }
+        if let Some(limit) = limit {
+            sql.push_str(&format!("\nLIMIT {limit}"));
+        }
+        Ok(sql)
+    }
+
+    /// Compile a multi-fact query in aggregate-locality form: one CTE per
+    /// measure root, each pre-aggregated at the shared-dimension grain, joined
+    /// `FULL OUTER` on the shared keys so no fact inflates another (§16.2).
+    fn compile_aggregate_locality(
+        &self,
+        q: &SemanticQuery,
+        measure_roots: &[String],
+    ) -> Result<String, SemanticError> {
+        let tz = q.time_zone.as_deref();
+        let shared_dims = &q.dimensions;
+
+        // Split filters: dimension predicates apply inside every CTE (row-level);
+        // measure predicates apply once at the outer level (aggregate-level).
+        let mut dim_filters: Vec<&SemanticFilter> = Vec::new();
+        let mut measure_filters: Vec<&SemanticFilter> = Vec::new();
+        for f in &q.filters {
+            let model = self.model_for_member(&f.member)?;
+            if member_is_measure(model, &f.member) {
+                measure_filters.push(f);
+            } else {
+                dim_filters.push(f);
+            }
+        }
+
+        // Per-root safety guard rails, and the combined row cap (tightest wins).
+        let mut cap: Option<u64> = None;
+        for root in measure_roots {
+            self.enforce_filter_safety(root, q)?;
+            if let Some(c) = self.max_rows(root) {
+                cap = Some(cap.map_or(c, |x| x.min(c)));
+            }
+        }
+
+        let cte_name = |root: &str| quote_ident(&format!("_{root}"));
+        let mut ctes: Vec<String> = Vec::new();
+        for root in measure_roots {
+            let reach = self.reachability(root);
+            let alias_for = |model: &str| Some(model.to_string());
+
+            // Every shared dimension and dimension-filter model must be a safe
+            // (non-fan-out) lookup from this root.
+            let mut referenced: Vec<String> = vec![root.clone()];
+            let consider =
+                |member: &str, referenced: &mut Vec<String>| -> Result<(), SemanticError> {
+                    let m = member_model(member)?.to_string();
+                    if !self.models.contains_key(&m) {
+                        return Err(SemanticError::UnknownModel(m));
+                    }
+                    if m != *root {
+                        let node = reach.nodes.get(&m).ok_or_else(|| {
+                            SemanticError::DisconnectedMember {
+                                member: member.to_string(),
+                            }
+                        })?;
+                        if node.ambiguous {
+                            return Err(SemanticError::AmbiguousJoinPath {
+                                from: root.clone(),
+                                to: m.clone(),
+                            });
+                        }
+                        if node.fans_out {
+                            return Err(SemanticError::FanOut {
+                                measure: self.first_measure_member(q, root),
+                                via: m.clone(),
+                            });
+                        }
+                    }
+                    if !referenced.contains(&m) {
+                        referenced.push(m);
+                    }
+                    Ok(())
+                };
+            for d in shared_dims {
+                consider(d, &mut referenced)?;
+            }
+            for f in &dim_filters {
+                consider(&f.member, &mut referenced)?;
+            }
+
+            let needed = self.needed_models(&reach, &referenced, root)?;
+            let from = self.render_from(root, &reach, &needed, true)?;
+
+            let mut select_items: Vec<String> = Vec::new();
+            let mut group_exprs: Vec<String> = Vec::new();
+            for d in shared_dims {
+                let model = self.model_for_member(d)?;
+                let expr = resolve_dimension_expr(model, d, alias_for(&model.name).as_deref(), tz)?;
+                select_items.push(format!("{expr} AS {}", quote_ident(d)));
+                group_exprs.push(expr);
+            }
+            for m in q
+                .measures
+                .iter()
+                .filter(|m| member_model(m).map(|mm| mm == root).unwrap_or(false))
+            {
+                let model = self.model_for_member(m)?;
+                let expr = resolve_measure_expr(model, m, alias_for(&model.name).as_deref())?;
+                select_items.push(format!("{expr} AS {}", quote_ident(m)));
+            }
+
+            let mut wheres: Vec<String> = Vec::new();
+            for f in &dim_filters {
+                let model = self.model_for_member(&f.member)?;
+                wheres.push(resolve_filter(
+                    model,
+                    f,
+                    alias_for(&model.name).as_deref(),
+                    tz,
+                )?);
+            }
+            // Required predicates (RLS) for every model this CTE touches — the
+            // root *and* each lookup it joins to — so a fact aggregated through
+            // a join still honors the joined model's row-level security.
+            for model_name in &referenced {
+                if let Some(safety) = self.models.get(model_name).and_then(|m| m.safety.as_ref()) {
+                    for pred in &safety.required_predicates {
+                        wheres.push(bind_params(pred, &q.params, model_name)?);
+                    }
+                }
+            }
+
+            let mut body = format!("SELECT {}\nFROM {from}", select_items.join(", "));
+            if !wheres.is_empty() {
+                body.push_str("\nWHERE ");
+                body.push_str(&wheres.join(" AND "));
+            }
+            if !group_exprs.is_empty() {
+                body.push_str("\nGROUP BY ");
+                body.push_str(&group_exprs.join(", "));
+            }
+            ctes.push(format!("{} AS (\n{body}\n)", cte_name(root)));
+        }
+
+        // Outer SELECT: coalesce each shared dimension across all CTEs; pull
+        // each measure from the CTE that owns it.
+        let mut select_items: Vec<String> = Vec::new();
+        for d in shared_dims {
+            let col = quote_ident(d);
+            let coalesced = measure_roots
+                .iter()
+                .map(|r| format!("{}.{col}", cte_name(r)))
+                .collect::<Vec<_>>()
+                .join(", ");
+            select_items.push(format!("COALESCE({coalesced}) AS {col}"));
+        }
+        for m in &q.measures {
+            let root = member_model(m)?;
+            let col = quote_ident(m);
+            select_items.push(format!("{}.{col} AS {col}", cte_name(root)));
+        }
+
+        // FULL OUTER JOIN the CTEs on the shared keys (CROSS JOIN when there are
+        // no shared dimensions — each CTE is then a single grand-total row).
+        let mut from = cte_name(&measure_roots[0]).to_string();
+        for (i, root) in measure_roots.iter().enumerate().skip(1) {
+            let name = cte_name(root);
+            if shared_dims.is_empty() {
+                from.push_str(&format!("\nCROSS JOIN {name}"));
+                continue;
+            }
+            let conds = shared_dims
+                .iter()
+                .map(|d| {
+                    let col = quote_ident(d);
+                    let prev = measure_roots[..i]
+                        .iter()
+                        .map(|r| format!("{}.{col}", cte_name(r)))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    format!("COALESCE({prev}) IS NOT DISTINCT FROM {name}.{col}")
+                })
+                .collect::<Vec<_>>()
+                .join(" AND ");
+            from.push_str(&format!("\nFULL OUTER JOIN {name} ON {conds}"));
+        }
+
+        // Measure-threshold filters apply once, over the joined measures. They
+        // reference the owning CTE's column (not the output alias, which a
+        // `WHERE` cannot see).
+        let mut wheres: Vec<String> = Vec::new();
+        for f in &measure_filters {
+            let root = member_model(&f.member)?;
+            let col = format!("{}.{}", cte_name(root), quote_ident(&f.member));
+            wheres.push(apply_op(&col, f, true)?);
+        }
+
+        let orders = self.resolve_orders(q)?;
+        let limit = effective_limit(q.limit, cap);
+
+        let mut sql = format!(
+            "WITH {}\nSELECT {}\nFROM {from}",
+            ctes.join(",\n"),
+            select_items.join(", ")
+        );
+        if !wheres.is_empty() {
+            sql.push_str("\nWHERE ");
+            sql.push_str(&wheres.join(" AND "));
+        }
+        if !orders.is_empty() {
+            sql.push_str("\nORDER BY ");
+            sql.push_str(&orders.join(", "));
+        }
+        if let Some(limit) = limit {
+            sql.push_str(&format!("\nLIMIT {limit}"));
+        }
+        Ok(sql)
+    }
+
+    /// Validate and render the ORDER BY terms; every term must name a selected
+    /// member. Shared between the single and aggregate-locality paths.
+    fn resolve_orders(&self, q: &SemanticQuery) -> Result<Vec<String>, SemanticError> {
         let selected: std::collections::HashSet<&str> = q
             .dimensions
             .iter()
@@ -217,49 +581,28 @@ impl SemanticCatalog {
             }
             orders.push(resolve_order(o));
         }
-
-        let limit = effective_limit(q.limit, self.max_rows(&root));
-
-        let mut sql = format!("SELECT {}\nFROM {from}", select_items.join(", "));
-        if !wheres.is_empty() {
-            sql.push_str("\nWHERE ");
-            sql.push_str(&wheres.join(" AND "));
-        }
-        if !dim_exprs.is_empty() {
-            sql.push_str("\nGROUP BY ");
-            sql.push_str(&dim_exprs.join(", "));
-        }
-        if !orders.is_empty() {
-            sql.push_str("\nORDER BY ");
-            sql.push_str(&orders.join(", "));
-        }
-        if let Some(limit) = limit {
-            sql.push_str(&format!("\nLIMIT {limit}"));
-        }
-        Ok(sql)
+        Ok(orders)
     }
 
-    /// Measures must all share one root model. With no measures, the first
-    /// dimension's model anchors the query and relatives join in.
-    fn resolve_root(&self, q: &SemanticQuery) -> Result<String, SemanticError> {
-        let mut roots: Vec<String> = Vec::new();
-        for member in &q.measures {
-            let model = member_model(member)?.to_string();
-            if !roots.contains(&model) {
-                roots.push(model);
-            }
-        }
-        match roots.len() {
-            0 => match q.dimensions.first() {
-                Some(member) => Ok(member_model(member)?.to_string()),
-                None => Err(SemanticError::EmptyQuery),
-            },
-            1 => Ok(roots.remove(0)),
-            _ => {
-                roots.sort();
-                Err(SemanticError::AmbiguousRoot(roots))
-            }
-        }
+    /// The first measure member owned by `root` (for fan-out diagnostics), or
+    /// the root name when the query has no measures on it.
+    fn first_measure_member(&self, q: &SemanticQuery, root: &str) -> String {
+        q.measures
+            .iter()
+            .find(|m| member_model(m).map(|mm| mm == root).unwrap_or(false))
+            .cloned()
+            .unwrap_or_else(|| root.to_string())
+    }
+
+    /// The first query member whose model is `model` (for diagnostics).
+    fn first_member_for_model(&self, q: &SemanticQuery, model: &str) -> String {
+        q.measures
+            .iter()
+            .chain(q.dimensions.iter())
+            .chain(q.filters.iter().map(|f| &f.member))
+            .find(|m| member_model(m).map(|mm| mm == model).unwrap_or(false))
+            .cloned()
+            .unwrap_or_else(|| model.to_string())
     }
 
     /// The model that owns a member, resolved by its `model.` prefix.
@@ -292,88 +635,139 @@ impl SemanticCatalog {
         Ok(out)
     }
 
-    /// BFS the relationship graph from `root`, emitting the joins needed to
-    /// connect every referenced model. Parents are always emitted before
-    /// children. Unknown targets and unreachable models are hard errors.
-    fn build_join_plan(
-        &self,
-        root: &str,
-        referenced: &[String],
-    ) -> Result<JoinPlan, SemanticError> {
-        use std::collections::{HashSet, VecDeque};
-
-        let mut parent_from: HashMap<String, String> = HashMap::new();
-        let mut edge: HashMap<String, JoinStep> = HashMap::new();
-        let mut discovery: Vec<String> = Vec::new();
-        let mut visited: HashSet<String> = HashSet::new();
-        visited.insert(root.to_string());
+    /// Build the fan-out-aware reachability map from `root`. Relationships are
+    /// walked in both directions (a declared `one_to_many` is also a
+    /// `many_to_one` from the child), so either fact can anchor a join. Each
+    /// reached model records the cumulative fan-out of its shortest path and
+    /// whether a second equal-length path makes it ambiguous.
+    fn reachability(&self, root: &str) -> Reach {
+        use std::collections::VecDeque;
+        let adj = self.adjacency();
+        let mut nodes: HashMap<String, Node> = HashMap::new();
+        nodes.insert(root.to_string(), Node::root());
         let mut queue: VecDeque<String> = VecDeque::new();
         queue.push_back(root.to_string());
 
-        while let Some(from) = queue.pop_front() {
-            // Only catalog models are ever enqueued.
-            let Some(model) = self.models.get(&from) else {
+        while let Some(cur) = queue.pop_front() {
+            let (depth, fans_out) = {
+                let n = &nodes[&cur];
+                (n.depth, n.fans_out)
+            };
+            let Some(edges) = adj.get(&cur) else {
                 continue;
             };
-            for rel in &model.relationships {
-                if !self.models.contains_key(&rel.target_model) {
-                    return Err(SemanticError::UnknownRelationshipTarget {
-                        model: from.clone(),
-                        rel: rel.name.clone(),
-                        target: rel.target_model.clone(),
-                    });
+            for e in edges {
+                let nd = depth + 1;
+                let nf = fans_out || e.fans_out;
+                match nodes.get(&e.target) {
+                    None => {
+                        nodes.insert(
+                            e.target.clone(),
+                            Node {
+                                depth: nd,
+                                fans_out: nf,
+                                parent: Some(cur.clone()),
+                                on: Some(e.on.clone()),
+                                kind: Some(e.kind),
+                                ambiguous: false,
+                            },
+                        );
+                        queue.push_back(e.target.clone());
+                    }
+                    Some(existing) => {
+                        // A second path of the same length via a different
+                        // predecessor is an ambiguous join.
+                        if existing.depth == nd && existing.parent.as_deref() != Some(cur.as_str())
+                        {
+                            if let Some(n) = nodes.get_mut(&e.target) {
+                                n.ambiguous = true;
+                            }
+                        }
+                    }
                 }
-                if !visited.insert(rel.target_model.clone()) {
-                    continue; // already reached; ignore back-edges (no cycles)
-                }
-                let target_table = self.qualified_table(&rel.target_model)?;
-                // `this.` aliases the declaring model; the target is referred
-                // to by its own model name (which is also its table alias).
-                let on = rel.join_predicate.replace("this.", &format!("{from}."));
-                edge.insert(
-                    rel.target_model.clone(),
-                    JoinStep {
-                        target: rel.target_model.clone(),
-                        table: target_table,
-                        kind: rel.kind.join_kind(),
-                        on,
-                    },
-                );
-                parent_from.insert(rel.target_model.clone(), from.clone());
-                discovery.push(rel.target_model.clone());
-                queue.push_back(rel.target_model.clone());
             }
         }
+        Reach { nodes }
+    }
 
-        // Which models must actually be joined: every referenced non-root
-        // model plus the intermediate hops on its path back to root.
-        let mut needed: HashSet<String> = HashSet::new();
+    /// The bidirectional relationship graph, one entry per `from` model. At most
+    /// one edge is kept per `(from, target)` pair (declared edges win over
+    /// inverted ones, in deterministic model order) so a relationship declared
+    /// on both sides is not mistaken for two competing paths.
+    fn adjacency(&self) -> HashMap<String, Vec<Edge>> {
+        let mut adj: HashMap<String, Vec<Edge>> = HashMap::new();
+        let mut push = |from: &str, edge: Edge| {
+            let v = adj.entry(from.to_string()).or_default();
+            if v.iter().any(|e| e.target == edge.target) {
+                return;
+            }
+            v.push(edge);
+        };
+        let mut names: Vec<&String> = self.models.keys().collect();
+        names.sort();
+        for name in names {
+            let model = &self.models[name];
+            for rel in &model.relationships {
+                if !self.models.contains_key(&rel.target_model) {
+                    continue; // unknown targets are caught by config validation
+                }
+                let on = rel
+                    .join_predicate
+                    .replace("this.", &format!("{}.", model.name));
+                push(
+                    &model.name,
+                    Edge {
+                        target: rel.target_model.clone(),
+                        kind: rel.kind,
+                        on: on.clone(),
+                        fans_out: matches!(rel.kind, RelationshipKind::OneToMany),
+                    },
+                );
+                let inv = invert_kind(rel.kind);
+                push(
+                    &rel.target_model,
+                    Edge {
+                        target: model.name.clone(),
+                        kind: inv,
+                        on,
+                        fans_out: matches!(inv, RelationshipKind::OneToMany),
+                    },
+                );
+            }
+        }
+        adj
+    }
+
+    /// The non-root models that must be joined to connect `referenced` back to
+    /// `root`, ordered parents-before-children (by reachability depth).
+    fn needed_models(
+        &self,
+        reach: &Reach,
+        referenced: &[String],
+        root: &str,
+    ) -> Result<Vec<String>, SemanticError> {
+        use std::collections::HashSet;
+        let mut set: HashSet<String> = HashSet::new();
         for model in referenced {
             if model == root {
                 continue;
             }
-            if !visited.contains(model) {
-                return Err(SemanticError::UnreachableModel {
-                    root: root.to_string(),
-                    model: model.clone(),
-                });
-            }
             let mut cur = model.clone();
             while cur != root {
-                needed.insert(cur.clone());
-                cur = parent_from
+                let node = reach
+                    .nodes
                     .get(&cur)
-                    .cloned()
+                    .ok_or_else(|| SemanticError::RelationshipCycle(cur.clone()))?;
+                set.insert(cur.clone());
+                cur = node
+                    .parent
+                    .clone()
                     .ok_or_else(|| SemanticError::RelationshipCycle(cur.clone()))?;
             }
         }
-
-        let joins = discovery
-            .into_iter()
-            .filter(|m| needed.contains(m))
-            .filter_map(|m| edge.remove(&m))
-            .collect();
-        Ok(JoinPlan { joins })
+        let mut out: Vec<String> = set.into_iter().collect();
+        out.sort_by_key(|m| reach.nodes.get(m).map(|n| n.depth).unwrap_or(u32::MAX));
+        Ok(out)
     }
 
     /// `"schema"."table"` for a model's source, or an `InvalidSource` error.
@@ -394,12 +788,14 @@ impl SemanticCatalog {
         ))
     }
 
-    /// Render the `FROM` (+ `JOIN`) clause. Unaliased for single-model queries
-    /// to preserve the original output; aliased (`AS <model>`) when joining.
+    /// Render the `FROM` (+ `JOIN`) clause from the reachability map. Unaliased
+    /// for single-model queries to preserve the original output; aliased
+    /// (`AS <model>`) when joining.
     fn render_from(
         &self,
         root: &str,
-        plan: &JoinPlan,
+        reach: &Reach,
+        needed: &[String],
         joined: bool,
     ) -> Result<String, SemanticError> {
         let root_table = self.qualified_table(root)?;
@@ -407,10 +803,18 @@ impl SemanticCatalog {
             return Ok(root_table);
         }
         let mut from = format!("{root_table} AS {root}");
-        for step in &plan.joins {
+        for model in needed {
+            let node = reach
+                .nodes
+                .get(model)
+                .ok_or_else(|| SemanticError::RelationshipCycle(model.clone()))?;
+            let (Some(kind), Some(on)) = (node.kind, node.on.as_ref()) else {
+                return Err(SemanticError::RelationshipCycle(model.clone()));
+            };
+            let table = self.qualified_table(model)?;
             from.push_str(&format!(
-                "\n{} JOIN {} AS {}\n  ON {}",
-                step.kind, step.table, step.target, step.on
+                "\n{} JOIN {table} AS {model}\n  ON {on}",
+                kind.join_kind()
             ));
         }
         Ok(from)
@@ -451,21 +855,65 @@ impl SemanticCatalog {
     }
 }
 
-/// One emitted JOIN in a [`JoinPlan`].
-struct JoinStep {
-    /// Target model name, used as the table alias.
+/// One directed edge in the [`Reach`] graph; a declared relationship yields a
+/// forward edge and an inverted one.
+struct Edge {
+    /// Model this edge leads to.
     target: String,
-    /// `"schema"."table"` for the target.
-    table: String,
-    /// SQL join keyword (`INNER` / `LEFT`).
-    kind: &'static str,
-    /// Join condition with `this.` rewritten to the declaring model's alias.
+    /// Cardinality in the direction of travel (drives the join keyword).
+    kind: RelationshipKind,
+    /// Join condition, with `this.` rewritten to the declaring model's alias.
     on: String,
+    /// True when traversing this edge multiplies the source rows (`one_to_many`).
+    fans_out: bool,
 }
 
-/// The ordered joins connecting a query's referenced models to its root.
-struct JoinPlan {
-    joins: Vec<JoinStep>,
+/// One reached model in a [`Reach`] map.
+struct Node {
+    depth: u32,
+    /// Whether the shortest path to this model crosses any `one_to_many` edge.
+    fans_out: bool,
+    /// Predecessor on the shortest path (`None` only for the root).
+    parent: Option<String>,
+    /// Join condition to reach this model from its parent.
+    on: Option<String>,
+    /// Cardinality of the edge from the parent (drives the join keyword).
+    kind: Option<RelationshipKind>,
+    /// True when a second equal-length path makes the join ambiguous.
+    ambiguous: bool,
+}
+
+impl Node {
+    fn root() -> Self {
+        Self {
+            depth: 0,
+            fans_out: false,
+            parent: None,
+            on: None,
+            kind: None,
+            ambiguous: false,
+        }
+    }
+}
+
+/// Fan-out-aware reachability from a root model.
+struct Reach {
+    nodes: HashMap<String, Node>,
+}
+
+/// Invert a relationship's cardinality for the reverse traversal.
+fn invert_kind(kind: RelationshipKind) -> RelationshipKind {
+    match kind {
+        RelationshipKind::OneToMany => RelationshipKind::ManyToOne,
+        RelationshipKind::ManyToOne => RelationshipKind::OneToMany,
+        RelationshipKind::OneToOne => RelationshipKind::OneToOne,
+    }
+}
+
+/// True when `member` (a two-part `model.name`) names a measure on `model`.
+fn member_is_measure(model: &SemanticModel, member: &str) -> bool {
+    let parts: Vec<&str> = member.split('.').collect();
+    parts.len() == 2 && find_measure(model, parts[1]).is_some()
 }
 
 /// `"status"` from `"orders.status"` (the dimension segment of a member).
@@ -644,6 +1092,7 @@ fn agg_sql(m: &Measure, alias: Option<&str>) -> String {
     }
 }
 
+/// A row-level (dimension) filter, resolved to a `WHERE` predicate.
 fn resolve_filter(
     model: &SemanticModel,
     f: &SemanticFilter,
@@ -651,19 +1100,42 @@ fn resolve_filter(
     tz: Option<&str>,
 ) -> Result<String, SemanticError> {
     let expr = resolve_dimension_expr(model, &f.member, alias, tz)?;
+    apply_op(&expr, f, false)
+}
+
+/// An aggregate-level (measure) filter, resolved to a predicate over the
+/// measure's aggregate expression — a `HAVING` term in single-fact form, or an
+/// outer filter over the joined CTEs in aggregate-locality form. A measure is
+/// numeric, so values compare numerically rather than as strings.
+fn resolve_measure_filter(
+    model: &SemanticModel,
+    f: &SemanticFilter,
+    alias: Option<&str>,
+) -> Result<String, SemanticError> {
+    let expr = resolve_measure_expr(model, &f.member, alias)?;
+    apply_op(&expr, f, true)
+}
+
+/// Build a SQL predicate applying filter `f`'s operator to the already-resolved
+/// `expr`. Values are bound as escaped literals. When `numeric` is set, a value
+/// that parses as a number is emitted as a bare numeric literal so the
+/// comparison is numeric (a measure threshold) rather than lexical; anything
+/// that does not parse as a number still falls back to a safe quoted string.
+fn apply_op(expr: &str, f: &SemanticFilter, numeric: bool) -> Result<String, SemanticError> {
     let one = |member: &str| -> Result<&str, SemanticError> {
         f.values
             .first()
             .map(String::as_str)
             .ok_or_else(|| SemanticError::Compile(format!("filter on `{member}` requires a value")))
     };
+    let v = |s: &str| scalar_lit(s, numeric);
     let predicate = match f.op {
-        FilterOp::Equals => format!("{expr} = {}", lit(one(&f.member)?)),
-        FilterOp::NotEquals => format!("{expr} <> {}", lit(one(&f.member)?)),
-        FilterOp::Gt => format!("{expr} > {}", lit(one(&f.member)?)),
-        FilterOp::Gte => format!("{expr} >= {}", lit(one(&f.member)?)),
-        FilterOp::Lt => format!("{expr} < {}", lit(one(&f.member)?)),
-        FilterOp::Lte => format!("{expr} <= {}", lit(one(&f.member)?)),
+        FilterOp::Equals => format!("{expr} = {}", v(one(&f.member)?)),
+        FilterOp::NotEquals => format!("{expr} <> {}", v(one(&f.member)?)),
+        FilterOp::Gt => format!("{expr} > {}", v(one(&f.member)?)),
+        FilterOp::Gte => format!("{expr} >= {}", v(one(&f.member)?)),
+        FilterOp::Lt => format!("{expr} < {}", v(one(&f.member)?)),
+        FilterOp::Lte => format!("{expr} <= {}", v(one(&f.member)?)),
         FilterOp::In | FilterOp::NotIn => {
             if f.values.is_empty() {
                 return Err(SemanticError::Compile(format!(
@@ -674,7 +1146,7 @@ fn resolve_filter(
             let list = f
                 .values
                 .iter()
-                .map(|v| lit(v))
+                .map(|x| scalar_lit(x, numeric))
                 .collect::<Vec<_>>()
                 .join(", ");
             let op = if matches!(f.op, FilterOp::In) {
@@ -688,7 +1160,7 @@ fn resolve_filter(
             let lo = f.values.first().map(String::as_str);
             let hi = f.values.get(1).map(String::as_str);
             match (lo, hi) {
-                (Some(lo), Some(hi)) => format!("{expr} BETWEEN {} AND {}", lit(lo), lit(hi)),
+                (Some(lo), Some(hi)) => format!("{expr} BETWEEN {} AND {}", v(lo), v(hi)),
                 _ => {
                     return Err(SemanticError::Compile(format!(
                         "in_range filter on `{}` requires two values",
@@ -697,6 +1169,7 @@ fn resolve_filter(
                 }
             }
         }
+        // LIKE operators are inherently string-valued, so they always quote.
         FilterOp::Contains => format!("{expr} LIKE {}", lit(&format!("%{}%", one(&f.member)?))),
         FilterOp::StartsWith => format!("{expr} LIKE {}", lit(&format!("{}%", one(&f.member)?))),
         FilterOp::EndsWith => format!("{expr} LIKE {}", lit(&format!("%{}", one(&f.member)?))),
@@ -704,6 +1177,18 @@ fn resolve_filter(
         FilterOp::IsNotNull => format!("{expr} IS NOT NULL"),
     };
     Ok(predicate)
+}
+
+/// A scalar literal: a bare numeric literal when `numeric` is set and the value
+/// parses as an integer or float, otherwise a safely-quoted string. A value
+/// that does not parse as a number can never escape quoting, so this stays
+/// injection-safe.
+fn scalar_lit(s: &str, numeric: bool) -> String {
+    if numeric && (s.parse::<i64>().is_ok() || s.parse::<f64>().is_ok()) {
+        s.to_string()
+    } else {
+        lit(s)
+    }
 }
 
 fn resolve_order(o: &SemanticOrder) -> String {
@@ -774,6 +1259,7 @@ mod tests {
             ],
             relationships: vec![],
             pre_aggregations: vec![],
+            segments: vec![],
             safety: None,
         }
     }
@@ -855,8 +1341,10 @@ mod tests {
     }
 
     #[test]
-    fn ambiguous_root_errors() {
-        // Measures drawn from two different models have no single root.
+    fn two_unrelated_totals_cross_join() {
+        // Measures drawn from two unrelated fact roots with no shared dimension
+        // are two independent grand totals: each aggregates in its own CTE and
+        // the CTEs cross-join into a single row. (Formerly an `AmbiguousRoot`.)
         let mut customers = customer_model();
         customers.measures = vec![Measure {
             name: "customer_count".into(),
@@ -871,10 +1359,15 @@ mod tests {
             measures: vec!["orders.revenue".into(), "customers.customer_count".into()],
             ..Default::default()
         };
-        assert!(matches!(
-            cat.compile_sql(&q),
-            Err(SemanticError::AmbiguousRoot(_))
-        ));
+        let sql = cat.compile_sql(&q).unwrap();
+        assert!(sql.starts_with("WITH "), "{sql}");
+        assert!(sql.contains("\"_orders\" AS ("), "{sql}");
+        assert!(sql.contains("\"_customers\" AS ("), "{sql}");
+        assert!(sql.contains("CROSS JOIN \"_customers\""), "{sql}");
+        assert!(
+            sql.contains("\"_orders\".\"orders.revenue\" AS \"orders.revenue\""),
+            "{sql}"
+        );
     }
 
     #[test]
@@ -981,6 +1474,7 @@ mod tests {
             measures: vec![],
             relationships: vec![],
             pre_aggregations: vec![],
+            segments: vec![],
             safety: None,
         }
     }
@@ -1025,8 +1519,9 @@ mod tests {
         assert!(sql.contains("GROUP BY customers.region"), "{sql}");
     }
 
-    #[test]
-    fn one_to_many_uses_left_join() {
+    /// A model with a `one_to_many` edge to `customers`: each order maps to
+    /// many customers (a deliberately fan-out-shaped relationship).
+    fn one_to_many_catalog() -> SemanticCatalog {
         let mut orders = orders_model();
         orders.relationships = vec![Relationship {
             name: "customer".into(),
@@ -1034,13 +1529,36 @@ mod tests {
             target_model: "customers".into(),
             join_predicate: "this.customer_id = customers.id".into(),
         }];
-        let cat = SemanticCatalog::new(vec![orders, customer_model()]);
+        SemanticCatalog::new(vec![orders, customer_model()])
+    }
+
+    #[test]
+    fn one_to_many_dimension_fans_out_measure() {
+        // Grouping a measure by a dimension reached across a `one_to_many` edge
+        // would multiply the measure's rows — reject rather than over-count.
         let q = SemanticQuery {
             measures: vec!["orders.revenue".into()],
             dimensions: vec!["customers.region".into()],
             ..Default::default()
         };
-        let sql = cat.compile_sql(&q).unwrap();
+        match one_to_many_catalog().compile_sql(&q) {
+            Err(SemanticError::FanOut { measure, via }) => {
+                assert_eq!(measure, "orders.revenue");
+                assert_eq!(via, "customers");
+            }
+            other => panic!("expected FanOut, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn one_to_many_dimension_without_measure_left_joins() {
+        // With no measure to inflate, the same `one_to_many` edge is harmless
+        // and still compiles to a LEFT JOIN (join-kind coverage).
+        let q = SemanticQuery {
+            dimensions: vec!["orders.status".into(), "customers.region".into()],
+            ..Default::default()
+        };
+        let sql = one_to_many_catalog().compile_sql(&q).unwrap();
         assert!(sql.contains("LEFT JOIN \"crm\".\"dim_customers\""), "{sql}");
     }
 
@@ -1055,7 +1573,7 @@ mod tests {
         };
         assert!(matches!(
             cat.compile_sql(&q),
-            Err(SemanticError::UnreachableModel { .. })
+            Err(SemanticError::DisconnectedMember { .. })
         ));
     }
 
@@ -1167,5 +1685,351 @@ mod tests {
             ..Default::default()
         };
         assert!(cat.compile_sql(&q2).unwrap().contains("LIMIT 100"));
+    }
+
+    // ---- §16: fan-out & aggregate-locality ----
+
+    /// An `order_items` fact (many per order) with a `qty` measure, plus the
+    /// `orders → order_items` (`one_to_many`) relationship declared on orders.
+    fn order_items_catalog() -> SemanticCatalog {
+        let mut orders = orders_model();
+        orders.relationships = vec![Relationship {
+            name: "items".into(),
+            kind: RelationshipKind::OneToMany,
+            target_model: "order_items".into(),
+            join_predicate: "this.id = order_items.order_id".into(),
+        }];
+        let order_items = SemanticModel {
+            name: "order_items".into(),
+            description: None,
+            source: "shop.order_items".into(),
+            primary_key: vec!["id".into()],
+            dimensions: vec![Dimension {
+                name: "sku".into(),
+                expr: "sku".into(),
+                data_type: DimensionType::String,
+                time_grains: vec![],
+                description: None,
+            }],
+            measures: vec![Measure {
+                name: "qty".into(),
+                agg: MeasureAgg::Sum,
+                expr: "quantity".into(),
+                filters: vec![],
+                format: None,
+                description: None,
+            }],
+            relationships: vec![],
+            pre_aggregations: vec![],
+            segments: vec![],
+            safety: None,
+        };
+        SemanticCatalog::new(vec![orders, order_items])
+    }
+
+    #[test]
+    fn two_facts_compile_to_aggregate_locality() {
+        // The canonical §16.2 case: revenue (one-per-order) and qty
+        // (many-per-order) grouped by a shared dimension must each aggregate at
+        // their own grain in a CTE, then FULL OUTER JOIN on the shared key.
+        let q = SemanticQuery {
+            measures: vec!["orders.revenue".into(), "order_items.qty".into()],
+            dimensions: vec!["orders.status".into()],
+            ..Default::default()
+        };
+        let sql = order_items_catalog().compile_sql(&q).unwrap();
+        assert!(sql.starts_with("WITH "), "{sql}");
+        // orders aggregates alone; order_items joins back to orders for the dim.
+        assert!(
+            sql.contains("\"_orders\" AS (") && sql.contains("\"_order_items\" AS ("),
+            "{sql}"
+        );
+        assert!(
+            sql.contains("SUM(orders.total_amount) AS \"orders.revenue\""),
+            "{sql}"
+        );
+        assert!(
+            sql.contains("SUM(order_items.quantity) AS \"order_items.qty\""),
+            "{sql}"
+        );
+        assert!(
+            sql.contains("INNER JOIN \"shop\".\"orders\" AS orders"),
+            "join order_items back to orders for the shared dim:\n{sql}"
+        );
+        assert!(
+            sql.contains(
+                "FULL OUTER JOIN \"_order_items\" ON COALESCE(\"_orders\".\"orders.status\") \
+                 IS NOT DISTINCT FROM \"_order_items\".\"orders.status\""
+            ),
+            "{sql}"
+        );
+        assert!(
+            sql.contains(
+                "COALESCE(\"_orders\".\"orders.status\", \"_order_items\".\"orders.status\") \
+                 AS \"orders.status\""
+            ),
+            "{sql}"
+        );
+    }
+
+    #[test]
+    fn multi_fact_grouped_by_many_side_fans_out() {
+        // Grouping by `order_items.sku` fans out the one-per-order revenue.
+        let q = SemanticQuery {
+            measures: vec!["orders.revenue".into(), "order_items.qty".into()],
+            dimensions: vec!["order_items.sku".into()],
+            ..Default::default()
+        };
+        match order_items_catalog().compile_sql(&q) {
+            Err(SemanticError::FanOut { measure, via }) => {
+                assert_eq!(measure, "orders.revenue");
+                assert_eq!(via, "order_items");
+            }
+            other => panic!("expected FanOut, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn multi_fact_cte_applies_joined_models_rls() {
+        // orders carries RLS. In aggregate-locality form the order_items CTE
+        // joins back to orders, so it must AND-in orders' tenant predicate too —
+        // otherwise its aggregate would span every tenant.
+        let mut orders = orders_model();
+        orders.relationships = vec![Relationship {
+            name: "items".into(),
+            kind: RelationshipKind::OneToMany,
+            target_model: "order_items".into(),
+            join_predicate: "this.id = order_items.order_id".into(),
+        }];
+        orders.safety = Some(SafetyPolicy {
+            required_predicates: vec!["tenant_id = ${param:tenant_id}".into()],
+            ..Default::default()
+        });
+        let order_items = SemanticModel {
+            name: "order_items".into(),
+            description: None,
+            source: "shop.order_items".into(),
+            primary_key: vec!["order_id".into(), "sku".into()],
+            dimensions: vec![Dimension {
+                name: "sku".into(),
+                expr: "sku".into(),
+                data_type: DimensionType::String,
+                time_grains: vec![],
+                description: None,
+            }],
+            measures: vec![Measure {
+                name: "qty".into(),
+                agg: MeasureAgg::Sum,
+                expr: "quantity".into(),
+                filters: vec![],
+                format: None,
+                description: None,
+            }],
+            relationships: vec![],
+            pre_aggregations: vec![],
+            segments: vec![],
+            safety: None,
+        };
+        let cat = SemanticCatalog::new(vec![orders, order_items]);
+        let mut q = SemanticQuery {
+            measures: vec!["orders.revenue".into(), "order_items.qty".into()],
+            dimensions: vec!["orders.status".into()],
+            ..Default::default()
+        };
+        q.params.insert("tenant_id".into(), "acme".into());
+        let sql = cat.compile_sql(&q).unwrap();
+        // The predicate must appear twice: once per CTE (orders' own + the
+        // order_items CTE that joins orders).
+        assert_eq!(
+            sql.matches("tenant_id = 'acme'").count(),
+            2,
+            "RLS must apply in every CTE that touches orders:\n{sql}"
+        );
+    }
+
+    #[test]
+    fn multi_fact_disconnected_dimension_errors() {
+        // customers is unrelated to orders, so the customers CTE cannot produce
+        // the orders.status grouping key.
+        let mut customers = customer_model();
+        customers.measures = vec![Measure {
+            name: "customer_count".into(),
+            agg: MeasureAgg::CountDistinct,
+            expr: "id".into(),
+            filters: vec![],
+            format: None,
+            description: None,
+        }];
+        let cat = SemanticCatalog::new(vec![orders_model(), customers]);
+        let q = SemanticQuery {
+            measures: vec!["orders.revenue".into(), "customers.customer_count".into()],
+            dimensions: vec!["orders.status".into()],
+            ..Default::default()
+        };
+        assert!(
+            matches!(
+                cat.compile_sql(&q),
+                Err(SemanticError::DisconnectedMember { .. })
+            ),
+            "{:?}",
+            cat.compile_sql(&q)
+        );
+    }
+
+    #[test]
+    fn ambiguous_join_path_errors() {
+        // Diamond: a → b → d and a → c → d are two equal-length paths to d.
+        let mk = |name: &str, rels: Vec<Relationship>| SemanticModel {
+            name: name.into(),
+            description: None,
+            source: format!("shop.{name}"),
+            primary_key: vec!["id".into()],
+            dimensions: vec![Dimension {
+                name: "label".into(),
+                expr: "label".into(),
+                data_type: DimensionType::String,
+                time_grains: vec![],
+                description: None,
+            }],
+            measures: vec![Measure {
+                name: "n".into(),
+                agg: MeasureAgg::Count,
+                expr: "id".into(),
+                filters: vec![],
+                format: None,
+                description: None,
+            }],
+            relationships: rels,
+            pre_aggregations: vec![],
+            segments: vec![],
+            safety: None,
+        };
+        let rel = |name: &str, target: &str| Relationship {
+            name: name.into(),
+            kind: RelationshipKind::ManyToOne,
+            target_model: target.into(),
+            join_predicate: format!("this.{target}_id = {target}.id"),
+        };
+        let cat = SemanticCatalog::new(vec![
+            mk("a", vec![rel("to_b", "b"), rel("to_c", "c")]),
+            mk("b", vec![rel("to_d", "d")]),
+            mk("c", vec![rel("to_d", "d")]),
+            mk("d", vec![]),
+        ]);
+        let q = SemanticQuery {
+            measures: vec!["a.n".into()],
+            dimensions: vec!["d.label".into()],
+            ..Default::default()
+        };
+        assert!(
+            matches!(
+                cat.compile_sql(&q),
+                Err(SemanticError::AmbiguousJoinPath { .. })
+            ),
+            "{:?}",
+            cat.compile_sql(&q)
+        );
+    }
+
+    // ---- §16.4: WHERE vs HAVING classification ----
+
+    #[test]
+    fn measure_filter_becomes_having() {
+        let q = SemanticQuery {
+            measures: vec!["orders.revenue".into()],
+            dimensions: vec!["orders.status".into()],
+            filters: vec![SemanticFilter {
+                member: "orders.revenue".into(),
+                op: FilterOp::Gt,
+                values: vec!["1000".into()],
+            }],
+            ..Default::default()
+        };
+        let sql = catalog().compile_sql(&q).unwrap();
+        assert!(sql.contains("HAVING SUM(total_amount) > 1000"), "{sql}");
+        assert!(
+            !sql.contains("WHERE"),
+            "measure filter must not be WHERE:\n{sql}"
+        );
+    }
+
+    #[test]
+    fn dimension_filter_stays_where() {
+        let q = SemanticQuery {
+            measures: vec!["orders.revenue".into()],
+            dimensions: vec!["orders.status".into()],
+            filters: vec![SemanticFilter {
+                member: "orders.status".into(),
+                op: FilterOp::Equals,
+                values: vec!["paid".into()],
+            }],
+            ..Default::default()
+        };
+        let sql = catalog().compile_sql(&q).unwrap();
+        assert!(sql.contains("WHERE status = 'paid'"), "{sql}");
+        assert!(!sql.contains("HAVING"), "{sql}");
+    }
+
+    #[test]
+    fn multi_fact_measure_filter_is_outer() {
+        // A measure threshold over a multi-fact query filters the joined result.
+        let q = SemanticQuery {
+            measures: vec!["orders.revenue".into(), "order_items.qty".into()],
+            dimensions: vec!["orders.status".into()],
+            filters: vec![SemanticFilter {
+                member: "orders.revenue".into(),
+                op: FilterOp::Gt,
+                values: vec!["1000".into()],
+            }],
+            ..Default::default()
+        };
+        let sql = order_items_catalog().compile_sql(&q).unwrap();
+        // The outer filter references the owning CTE column, not the output
+        // alias (a `WHERE` cannot see `SELECT` aliases).
+        assert!(
+            sql.contains("\nWHERE \"_orders\".\"orders.revenue\" > 1000"),
+            "{sql}"
+        );
+    }
+
+    // ---- §16.5: segments ----
+
+    fn segment_catalog() -> SemanticCatalog {
+        let mut orders = orders_model();
+        orders.segments = vec![pawrly_core::semantic::Segment {
+            name: "high_value".into(),
+            description: None,
+            filters: vec![SemanticFilter {
+                member: "orders.status".into(),
+                op: FilterOp::Equals,
+                values: vec!["paid".into()],
+            }],
+        }];
+        SemanticCatalog::new(vec![orders])
+    }
+
+    #[test]
+    fn segment_expands_into_filters() {
+        let q = SemanticQuery {
+            measures: vec!["orders.revenue".into()],
+            dimensions: vec!["orders.status".into()],
+            segments: vec!["orders.high_value".into()],
+            ..Default::default()
+        };
+        let sql = segment_catalog().compile_sql(&q).unwrap();
+        assert!(sql.contains("WHERE status = 'paid'"), "{sql}");
+    }
+
+    #[test]
+    fn unknown_segment_errors() {
+        let q = SemanticQuery {
+            measures: vec!["orders.revenue".into()],
+            segments: vec!["orders.nope".into()],
+            ..Default::default()
+        };
+        assert!(matches!(
+            segment_catalog().compile_sql(&q),
+            Err(SemanticError::UnknownSegment(_))
+        ));
     }
 }

@@ -50,10 +50,31 @@ pub struct SemanticModel {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pre_aggregations: Vec<PreAggregation>,
 
+    /// Named, reusable filter sets. A query references one as `model.segment`
+    /// and the compiler expands it into its predicates before planning.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub segments: Vec<Segment>,
+
     /// Per-model guard rails. `required_predicates` (RLS) are AND-ed into every
     /// compiled query for this model.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub safety: Option<SafetyPolicy>,
+}
+
+/// A named, reusable set of filters defined on a [`SemanticModel`].
+///
+/// A segment is a label that expands into its predicates at compile time,
+/// referenced from a [`SemanticQuery`] as `model.segment` (e.g.
+/// `"orders.high_value"`). `describe_semantic_model` returns the model's
+/// segments so a client can discover and compose them, and they are auditable
+/// because the predicates live in trusted config — never in the request.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct Segment {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Predicates AND-ed into the query when the segment is selected.
+    pub filters: Vec<SemanticFilter>,
 }
 
 /// A join from one model to another. `join_predicate` is a raw SQL fragment in
@@ -284,6 +305,10 @@ pub struct SemanticQuery {
     pub dimensions: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub filters: Vec<SemanticFilter>,
+    /// Named segments to apply, each `model.segment`. Their predicates are
+    /// AND-ed in alongside `filters` at compile time.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub segments: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub order_by: Vec<SemanticOrder>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -369,6 +394,10 @@ pub struct SemanticModelDescription {
     pub measures: Vec<Measure>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub relationships: Vec<Relationship>,
+    /// The model's named, reusable filter sets, so a client can discover and
+    /// apply them by name.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub segments: Vec<Segment>,
 }
 
 #[cfg(test)]

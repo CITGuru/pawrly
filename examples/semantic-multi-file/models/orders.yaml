@@ -1,0 +1,34 @@
+# A model-only include file (top-level `models:` list form).
+#
+# `source:` points at the `data` source declared in ../pawrly.yaml, and the
+# relationships target models defined in sibling files (customers.yaml,
+# order_items.yaml) — cross-file references resolve against the merged config.
+models:
+  - name: orders
+    description: One row per order placed.
+    source: data.orders
+    primary_key: [id]
+
+    dimensions:
+      - { name: status,     expr: status,                type: string }
+      - { name: country,    expr: shipping_country_code, type: string }
+      - { name: order_date, expr: ordered_at,            type: time, grains: [day, week, month, quarter, year] }
+
+    measures:
+      - { name: order_count,     agg: count_distinct, expr: id }
+      - { name: revenue,         agg: sum,            expr: total_amount, format: "$#,##0.00" }
+      # Measure-scoped filter -> SUM(...) FILTER (WHERE status = 'paid').
+      - { name: paid_revenue,    agg: sum,            expr: total_amount, filters: ["status = 'paid'"], format: "$#,##0.00" }
+      - { name: avg_order_value, agg: avg,            expr: total_amount, format: "$#,##0.00" }
+
+    relationships:
+      - { name: customer, kind: many_to_one, target: customers,    on: "this.customer_id = customers.id" }
+      - { name: items,    kind: one_to_many, target: order_items,   on: "this.id = order_items.order_id" }
+
+    safety:
+      # RLS: every compiled query is AND-ed with `tenant_id = <param>`, bound as
+      # an escaped literal. In a multi-fact query this predicate also applies in
+      # the order_items CTE (which joins orders), so qty stays tenant-scoped.
+      required_predicates:
+        - "tenant_id = ${param:tenant_id}"
+      max_rows: 1000000
