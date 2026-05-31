@@ -28,20 +28,20 @@ repository = "https://github.com/withpawrly/pawrly"
 
 [workspace.dependencies]
 # Internal crates
-pawrly-core = { path = "crates/pawrly-core" }
-pawrly-config = { path = "crates/pawrly-config" }
-pawrly-secrets = { path = "crates/pawrly-secrets" }
-pawrly-proto = { path = "crates/pawrly-proto" }
-pawrly-semantic = { path = "crates/pawrly-semantic" }
-pawrly-engine = { path = "crates/pawrly-engine" }
-pawrly-server = { path = "crates/pawrly-server" }
-pawrly-client = { path = "crates/pawrly-client" }
-pawrly-flight = { path = "crates/pawrly-flight" }
-pawrly-sources-http = { path = "crates/pawrly-sources/http" }
-pawrly-sources-ai = { path = "crates/pawrly-sources/ai" }
-pawrly-sources-duckdb = { path = "crates/pawrly-sources/duckdb" }
-pawrly-cli = { path = "crates/pawrly-cli" }
-pawrly-mcp = { path = "crates/pawrly-mcp" }
+pawrly-core = { path = "crates/pawrly-core", version = "0.0.1" }
+pawrly-config = { path = "crates/pawrly-config", version = "0.0.1" }
+pawrly-secrets = { path = "crates/pawrly-secrets", version = "0.0.1" }
+pawrly-proto = { path = "crates/pawrly-proto", version = "0.0.1" }
+pawrly-semantic = { path = "crates/pawrly-semantic", version = "0.0.1" }
+pawrly-engine = { path = "crates/pawrly-engine", version = "0.0.1" }
+pawrly-server = { path = "crates/pawrly-server", version = "0.0.1" }
+pawrly-client = { path = "crates/pawrly-client", version = "0.0.1" }
+pawrly-flight = { path = "crates/pawrly-flight", version = "0.0.1" }
+pawrly-sources-http = { path = "crates/pawrly-sources/http", version = "0.0.1" }
+pawrly-sources-ai = { path = "crates/pawrly-sources/ai", version = "0.0.1" }
+pawrly-sources-duckdb = { path = "crates/pawrly-sources/duckdb", version = "0.0.1" }
+pawrly-cli = { path = "crates/pawrly-cli", version = "0.0.1" }
+pawrly-mcp = { path = "crates/pawrly-mcp", version = "0.0.1" }
 
 # Async / runtime
 tokio = { version = "1", features = ["full"] }

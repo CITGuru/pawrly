@@ -31,7 +31,7 @@ tokio = { workspace = true, optional = true }
 async-stream = { workspace = true, optional = true }
 
 [dev-dependencies]
-pawrly-core = { path = ".", features = ["test-support"] }
+pawrly-core = { path = ".", version = "0.0.1", features = ["test-support"] }
 tokio = { workspace = true }
 futures = { workspace = true }
 serde_yaml = { workspace = true }

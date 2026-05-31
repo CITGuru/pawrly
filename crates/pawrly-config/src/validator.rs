@@ -328,18 +328,17 @@ fn validate_source(src: &crate::types::SourceDef, errors: &mut ConfigErrors) {
                 ));
             }
         }
-        SourceKind::Ai => {
+        SourceKind::Ai
             if src
                 .config
                 .get("provider")
                 .and_then(|v| v.as_str())
-                .is_none()
-            {
-                errors.push(ConfigError::Source(
-                    src.name.clone(),
-                    "`kind: ai` requires `config.provider`".into(),
-                ));
-            }
+                .is_none() =>
+        {
+            errors.push(ConfigError::Source(
+                src.name.clone(),
+                "`kind: ai` requires `config.provider`".into(),
+            ));
         }
         _ => {}
     }
