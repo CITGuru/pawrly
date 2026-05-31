@@ -15,9 +15,12 @@ use std::sync::Arc;
 
 use arrow_array::{
     ArrayRef, BooleanArray, RecordBatch,
-    builder::{Float64Builder, Int32Builder, Int64Builder, StringBuilder},
+    builder::{
+        Date32Builder, Float64Builder, Int32Builder, Int64Builder, StringBuilder,
+        TimestampMicrosecondBuilder,
+    },
 };
-use arrow_schema::{DataType, Field, Schema, SchemaRef};
+use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use async_trait::async_trait;
 use datafusion::catalog::Session;
 use datafusion::common::DataFusionError;
@@ -105,7 +108,7 @@ impl TableProvider for HttpTableProvider {
         state: &dyn Session,
         projection: Option<&Vec<usize>>,
         filters: &[Expr],
-        _limit: Option<usize>,
+        limit: Option<usize>,
     ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
         let _ = state;
         let mut params: BTreeMap<String, String> = BTreeMap::new();
@@ -194,16 +197,52 @@ impl TableProvider for HttpTableProvider {
 
             let resp = send_with_retry(req, &self.source.retry).await?;
             let status = resp.status();
+            let status_code = status.as_u16();
             let headers = resp.headers().clone();
-            let body: Value = resp.json().await.map_err(|e| {
+
+            // A 404 can be a legitimate "empty collection" rather than a failure.
+            if status_code == 404 && self.spec.response.allow_404_empty {
+                break;
+            }
+
+            let text = resp.text().await.map_err(|e| {
                 DataFusionError::External(Box::new(std::io::Error::other(format!(
-                    "json parse failed (status {status}): {e}"
+                    "reading response body failed (status {status}): {e}"
                 ))))
             })?;
+            let body: Value = match serde_json::from_str(&text) {
+                Ok(v) => v,
+                Err(e) => {
+                    // A non-JSON body is only an error if we can't otherwise
+                    // explain it via the declared error spec.
+                    if let Some(spec) = &self.spec.response.error
+                        && let Some(msg) = detect_error(spec, status_code, &Value::Null)
+                    {
+                        return Err(scan_error(msg));
+                    }
+                    return Err(DataFusionError::External(Box::new(std::io::Error::other(
+                        format!("json parse failed (status {status}): {e}"),
+                    ))));
+                }
+            };
+
+            // Explicit error detection, when declared.
+            if let Some(spec) = &self.spec.response.error
+                && let Some(msg) = detect_error(spec, status_code, &body)
+            {
+                return Err(scan_error(msg));
+            }
 
             let rows = extract_rows(&body, &self.spec.response.path)?;
             let row_count = rows.len();
             all_rows.extend(rows);
+
+            // Stop early once enough rows are collected to satisfy a LIMIT.
+            if let Some(lim) = limit
+                && all_rows.len() >= lim
+            {
+                break;
+            }
 
             // Without a pagination config we fetch exactly one page.
             let Some(config) = &self.spec.pagination else {
@@ -225,6 +264,10 @@ impl TableProvider for HttpTableProvider {
                 None => break,
             }
             page_index += 1;
+        }
+
+        if let Some(lim) = limit {
+            all_rows.truncate(lim);
         }
 
         let batch = build_batch(&self.schema, &self.spec.response.schema, &all_rows, &params)?;
@@ -383,6 +426,35 @@ fn build_url(
     Ok(url)
 }
 
+/// Wrap an error message as a `DataFusionError` that fails the scan.
+fn scan_error(msg: String) -> DataFusionError {
+    DataFusionError::External(Box::new(std::io::Error::other(msg)))
+}
+
+/// Decide whether a response is an error per the declared [`ResponseErrorSpec`],
+/// returning the message to surface. A status hit or a non-null value at
+/// `error.path` triggers; the path value (when present) is the message.
+fn detect_error(
+    spec: &crate::source::ResponseErrorSpec,
+    status: u16,
+    body: &Value,
+) -> Option<String> {
+    let status_hit = spec.status.iter().any(|m| m.matches(status));
+    let path_msg = spec.path.as_deref().and_then(|p| {
+        match paginate::json_at_path(body, p)? {
+            Value::Null => None,
+            Value::String(s) if !s.is_empty() => Some(s.clone()),
+            Value::String(_) => None,
+            other => Some(other.to_string()),
+        }
+    });
+    if status_hit || path_msg.is_some() {
+        Some(path_msg.unwrap_or_else(|| format!("HTTP {status}")))
+    } else {
+        None
+    }
+}
+
 fn extract_rows(body: &Value, path: &str) -> datafusion::common::Result<Vec<Value>> {
     if path == "$" {
         return as_array(body);
@@ -421,6 +493,19 @@ fn build_batch(
     let n = rows.len();
     let mut arrays: Vec<ArrayRef> = Vec::with_capacity(columns.len());
     for col in columns {
+        // `json` columns keep the value as raw JSON text, regardless of whether
+        // it's a scalar, object, or array.
+        if col.r#type.eq_ignore_ascii_case("json") {
+            let mut b = StringBuilder::with_capacity(n, n * 16);
+            for row in rows {
+                match pull_value(row, col, params) {
+                    Some(Value::Null) | None => b.append_null(),
+                    Some(v) => b.append_value(serde_json::to_string(&v).unwrap_or_default()),
+                }
+            }
+            arrays.push(Arc::new(b.finish()) as ArrayRef);
+            continue;
+        }
         let array = match schema.field_with_name(&col.name) {
             Ok(f) => match f.data_type() {
                 DataType::Utf8 => {
@@ -496,6 +581,27 @@ fn build_batch(
                         .collect();
                     Arc::new(BooleanArray::from(values)) as ArrayRef
                 }
+                DataType::Timestamp(TimeUnit::Microsecond, _) => {
+                    let mut b = TimestampMicrosecondBuilder::with_capacity(n);
+                    for row in rows {
+                        match pull_value(row, col, params).and_then(|v| parse_timestamp_micros(&v))
+                        {
+                            Some(t) => b.append_value(t),
+                            None => b.append_null(),
+                        }
+                    }
+                    Arc::new(b.finish().with_timezone_opt(timestamp_tz(f.data_type()))) as ArrayRef
+                }
+                DataType::Date32 => {
+                    let mut b = Date32Builder::with_capacity(n);
+                    for row in rows {
+                        match pull_value(row, col, params).and_then(|v| parse_date32(&v)) {
+                            Some(d) => b.append_value(d),
+                            None => b.append_null(),
+                        }
+                    }
+                    Arc::new(b.finish()) as ArrayRef
+                }
                 _ => {
                     // Fallback: stringify whatever we have.
                     let mut b = StringBuilder::with_capacity(n, n * 8);
@@ -519,6 +625,42 @@ fn build_batch(
         .map_err(|e| DataFusionError::ArrowError(Box::new(e), None))
 }
 
+/// Extract the timezone (if any) from a `Timestamp` data type.
+fn timestamp_tz(dt: &DataType) -> Option<std::sync::Arc<str>> {
+    match dt {
+        DataType::Timestamp(_, tz) => tz.clone(),
+        _ => None,
+    }
+}
+
+/// Parse an ISO-8601 / RFC 3339 string into microseconds since the Unix epoch.
+/// Numbers and unparseable strings yield `None` (the cell becomes null).
+fn parse_timestamp_micros(v: &Value) -> Option<i64> {
+    let s = v.as_str()?;
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(s) {
+        return Some(dt.timestamp_micros());
+    }
+    for fmt in [
+        "%Y-%m-%dT%H:%M:%S%.f",
+        "%Y-%m-%d %H:%M:%S%.f",
+        "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%d %H:%M:%S",
+    ] {
+        if let Ok(ndt) = chrono::NaiveDateTime::parse_from_str(s, fmt) {
+            return Some(ndt.and_utc().timestamp_micros());
+        }
+    }
+    None
+}
+
+/// Parse a `YYYY-MM-DD` string into days since the Unix epoch (Arrow `Date32`).
+fn parse_date32(v: &Value) -> Option<i32> {
+    let s = v.as_str()?;
+    let date = chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").ok()?;
+    let epoch = chrono::NaiveDate::from_ymd_opt(1970, 1, 1)?;
+    i32::try_from((date - epoch).num_days()).ok()
+}
+
 fn pull_value(
     row: &Value,
     col: &ResponseColumn,
@@ -527,6 +669,8 @@ fn pull_value(
     match col.source.as_deref() {
         None => row.get(&col.name).cloned(),
         Some("param") => params.get(&col.name).cloned().map(Value::String),
+        // `$` alone is the whole row element (raw passthrough, typically a `json` column).
+        Some("$") => Some(row.clone()),
         Some(path) if path.starts_with('$') => {
             let trimmed = path.trim_start_matches("$.");
             let mut current: &Value = row;

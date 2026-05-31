@@ -99,8 +99,12 @@ Field reference:
 - `endpoint` — path appended to `base_url`; may carry a query string and `{param}` placeholders.
 - `method` — defaults to `GET`.
 - `response.path` — JSONPath to the array of rows. `$` means the body *is* the array; `$.data` digs into a wrapper object.
-- `response.schema` — columns to extract per row. `type` ∈ `varchar`, `bigint`, `int`, `double`, `float`, `bool`. Add `source: $.nested.field` to read a different path, or `source: param` to inject a request parameter as a column.
+- `response.schema` — columns to extract per row. `type` ∈ `varchar`, `bigint`, `int`, `double`, `float`, `bool`, `date`, `timestamp`, `timestamptz` (ISO-8601 / RFC 3339 strings are parsed), and `json` (a nested object/array kept as raw JSON text). Add `source: $.nested.field` to read a different path, `source: $` to capture the whole row element (typically into a `json` column), or `source: param` to inject a request parameter as a column.
+- `response.allow_404_empty` — treat a `404` as an empty result set instead of an error.
+- `response.error` — turn API failures into a clear scan error: `status` (codes or matchers like `">=400"`, `"5xx"`) and/or `path` (a JSONPath to an error message inside a `200`-with-error body).
 - `params` — declared query/path parameters (`name`, `type`, `required`, `default`); a `required` param must appear as a SQL filter.
+
+A `LIMIT` stops pagination early — once enough rows are collected, no further pages are fetched.
 
 A runnable end-to-end example **with caching** lives at [`examples/cache-http/`](../examples/cache-http/pawrly.yaml).
 

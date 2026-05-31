@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use arrow_schema::{DataType, Field, Schema, SchemaRef};
+use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use reqwest::header::HeaderMap;
 use serde::{Deserialize, Serialize};
 
@@ -168,10 +168,76 @@ pub struct ResponseSpec {
     pub path: String,
     /// Declared columns. Each column has a name + Arrow type.
     pub schema: Vec<ResponseColumn>,
+    /// Treat a `404` as an empty result set instead of an error.
+    #[serde(default)]
+    pub allow_404_empty: bool,
+    /// Optional error detection: turn API failures into a clear scan error
+    /// instead of silently parsing them as rows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<ResponseErrorSpec>,
 }
 
 fn default_response_path() -> String {
     "$".into()
+}
+
+/// Declares how to recognize an error response and what message to surface.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResponseErrorSpec {
+    /// Status codes (or matchers like `">=400"`, `"5xx"`) that fail the scan.
+    #[serde(default)]
+    pub status: Vec<StatusMatcher>,
+    /// JSONPath to an error message inside a `200`-with-error body.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+}
+
+/// A single status-code condition: an exact code (`403`) or an expression
+/// (`">=400"`, `"5xx"`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum StatusMatcher {
+    Exact(u16),
+    Expr(String),
+}
+
+impl StatusMatcher {
+    /// Whether `status` satisfies this matcher.
+    pub fn matches(&self, status: u16) -> bool {
+        match self {
+            StatusMatcher::Exact(code) => *code == status,
+            StatusMatcher::Expr(expr) => match_status_expr(expr, status),
+        }
+    }
+}
+
+/// Evaluate a status expression: `">=400"`, `"<500"`, `"5xx"`, or a bare code.
+fn match_status_expr(expr: &str, status: u16) -> bool {
+    let expr = expr.trim();
+    if let Some(prefix) = expr.strip_suffix("xx") {
+        // `"5xx"` matches 500..=599.
+        if let Ok(hundreds) = prefix.parse::<u16>() {
+            let base = hundreds * 100;
+            return status >= base && status < base + 100;
+        }
+        return false;
+    }
+    for (op, len) in [(">=", 2), ("<=", 2), (">", 1), ("<", 1), ("==", 2), ("=", 1)] {
+        if let Some(rest) = expr.strip_prefix(op) {
+            let _ = len;
+            if let Ok(code) = rest.trim().parse::<u16>() {
+                return match op {
+                    ">=" => status >= code,
+                    "<=" => status <= code,
+                    ">" => status > code,
+                    "<" => status < code,
+                    _ => status == code,
+                };
+            }
+            return false;
+        }
+    }
+    expr.parse::<u16>().map(|c| c == status).unwrap_or(false)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -229,6 +295,10 @@ pub fn schema_for(table: &HttpTableSpec) -> SchemaRef {
 }
 
 /// Map a YAML-declared type string to an Arrow `DataType`.
+///
+/// `json` keeps a nested object/array as raw JSON text (Arrow `Utf8`); the
+/// distinction from `varchar` lives on [`ResponseColumn::r#type`], which the row
+/// builder consults to decide whether to JSON-encode the value.
 pub fn parse_arrow_type(s: &str) -> DataType {
     match s.to_ascii_lowercase().as_str() {
         "bool" | "boolean" => DataType::Boolean,
@@ -236,7 +306,10 @@ pub fn parse_arrow_type(s: &str) -> DataType {
         "bigint" | "int64" | "long" => DataType::Int64,
         "float" | "float32" => DataType::Float32,
         "double" | "float64" => DataType::Float64,
-        "varchar" | "string" | "text" => DataType::Utf8,
+        "date" => DataType::Date32,
+        "timestamp" => DataType::Timestamp(TimeUnit::Microsecond, None),
+        "timestamptz" => DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
+        "varchar" | "string" | "text" | "json" => DataType::Utf8,
         _ => DataType::Utf8,
     }
 }
@@ -251,5 +324,28 @@ mod tests {
         assert_eq!(parse_arrow_type("bigint"), DataType::Int64);
         assert_eq!(parse_arrow_type("int"), DataType::Int32);
         assert_eq!(parse_arrow_type("bool"), DataType::Boolean);
+        assert_eq!(parse_arrow_type("date"), DataType::Date32);
+        assert_eq!(
+            parse_arrow_type("timestamp"),
+            DataType::Timestamp(TimeUnit::Microsecond, None)
+        );
+        assert_eq!(
+            parse_arrow_type("timestamptz"),
+            DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into()))
+        );
+        // `json` is stored as raw text.
+        assert_eq!(parse_arrow_type("json"), DataType::Utf8);
+    }
+
+    #[test]
+    fn status_matchers() {
+        assert!(StatusMatcher::Exact(403).matches(403));
+        assert!(!StatusMatcher::Exact(403).matches(404));
+        assert!(StatusMatcher::Expr(">=400".into()).matches(404));
+        assert!(!StatusMatcher::Expr(">=400".into()).matches(200));
+        assert!(StatusMatcher::Expr("<500".into()).matches(404));
+        assert!(StatusMatcher::Expr("5xx".into()).matches(503));
+        assert!(!StatusMatcher::Expr("5xx".into()).matches(404));
+        assert!(StatusMatcher::Expr("418".into()).matches(418));
     }
 }
