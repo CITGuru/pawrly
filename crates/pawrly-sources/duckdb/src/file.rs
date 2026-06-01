@@ -99,6 +99,15 @@ enum JsonLayout {
     Ndjson,
 }
 
+/// A positional (segment) partition column: its value is the directory name at
+/// `index` beneath the glob/dir base, regardless of `key=value` naming.
+#[derive(Debug, Clone)]
+struct SegmentPartition {
+    name: String,
+    r#type: DataType,
+    index: usize,
+}
+
 /// Per-table options parsed from a `kind: file` table declaration.
 #[derive(Debug, Clone, Default)]
 struct FileTableOptions {
@@ -108,6 +117,8 @@ struct FileTableOptions {
     json_layout: JsonLayout,
     /// Hive partition columns (`key=value` directories) as (name, type).
     partition_cols: Vec<(String, DataType)>,
+    /// Positional (segment) partition columns.
+    segment_partitions: Vec<SegmentPartition>,
     /// Explicit file schema, overriding inference.
     schema: Option<SchemaRef>,
 }
@@ -170,22 +181,43 @@ fn parse_table_options(
                     table: tdef.name.clone(),
                     msg: "partition_cols entry is missing `name`".into(),
                 })?;
-            // Only hive (`key=value`) partitions are supported; segment
-            // (positional) partitions are not yet implemented.
-            if let Some(kind) = p.get("kind").and_then(|v| v.as_str())
-                && !kind.eq_ignore_ascii_case("hive")
-            {
+            let ty = p.get("type").and_then(|v| v.as_str()).unwrap_or("varchar");
+            let kind = p.get("kind").and_then(|v| v.as_str()).unwrap_or("hive");
+            if kind.eq_ignore_ascii_case("segment") {
+                let index = p
+                    .get("index")
+                    .and_then(serde_json::Value::as_u64)
+                    .ok_or_else(|| ConfigError::Table {
+                        source_name: source_name.to_string(),
+                        table: tdef.name.clone(),
+                        msg: format!("segment partition `{name}` requires an `index`"),
+                    })?;
+                opts.segment_partitions.push(SegmentPartition {
+                    name: name.to_string(),
+                    r#type: file_arrow_type(ty),
+                    index: index as usize,
+                });
+            } else if kind.eq_ignore_ascii_case("hive") {
+                opts.partition_cols
+                    .push((name.to_string(), file_arrow_type(ty)));
+            } else {
                 return Err(ConfigError::Table {
                     source_name: source_name.to_string(),
                     table: tdef.name.clone(),
-                    msg: format!("partition kind `{kind}` is not supported (use `hive`)"),
+                    msg: format!("partition kind `{kind}` is not supported (use `hive` or `segment`)"),
                 }
                 .into());
             }
-            let ty = p.get("type").and_then(|v| v.as_str()).unwrap_or("varchar");
-            opts.partition_cols
-                .push((name.to_string(), file_arrow_type(ty)));
         }
+    }
+
+    if !opts.segment_partitions.is_empty() && !opts.partition_cols.is_empty() {
+        return Err(ConfigError::Table {
+            source_name: source_name.to_string(),
+            table: tdef.name.clone(),
+            msg: "a table cannot mix hive and segment partitions".into(),
+        }
+        .into());
     }
 
     if let Some(cols) = cfg.get("schema").and_then(|v| v.as_array()) {
@@ -346,6 +378,12 @@ async fn register_one(
     use datafusion::datasource::listing::{
         ListingOptions, ListingTable, ListingTableConfig, ListingTableUrl,
     };
+
+    // Positional (segment) partitions aren't expressible via DataFusion's
+    // hive-only listing partitions, so they take a separate path.
+    if !options.segment_partitions.is_empty() {
+        return register_segment_partitioned(ctx, schema, table_name, format, path, options).await;
+    }
 
     // JSON-array files aren't NDJSON, so DataFusion's listing reader can't parse
     // them. They take a separate in-memory decode path.
@@ -559,6 +597,190 @@ fn register_json_array(
         .map_err(|e| FileBuildError::DataFusion(format!("decode json: {e}")))?;
 
     let table = MemTable::try_new(arrow_schema, vec![batches])
+        .map_err(|e| FileBuildError::DataFusion(format!("mem table: {e}")))?;
+    schema_provider
+        .register_table(table_name.to_string(), Arc::new(table))
+        .map_err(|e| FileBuildError::DataFusion(format!("register table: {e}")))?;
+    Ok(())
+}
+
+/// The literal (non-glob) directory prefix of a path — the base against which
+/// segment-partition indices are measured.
+fn glob_base(path: &std::path::Path) -> PathBuf {
+    let mut base = PathBuf::new();
+    for comp in path.components() {
+        let s = comp.as_os_str().to_string_lossy();
+        if s.contains(['*', '?', '[']) {
+            break;
+        }
+        base.push(comp);
+    }
+    base
+}
+
+/// Collect concrete files behind a path (single file, glob, or directory walked
+/// recursively for any of `exts`).
+fn collect_files(path: &std::path::Path, exts: &[&str]) -> Result<Vec<PathBuf>, FileBuildError> {
+    let s = path.to_string_lossy().into_owned();
+    let run = |pattern: &str| -> Result<Vec<PathBuf>, FileBuildError> {
+        let mut v: Vec<PathBuf> = glob::glob(pattern)
+            .map_err(|e| FileBuildError::Io(format!("glob error: {e}")))?
+            .filter_map(Result::ok)
+            .filter(|p| p.is_file())
+            .collect();
+        v.sort();
+        Ok(v)
+    };
+    let files = if is_glob(&s) {
+        run(&s)?
+    } else if path.is_dir() {
+        let mut v = Vec::new();
+        for ext in exts {
+            v.extend(run(&format!("{}/**/*.{ext}", s.trim_end_matches('/')))?);
+        }
+        v.sort();
+        v
+    } else {
+        return Ok(vec![path.to_path_buf()]);
+    };
+    if files.is_empty() {
+        return Err(FileBuildError::EmptyGlob(s));
+    }
+    Ok(files)
+}
+
+/// File extensions associated with a format, for directory walks.
+fn format_extensions(format: FileFormat) -> &'static [&'static str] {
+    match format {
+        FileFormat::Parquet => &["parquet"],
+        FileFormat::Csv => &["csv"],
+        FileFormat::Json => &["json", "jsonl", "ndjson"],
+    }
+}
+
+/// Build a constant Arrow array of `value` (typed per `dtype`), length `len`.
+fn constant_array(dtype: &DataType, value: &str, len: usize) -> arrow_array::ArrayRef {
+    use arrow_array::{
+        BooleanArray, Date32Array, Float64Array, Int32Array, Int64Array, StringArray,
+    };
+    match dtype {
+        DataType::Int64 => Arc::new(Int64Array::from(vec![value.parse::<i64>().ok(); len])),
+        DataType::Int32 => Arc::new(Int32Array::from(vec![value.parse::<i32>().ok(); len])),
+        DataType::Float64 => Arc::new(Float64Array::from(vec![value.parse::<f64>().ok(); len])),
+        DataType::Boolean => Arc::new(BooleanArray::from(vec![value.parse::<bool>().ok(); len])),
+        DataType::Date32 => Arc::new(Date32Array::from(vec![parse_date32(value); len])),
+        _ => Arc::new(StringArray::from(vec![value.to_string(); len])),
+    }
+}
+
+/// Parse a `YYYY-MM-DD` string into days since the Unix epoch (Arrow `Date32`).
+fn parse_date32(s: &str) -> Option<i32> {
+    let date = chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").ok()?;
+    let epoch = chrono::NaiveDate::from_ymd_opt(1970, 1, 1)?;
+    i32::try_from((date - epoch).num_days()).ok()
+}
+
+/// Register a segment-partitioned table: read each matched file, append the
+/// positional partition columns derived from its path, and hold the result in a
+/// `MemTable`.
+///
+/// Unlike hive partitions (served by a streaming `ListingTable`), segment
+/// partitions are materialized in memory, so they do not get partition pruning.
+async fn register_segment_partitioned(
+    ctx: &SessionContext,
+    schema_provider: &dyn SchemaProvider,
+    table_name: &str,
+    format: FileFormat,
+    path: &std::path::Path,
+    options: &FileTableOptions,
+) -> Result<(), FileBuildError> {
+    use arrow_array::RecordBatch;
+    use datafusion::datasource::MemTable;
+    use datafusion::prelude::{CsvReadOptions, JsonReadOptions, ParquetReadOptions};
+
+    let base = glob_base(path);
+    let files = collect_files(path, format_extensions(format))?;
+    let csv = options.csv.clone().unwrap_or_default();
+
+    let part_fields: Vec<Field> = options
+        .segment_partitions
+        .iter()
+        .map(|p| Field::new(&p.name, p.r#type.clone(), true))
+        .collect();
+
+    let mut out_batches: Vec<RecordBatch> = Vec::new();
+    let mut out_schema: Option<SchemaRef> = None;
+
+    for file in &files {
+        // Derive each partition value from the directory segment at its index.
+        let rel = file.strip_prefix(&base).unwrap_or(file);
+        let dir_segments: Vec<String> = rel
+            .components()
+            .map(|c| c.as_os_str().to_string_lossy().into_owned())
+            .collect();
+        // The last component is the file name itself.
+        let dir_segments = &dir_segments[..dir_segments.len().saturating_sub(1)];
+        let values: Vec<String> = options
+            .segment_partitions
+            .iter()
+            .map(|p| dir_segments.get(p.index).cloned().unwrap_or_default())
+            .collect();
+
+        let path_str = file.to_string_lossy().into_owned();
+        let df = match format {
+            FileFormat::Parquet => ctx
+                .read_parquet(path_str, ParquetReadOptions::default())
+                .await
+                .map_err(|e| FileBuildError::DataFusion(format!("read parquet: {e}")))?,
+            FileFormat::Csv => ctx
+                .read_csv(
+                    path_str,
+                    CsvReadOptions::new()
+                        .has_header(csv.has_header)
+                        .delimiter(csv.delimiter),
+                )
+                .await
+                .map_err(|e| FileBuildError::DataFusion(format!("read csv: {e}")))?,
+            FileFormat::Json => ctx
+                .read_json(path_str, JsonReadOptions::default())
+                .await
+                .map_err(|e| FileBuildError::DataFusion(format!("read json: {e}")))?,
+        };
+        let batches = df
+            .collect()
+            .await
+            .map_err(|e| FileBuildError::DataFusion(format!("collect {}: {e}", file.display())))?;
+
+        for batch in batches {
+            let n = batch.num_rows();
+            let mut columns = batch.columns().to_vec();
+            for (p, value) in options.segment_partitions.iter().zip(&values) {
+                columns.push(constant_array(&p.r#type, value, n));
+            }
+            let mut fields: Vec<Field> = batch
+                .schema()
+                .fields()
+                .iter()
+                .map(|f| f.as_ref().clone())
+                .collect();
+            fields.extend(part_fields.iter().cloned());
+            let schema: SchemaRef = Arc::new(Schema::new(fields));
+            out_schema.get_or_insert_with(|| schema.clone());
+            let augmented = RecordBatch::try_new(schema, columns)
+                .map_err(|e| FileBuildError::DataFusion(format!("augment batch: {e}")))?;
+            out_batches.push(augmented);
+        }
+    }
+
+    let schema = match out_schema {
+        Some(s) => s,
+        None => {
+            return Err(FileBuildError::DataFusion(
+                "segment-partitioned table matched no rows".into(),
+            ));
+        }
+    };
+    let table = MemTable::try_new(schema, vec![out_batches])
         .map_err(|e| FileBuildError::DataFusion(format!("mem table: {e}")))?;
     schema_provider
         .register_table(table_name.to_string(), Arc::new(table))

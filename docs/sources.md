@@ -59,6 +59,18 @@ A per-table `path` may be a single file, a **glob**, or a **directory** — a gl
 SELECT * FROM data.events WHERE dt = '2026-05-31'   -- only that dt= directory is read
 ```
 
+For directory layouts that *aren't* `key=value`, a **segment** partition takes its value from the directory name at a positional `index` beneath the glob base:
+
+```yaml
+      - name: sessions                        # projects/<project>/*.jsonl
+        path: ./projects/*/*.jsonl
+        format: json
+        partition_cols:
+          - { name: project, type: varchar, kind: segment, index: 0 }
+```
+
+Hive partitions stream through the file reader (and prune by directory); segment-partitioned tables are materialized in memory, so they don't prune. A table uses one partition style or the other, not both.
+
 **CSV options & explicit schema** — override the dialect, and (optionally) the inferred schema for headerless or mis-inferred files:
 
 ```yaml

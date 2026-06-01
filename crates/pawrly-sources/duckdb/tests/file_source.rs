@@ -141,6 +141,37 @@ async fn hive_partition_column_is_queryable() {
     );
 }
 
+/// A positional (segment) partition derives a column from a directory name that
+/// is not `key=value`.
+#[tokio::test]
+async fn segment_partition_from_directory_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let proj_a = dir.path().join("projects").join("pawrly");
+    std::fs::create_dir_all(&proj_a).unwrap();
+    std::fs::write(proj_a.join("data.csv"), "id\n1\n2\n").unwrap();
+    let proj_b = dir.path().join("projects").join("melt");
+    std::fs::create_dir_all(&proj_b).unwrap();
+    std::fs::write(proj_b.join("data.csv"), "id\n9\n").unwrap();
+
+    let (ctx, catalog) = build_ctx().await;
+    let def = file_source(json!({
+        "path": "projects/*/*.csv",
+        "format": "csv",
+        "partition_cols": [
+            { "name": "project", "type": "varchar", "kind": "segment", "index": 0 }
+        ]
+    }));
+    register_file_source(&def, &ctx, catalog.as_ref(), dir.path())
+        .await
+        .expect("register segment-partitioned table");
+
+    assert_eq!(count(&ctx, "SELECT count(*) FROM data.t").await, 3);
+    assert_eq!(
+        count(&ctx, "SELECT count(*) FROM data.t WHERE project = 'pawrly'").await,
+        2
+    );
+}
+
 /// A JSON-array file (`[ {…}, {…} ]`) is read via the in-memory decode path,
 /// auto-detected from its leading `[`.
 #[tokio::test]
