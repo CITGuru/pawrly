@@ -21,7 +21,7 @@ use datafusion::datasource::{TableProvider, TableType};
 use datafusion::logical_expr::{Expr, TableProviderFilterPushDown};
 use datafusion::physical_plan::ExecutionPlan;
 
-use crate::source::{AuthSpec, HttpSource};
+use crate::source::HttpSource;
 
 #[derive(Debug)]
 pub struct RawHttpTableProvider {
@@ -126,14 +126,11 @@ impl TableProvider for RawHttpTableProvider {
             for (k, v) in &self.source.headers {
                 req = req.header(k, v);
             }
-            match &self.source.auth {
-                AuthSpec::None => {}
-                AuthSpec::Bearer { token } => req = req.bearer_auth(token),
-                AuthSpec::ApiKey { header, value } => req = req.header(header, value),
-                AuthSpec::Basic { username, password } => {
-                    req = req.basic_auth(username, Some(password));
-                }
-            }
+            req = self
+                .source
+                .apply_auth(req)
+                .await
+                .map_err(|e| DataFusionError::External(Box::new(std::io::Error::other(e))))?;
             let resp = req.send().await.map_err(|e| {
                 DataFusionError::External(Box::new(std::io::Error::other(format!("http: {e}"))))
             })?;

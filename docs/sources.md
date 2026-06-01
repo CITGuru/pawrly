@@ -35,6 +35,67 @@ sources:
 
 Once registered, query them like any table: `SELECT * FROM data.orders`. Files of different formats can be joined freely — the SQL is identical regardless of format.
 
+A per-table `path` may be a single file, a **glob**, or a **directory** — a glob or directory is read as one table unioning every matching file (the natural shape for a partitioned dataset):
+
+```yaml
+    tables:
+      - name: orders
+        path: ./data/orders/*.parquet     # all parts → one `orders` table
+        format: parquet
+```
+
+**Hive partitions** — for `key=value` directory layouts, declare `partition_cols` to expose the keys as queryable, prunable columns:
+
+```yaml
+      - name: events                        # events/dt=2026-05-31/region=us/*.parquet
+        path: ./lake/events
+        format: parquet
+        partition_cols:
+          - { name: dt,     type: date }
+          - { name: region, type: varchar }
+```
+
+```sql
+SELECT * FROM data.events WHERE dt = '2026-05-31'   -- only that dt= directory is read
+```
+
+For directory layouts that *aren't* `key=value`, a **segment** partition takes its value from the directory name at a positional `index` beneath the glob base:
+
+```yaml
+      - name: sessions                        # projects/<project>/*.jsonl
+        path: ./projects/*/*.jsonl
+        format: json
+        partition_cols:
+          - { name: project, type: varchar, kind: segment, index: 0 }
+```
+
+Hive partitions stream through the file reader (and prune by directory); segment-partitioned tables are materialized in memory, so they don't prune. A table uses one partition style or the other, not both.
+
+**CSV options & explicit schema** — override the dialect, and (optionally) the inferred schema for headerless or mis-inferred files:
+
+```yaml
+      - name: metrics
+        path: ./data/metrics.tsv
+        format: csv
+        csv:
+          header: false          # default true
+          delimiter: "\t"        # default ","
+          quote: '"'
+        schema:                  # optional: name + type the columns
+          - { name: host,  type: varchar }
+          - { name: value, type: bigint }
+```
+
+**JSON layout** — JSON files may be newline-delimited (NDJSON) or a single array `[ {…}, {…} ]`. The layout is auto-detected from the first non-whitespace byte; set it explicitly with a `json` block:
+
+```yaml
+      - name: facts
+        path: ./data/facts.json
+        format: json
+        json:
+          format: array          # array | ndjson | auto (default)
+```
+
 ### `sqlite` — local SQLite databases
 
 Attaches a SQLite database file read-only and exposes its tables. Equality filters are pushed down into SQLite.
@@ -68,7 +129,20 @@ WHERE owner = 'withpawrly' AND repo = 'pawrly' AND state = 'open'
 LIMIT 20
 ```
 
-Some columns are **required filters** (above, `owner` and `repo`) — Pawrly returns a clear error if they're missing, rather than scanning an entire API. Supported authentication modes are `bearer`, `api_key`, and `basic`.
+Some columns are **required filters** (above, `owner` and `repo`) — Pawrly returns a clear error if they're missing, rather than scanning an entire API. Supported authentication modes are `bearer`, `api_key`, `basic`, and `oauth2` (client-credentials):
+
+```yaml
+    config:
+      auth:
+        type: oauth2
+        token_url:     https://login.example.com/oauth/token
+        client_id:     ${secret:CLIENT_ID}
+        client_secret: ${secret:CLIENT_SECRET}
+        scope:         read:data        # optional
+        audience:      https://api.example.com   # optional
+```
+
+The access token is fetched on first use, cached, and re-fetched on expiry, then sent as `Authorization: Bearer <token>`.
 
 **Generic HTTP** — point `kind: http` at any REST endpoint and declare your own
 tables. Each table gives an `endpoint` and a `response` describing how to turn
@@ -98,9 +172,17 @@ Field reference:
 
 - `endpoint` — path appended to `base_url`; may carry a query string and `{param}` placeholders.
 - `method` — defaults to `GET`.
+- `body` — request body for POST/PUT/GraphQL endpoints: `kind` (`json` — the default, sets `Content-Type: application/json` — or `form`) and `template` (body text with `{param}` placeholders filled from bound params/filters; other braces, e.g. JSON/GraphQL, are left untouched).
+- `requests` — conditional request shapes for one table, tried in order; the first whose `when_filters` are all bound replaces the default `endpoint`/`method`/`body` (e.g. a get-by-id endpoint when `number` is filtered, list otherwise). Each entry has `when_filters`, `endpoint`, optional `method`, and optional `body`.
 - `response.path` — JSONPath to the array of rows. `$` means the body *is* the array; `$.data` digs into a wrapper object.
-- `response.schema` — columns to extract per row. `type` ∈ `varchar`, `bigint`, `int`, `double`, `float`, `bool`. Add `source: $.nested.field` to read a different path, or `source: param` to inject a request parameter as a column.
-- `params` — declared query/path parameters (`name`, `type`, `required`, `default`); a `required` param must appear as a SQL filter.
+- `response.schema` — columns to extract per row. `type` ∈ `varchar`, `bigint`, `int`, `double`, `float`, `bool`, `date`, `timestamp`, `timestamptz` (ISO-8601 / RFC 3339 strings are parsed), and `json` (a nested object/array kept as raw JSON text). Add `source: $.nested.field` to read a different path, `source: $` to capture the whole row element (typically into a `json` column), or `source: param` to inject a request parameter as a column.
+- `response.allow_404_empty` — treat a `404` as an empty result set instead of an error.
+- `response.error` — turn API failures into a clear scan error: `status` (codes or matchers like `">=400"`, `"5xx"`) and/or `path` (a JSONPath to an error message inside a `200`-with-error body).
+- `params` — declared query/path parameters (`name`, `type`, `required`, `default`); a `required` param must appear as a SQL filter. Equality pushes down by default; add `accepts` (e.g. `[">=", "<="]`) plus an `emit` map (operator → query parameter, e.g. `{ ">=": since, "<=": until }`) to push comparison filters down as separate query parameters.
+
+A `LIMIT` stops pagination early — once enough rows are collected, no further pages are fetched.
+
+The source-level `rate_limit` block can track the API's own quota headers: `remaining_header` / `reset_header` (when remaining hits `0`, the next request waits until the reset time) and `extra_statuses` (codes besides `429`/`503` — e.g. GitHub's secondary-limit `403` — that are also treated as rate-limit signals and retried).
 
 A runnable end-to-end example **with caching** lives at [`examples/cache-http/`](../examples/cache-http/pawrly.yaml).
 

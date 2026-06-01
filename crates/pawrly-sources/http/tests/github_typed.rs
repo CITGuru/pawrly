@@ -120,7 +120,7 @@ async fn raw_github_table_fans_out_in_list() {
         .mount(&server)
         .await;
     Mock::given(method("GET"))
-        .and(path("/repos/pawrly/coral"))
+        .and(path("/repos/pawrly/melt"))
         .respond_with(ResponseTemplate::new(200).set_body_string("repo-2"))
         .mount(&server)
         .await;
@@ -149,7 +149,7 @@ async fn raw_github_table_fans_out_in_list() {
         .sql(
             "SELECT response_status, response_body \
              FROM gh \
-             WHERE request_path IN ('/repos/pawrly/pawrly', '/repos/pawrly/coral') \
+             WHERE request_path IN ('/repos/pawrly/pawrly', '/repos/pawrly/melt') \
              ORDER BY request_path",
         )
         .await

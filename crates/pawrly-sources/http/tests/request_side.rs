@@ -1,0 +1,221 @@
+//! Acceptance: request-side features — POST/GraphQL request bodies,
+//! range/comparison filter pushdown, and header-aware rate limiting
+//! (`extra_statuses`).
+
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "tests"
+)]
+
+use std::sync::Arc;
+
+use datafusion::catalog::{CatalogProvider, MemoryCatalogProvider};
+use datafusion::execution::config::SessionConfig;
+use datafusion::execution::context::SessionContext;
+use pawrly_core::{CachePolicy, SourceDef, SourceKind, TableDef};
+use pawrly_sources_http::register_http_source;
+use serde_json::json;
+use wiremock::matchers::{body_json, method, path, query_param};
+use wiremock::{Mock, MockServer, ResponseTemplate};
+
+async fn build_ctx() -> (SessionContext, Arc<MemoryCatalogProvider>) {
+    let cfg = SessionConfig::new()
+        .with_default_catalog_and_schema("pawrly", "default")
+        .with_create_default_catalog_and_schema(false);
+    let ctx = SessionContext::new_with_config(cfg);
+    let catalog: Arc<MemoryCatalogProvider> = Arc::new(MemoryCatalogProvider::new());
+    let default_schema: Arc<dyn datafusion::catalog::SchemaProvider> =
+        Arc::new(datafusion::catalog::MemorySchemaProvider::new());
+    let _ = catalog.register_schema("default", default_schema).unwrap();
+    ctx.register_catalog("pawrly", catalog.clone());
+    (ctx, catalog)
+}
+
+/// A POST table renders its `body.template`, substituting a bound param, and the
+/// server only matches when the rendered JSON body is correct.
+#[tokio::test]
+async fn post_request_body_is_rendered() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/search"))
+        .and(body_json(json!({ "q": "cats", "limit": 5 })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "results": [ { "id": 1 }, { "id": 2 } ]
+        })))
+        .mount(&server)
+        .await;
+
+    let (ctx, catalog) = build_ctx().await;
+    let def = SourceDef {
+        name: "api".into(),
+        kind: SourceKind::Http,
+        description: None,
+        config: json!({ "base_url": server.uri() }),
+        cache: CachePolicy::None,
+        safety: None,
+        tables: vec![TableDef {
+            name: "search".into(),
+            description: None,
+            config: json!({
+                "endpoint": "/search",
+                "method": "POST",
+                "params": [ { "name": "q", "type": "varchar", "required": true } ],
+                "body": { "kind": "json", "template": "{\"q\": \"{q}\", \"limit\": 5}" },
+                "response": {
+                    "path": "$.results",
+                    "schema": [
+                        { "name": "id", "type": "bigint" },
+                        { "name": "q",  "type": "varchar", "source": "param" }
+                    ]
+                }
+            }),
+            cache: None,
+            safety: None,
+        }],
+        raw_table: false,
+        raw_table_safety: None,
+    };
+    register_http_source(&def, &ctx, catalog.as_ref())
+        .await
+        .expect("register");
+
+    let batches = ctx
+        .sql("SELECT id FROM api.search WHERE q = 'cats'")
+        .await
+        .expect("plan")
+        .collect()
+        .await
+        .expect("execute: rendered body should match the server");
+    let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+    assert_eq!(rows, 2);
+}
+
+/// Comparison filters push down via a param's `accepts`/`emit` mapping: the
+/// server only matches when both `since` and `until` query params are present.
+#[tokio::test]
+async fn range_filters_push_down() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/events"))
+        .and(query_param("since", "2026-05-01"))
+        .and(query_param("until", "2026-05-31"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([ { "id": 1 } ])))
+        .mount(&server)
+        .await;
+
+    let (ctx, catalog) = build_ctx().await;
+    let def = SourceDef {
+        name: "api".into(),
+        kind: SourceKind::Http,
+        description: None,
+        config: json!({ "base_url": server.uri() }),
+        cache: CachePolicy::None,
+        safety: None,
+        tables: vec![TableDef {
+            name: "events".into(),
+            description: None,
+            config: json!({
+                "endpoint": "/events",
+                "params": [
+                    {
+                        "name": "created",
+                        "type": "varchar",
+                        "accepts": [">=", "<="],
+                        "emit": { ">=": "since", "<=": "until" }
+                    }
+                ],
+                "response": {
+                    "path": "$",
+                    "schema": [
+                        { "name": "id",      "type": "bigint" },
+                        { "name": "created", "type": "varchar", "source": "param" }
+                    ]
+                }
+            }),
+            cache: None,
+            safety: None,
+        }],
+        raw_table: false,
+        raw_table_safety: None,
+    };
+    register_http_source(&def, &ctx, catalog.as_ref())
+        .await
+        .expect("register");
+
+    let batches = ctx
+        .sql(
+            "SELECT id FROM api.events \
+             WHERE created >= '2026-05-01' AND created <= '2026-05-31'",
+        )
+        .await
+        .expect("plan")
+        .collect()
+        .await
+        .expect("execute: range filters should emit since/until");
+    let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+    assert_eq!(rows, 1);
+}
+
+/// A status listed in `rate_limit.extra_statuses` (here GitHub-style `403`) is
+/// retried like a 429 rather than surfaced as an error.
+#[tokio::test]
+async fn extra_status_403_is_retried() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/items"))
+        .respond_with(ResponseTemplate::new(403))
+        .up_to_n_times(1)
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/items"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([ { "id": 1 } ])))
+        .with_priority(2)
+        .mount(&server)
+        .await;
+
+    let (ctx, catalog) = build_ctx().await;
+    let def = SourceDef {
+        name: "api".into(),
+        kind: SourceKind::Http,
+        description: None,
+        config: json!({
+            "base_url": server.uri(),
+            "retry": { "max_retries": 3, "base_backoff_ms": 1, "max_backoff_ms": 5 },
+            "rate_limit": { "extra_statuses": [403] }
+        }),
+        cache: CachePolicy::None,
+        safety: None,
+        tables: vec![TableDef {
+            name: "items".into(),
+            description: None,
+            config: json!({
+                "endpoint": "/items",
+                "response": {
+                    "path": "$",
+                    "schema": [ { "name": "id", "type": "bigint" } ]
+                }
+            }),
+            cache: None,
+            safety: None,
+        }],
+        raw_table: false,
+        raw_table_safety: None,
+    };
+    register_http_source(&def, &ctx, catalog.as_ref())
+        .await
+        .expect("register");
+
+    let batches = ctx
+        .sql("SELECT id FROM api.items")
+        .await
+        .expect("plan")
+        .collect()
+        .await
+        .expect("execute: 403 should be retried and then succeed");
+    let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+    assert_eq!(rows, 1);
+}

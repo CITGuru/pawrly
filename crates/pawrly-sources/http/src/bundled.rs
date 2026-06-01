@@ -62,6 +62,8 @@ fn required_param(name: &str) -> ParamSpec {
         r#type: "varchar".into(),
         required: true,
         default: None,
+        accepts: Vec::new(),
+        emit: BTreeMap::new(),
     }
 }
 
@@ -71,6 +73,8 @@ fn optional_param(name: &str, default: Option<&str>) -> ParamSpec {
         r#type: "varchar".into(),
         required: false,
         default: default.map(str::to_string),
+        accepts: Vec::new(),
+        emit: BTreeMap::new(),
     }
 }
 
@@ -100,6 +104,8 @@ fn github() -> BundledSpec {
                 method: "GET".into(),
                 params: owner_repo_state.clone(),
                 headers: BTreeMap::new(),
+                body: None,
+                requests: Vec::new(),
                 response: ResponseSpec {
                     path: "$".into(),
                     schema: vec![
@@ -110,6 +116,8 @@ fn github() -> BundledSpec {
                         col_src("owner", "varchar", "param"),
                         col_src("repo", "varchar", "param"),
                     ],
+                    allow_404_empty: false,
+                    error: None,
                 },
                 pagination: Some(PaginationConfig::LinkHeader),
                 description: Some("Pull requests for a GitHub repository.".into()),
@@ -120,6 +128,8 @@ fn github() -> BundledSpec {
                 method: "GET".into(),
                 params: owner_repo_state,
                 headers: BTreeMap::new(),
+                body: None,
+                requests: Vec::new(),
                 response: ResponseSpec {
                     path: "$".into(),
                     schema: vec![
@@ -132,6 +142,8 @@ fn github() -> BundledSpec {
                         col_src("owner", "varchar", "param"),
                         col_src("repo", "varchar", "param"),
                     ],
+                    allow_404_empty: false,
+                    error: None,
                 },
                 pagination: Some(PaginationConfig::LinkHeader),
                 description: Some(
@@ -159,6 +171,8 @@ fn sentry() -> BundledSpec {
                 method: "GET".into(),
                 params: vec![required_param("org")],
                 headers: BTreeMap::new(),
+                body: None,
+                requests: Vec::new(),
                 response: ResponseSpec {
                     path: "$".into(),
                     schema: vec![
@@ -170,6 +184,8 @@ fn sentry() -> BundledSpec {
                         col_src("date_created", "varchar", "$.dateCreated"),
                         col_src("org", "varchar", "param"),
                     ],
+                    allow_404_empty: false,
+                    error: None,
                 },
                 pagination: Some(PaginationConfig::LinkHeader),
                 description: Some("Projects in a Sentry organization.".into()),
@@ -180,6 +196,8 @@ fn sentry() -> BundledSpec {
                 method: "GET".into(),
                 params: vec![required_param("org")],
                 headers: BTreeMap::new(),
+                body: None,
+                requests: Vec::new(),
                 response: ResponseSpec {
                     path: "$".into(),
                     schema: vec![
@@ -195,6 +213,8 @@ fn sentry() -> BundledSpec {
                         col_src("project", "varchar", "$.project.slug"),
                         col_src("org", "varchar", "param"),
                     ],
+                    allow_404_empty: false,
+                    error: None,
                 },
                 pagination: Some(PaginationConfig::LinkHeader),
                 description: Some("Unresolved issues in a Sentry organization.".into()),
@@ -224,6 +244,8 @@ fn slack() -> BundledSpec {
                 method: "GET".into(),
                 params: Vec::new(),
                 headers: BTreeMap::new(),
+                body: None,
+                requests: Vec::new(),
                 response: ResponseSpec {
                     path: "$.members".into(),
                     schema: vec![
@@ -236,6 +258,8 @@ fn slack() -> BundledSpec {
                         col("is_admin", "bool"),
                         col("deleted", "bool"),
                     ],
+                    allow_404_empty: false,
+                    error: None,
                 },
                 pagination: Some(cursor.clone()),
                 description: Some("Members of a Slack workspace (users.list).".into()),
@@ -249,6 +273,8 @@ fn slack() -> BundledSpec {
                     Some("public_channel,private_channel"),
                 )],
                 headers: BTreeMap::new(),
+                body: None,
+                requests: Vec::new(),
                 response: ResponseSpec {
                     path: "$.channels".into(),
                     schema: vec![
@@ -260,6 +286,8 @@ fn slack() -> BundledSpec {
                         col("is_archived", "bool"),
                         col("created", "bigint"),
                     ],
+                    allow_404_empty: false,
+                    error: None,
                 },
                 pagination: Some(cursor),
                 description: Some("Channels in a Slack workspace (conversations.list).".into()),
