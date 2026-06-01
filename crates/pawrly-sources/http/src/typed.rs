@@ -453,9 +453,7 @@ fn retry_after_ms(resp: &reqwest::Response) -> Option<u64> {
 /// is present and still in the future.
 fn reset_wait_ms(policy: &RateLimitPolicy, resp: &reqwest::Response) -> Option<u64> {
     let target = reset_at(policy, resp.headers())?;
-    let dur = target
-        .duration_since(std::time::SystemTime::now())
-        .ok()?;
+    let dur = target.duration_since(std::time::SystemTime::now()).ok()?;
     u64::try_from(dur.as_millis()).ok()
 }
 
@@ -584,14 +582,15 @@ fn detect_error(
     body: &Value,
 ) -> Option<String> {
     let status_hit = spec.status.iter().any(|m| m.matches(status));
-    let path_msg = spec.path.as_deref().and_then(|p| {
-        match paginate::json_at_path(body, p)? {
+    let path_msg = spec
+        .path
+        .as_deref()
+        .and_then(|p| match paginate::json_at_path(body, p)? {
             Value::Null => None,
             Value::String(s) if !s.is_empty() => Some(s.clone()),
             Value::String(_) => None,
             other => Some(other.to_string()),
-        }
-    });
+        });
     if status_hit || path_msg.is_some() {
         Some(path_msg.unwrap_or_else(|| format!("HTTP {status}")))
     } else {

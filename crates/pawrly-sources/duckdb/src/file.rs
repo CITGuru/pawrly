@@ -155,7 +155,10 @@ fn parse_table_options(
     if let Some(csv) = cfg.get("csv") {
         let d = CsvOptions::default();
         opts.csv = Some(CsvOptions {
-            has_header: csv.get("header").and_then(|v| v.as_bool()).unwrap_or(d.has_header),
+            has_header: csv
+                .get("header")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(d.has_header),
             delimiter: first_byte(csv, "delimiter").unwrap_or(d.delimiter),
             quote: first_byte(csv, "quote").unwrap_or(d.quote),
         });
@@ -173,14 +176,14 @@ fn parse_table_options(
 
     if let Some(parts) = cfg.get("partition_cols").and_then(|v| v.as_array()) {
         for p in parts {
-            let name = p
-                .get("name")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| ConfigError::Table {
-                    source_name: source_name.to_string(),
-                    table: tdef.name.clone(),
-                    msg: "partition_cols entry is missing `name`".into(),
-                })?;
+            let name =
+                p.get("name")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| ConfigError::Table {
+                        source_name: source_name.to_string(),
+                        table: tdef.name.clone(),
+                        msg: "partition_cols entry is missing `name`".into(),
+                    })?;
             let ty = p.get("type").and_then(|v| v.as_str()).unwrap_or("varchar");
             let kind = p.get("kind").and_then(|v| v.as_str()).unwrap_or("hive");
             if kind.eq_ignore_ascii_case("segment") {
@@ -204,7 +207,9 @@ fn parse_table_options(
                 return Err(ConfigError::Table {
                     source_name: source_name.to_string(),
                     table: tdef.name.clone(),
-                    msg: format!("partition kind `{kind}` is not supported (use `hive` or `segment`)"),
+                    msg: format!(
+                        "partition kind `{kind}` is not supported (use `hive` or `segment`)"
+                    ),
                 }
                 .into());
             }
@@ -277,15 +282,7 @@ pub async fn register_file_source(
         };
         let options = parse_table_options(&def.name, tdef)?;
         let path = resolve_path(workspace_dir, path_str);
-        register_one(
-            ctx,
-            schema.as_ref(),
-            &tdef.name,
-            format,
-            &path,
-            &options,
-        )
-        .await?;
+        register_one(ctx, schema.as_ref(), &tdef.name, format, &path, &options).await?;
         summaries.push(FileSummary {
             name: tdef.name.clone(),
             description: tdef.description.clone(),
@@ -387,7 +384,8 @@ async fn register_one(
 
     // JSON-array files aren't NDJSON, so DataFusion's listing reader can't parse
     // them. They take a separate in-memory decode path.
-    if format == FileFormat::Json && resolve_json_layout(options.json_layout, path)? == JsonLayout::Array
+    if format == FileFormat::Json
+        && resolve_json_layout(options.json_layout, path)? == JsonLayout::Array
     {
         return register_json_array(schema, table_name, path, options);
     }
@@ -440,8 +438,7 @@ async fn register_one(
     let mut listing_options =
         ListingOptions::new(format_impl).with_file_extension(actual_extension);
     if !options.partition_cols.is_empty() {
-        listing_options =
-            listing_options.with_table_partition_cols(options.partition_cols.clone());
+        listing_options = listing_options.with_table_partition_cols(options.partition_cols.clone());
     }
 
     // An explicit schema overrides inference; otherwise infer from the files.
@@ -575,9 +572,10 @@ fn register_json_array(
     let arrow_schema: SchemaRef = match &options.schema {
         Some(s) => s.clone(),
         None => {
-            let inferred =
-                infer_json_schema_from_iterator(elements.iter().map(Ok::<&serde_json::Value, ArrowError>))
-                    .map_err(|e| FileBuildError::DataFusion(format!("infer json schema: {e}")))?;
+            let inferred = infer_json_schema_from_iterator(
+                elements.iter().map(Ok::<&serde_json::Value, ArrowError>),
+            )
+            .map_err(|e| FileBuildError::DataFusion(format!("infer json schema: {e}")))?;
             Arc::new(inferred)
         }
     };

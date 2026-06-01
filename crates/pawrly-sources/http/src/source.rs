@@ -450,9 +450,11 @@ impl HttpSource {
             .ok_or("oauth token response missing `access_token`")?
             .to_string();
         // Default to a short-but-safe lifetime when `expires_in` is absent.
-        let expires_in = body.get("expires_in").and_then(|v| v.as_u64()).unwrap_or(300);
-        let expires_at =
-            std::time::SystemTime::now() + std::time::Duration::from_secs(expires_in);
+        let expires_in = body
+            .get("expires_in")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(300);
+        let expires_at = std::time::SystemTime::now() + std::time::Duration::from_secs(expires_in);
 
         *guard = Some(CachedToken {
             token: token.clone(),

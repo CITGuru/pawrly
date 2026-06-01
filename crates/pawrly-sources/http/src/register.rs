@@ -307,11 +307,7 @@ fn parse_rate_limit(def: &SourceDef) -> RateLimitPolicy {
         .and_then(serde_json::Value::as_u64)
         .and_then(|rps| NonZeroU32::new(u32::try_from(rps).ok()?))
         .map(|rps| Arc::new(RateLimiter::direct(Quota::per_second(rps))));
-    let header = |key: &str| {
-        rl.get(key)
-            .and_then(|v| v.as_str())
-            .map(str::to_string)
-    };
+    let header = |key: &str| rl.get(key).and_then(|v| v.as_str()).map(str::to_string);
     let extra_statuses = rl
         .get("extra_statuses")
         .and_then(|v| v.as_array())

@@ -33,7 +33,13 @@ async fn build_ctx() -> (SessionContext, Arc<MemoryCatalogProvider>) {
 }
 
 async fn count(ctx: &SessionContext, sql: &str) -> usize {
-    let batches = ctx.sql(sql).await.expect("plan").collect().await.expect("execute");
+    let batches = ctx
+        .sql(sql)
+        .await
+        .expect("plan")
+        .collect()
+        .await
+        .expect("execute");
     batches.iter().map(|b| b.num_rows()).sum()
 }
 

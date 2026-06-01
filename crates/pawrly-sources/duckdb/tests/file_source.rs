@@ -55,7 +55,13 @@ fn file_source(table_config: Value) -> SourceDef {
 }
 
 async fn count(ctx: &SessionContext, sql: &str) -> i64 {
-    let batches = ctx.sql(sql).await.expect("plan").collect().await.expect("execute");
+    let batches = ctx
+        .sql(sql)
+        .await
+        .expect("plan")
+        .collect()
+        .await
+        .expect("execute");
     batches[0]
         .column(0)
         .as_any()
@@ -132,11 +138,7 @@ async fn hive_partition_column_is_queryable() {
         .expect("register partitioned table");
 
     assert_eq!(
-        count(
-            &ctx,
-            "SELECT count(*) FROM data.t WHERE dt = '2026-05-31'"
-        )
-        .await,
+        count(&ctx, "SELECT count(*) FROM data.t WHERE dt = '2026-05-31'").await,
         2
     );
 }
