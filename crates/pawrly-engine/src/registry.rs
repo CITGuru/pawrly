@@ -117,7 +117,7 @@ pub async fn register_source(
         | SourceKind::Iceberg
         | SourceKind::Ducklake
         | SourceKind::Delta => {
-            crate::duckdb_source::register_duckdb_source(def, pool, catalog).await
+            crate::duckdb_source::register_duckdb_source(def, pool, catalog, workspace_dir).await
         }
     }
 }

@@ -167,3 +167,40 @@ sources:
         .unwrap();
     assert_eq!(arr.value(0), 2);
 }
+
+/// `kind: duckdb` attaches a local `.duckdb` file. Exercises two fixes: a
+/// relative `config.path` resolves against the workspace dir (not the CWD), and
+/// `COUNT(*)` (an empty projection) returns through the DuckDB provider.
+#[tokio::test]
+async fn duckdb_file_relative_path_and_count() {
+    let workspace = TempDir::new().unwrap();
+    {
+        let conn = duckdb::Connection::open(workspace.path().join("analytics.duckdb")).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE widgets(id INTEGER, name TEXT); \
+             INSERT INTO widgets VALUES (1,'a'),(2,'b'),(3,'c');",
+        )
+        .unwrap();
+    }
+    // `path` is relative — it must resolve against the workspace, not the CWD.
+    let yaml = "version: 1\nsources:\n  - name: db\n    kind: duckdb\n    config:\n      path: ./analytics.duckdb\n";
+    let cfg = cfg_yaml(yaml);
+    let engine = LocalEngine::new(LocalEngineConfig {
+        config: cfg,
+        workspace_dir: workspace.path().to_path_buf(),
+        duckdb_pool_size: None,
+    })
+    .await
+    .unwrap();
+    use pawrly_core::EngineServiceExt;
+    let batches = engine
+        .query_collect("SELECT count(*) AS n FROM db.widgets")
+        .await
+        .unwrap();
+    let arr = batches[0]
+        .column(0)
+        .as_any()
+        .downcast_ref::<arrow_array::Int64Array>()
+        .unwrap();
+    assert_eq!(arr.value(0), 3);
+}

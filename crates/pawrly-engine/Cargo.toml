@@ -47,3 +47,4 @@ pawrly-secrets = { workspace = true }
 pawrly-sources-http = { workspace = true }
 arrow-array = { workspace = true }
 rusqlite = { version = "0.33", features = ["bundled"] }
+duckdb = { workspace = true }

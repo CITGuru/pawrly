@@ -73,12 +73,16 @@ impl DuckDbTableProvider {
         limit: Option<usize>,
     ) -> String {
         let cols = match projection {
-            Some(p) if !p.is_empty() => p
+            // An empty projection (e.g. `COUNT(*)`) needs rows but no columns.
+            // SQL can't select zero columns, so select a constant and drop it in
+            // the stream (see `DuckDbScanStream::execute`).
+            Some(p) if p.is_empty() => "1".to_string(),
+            Some(p) => p
                 .iter()
                 .map(|i| format!("\"{}\"", self.schema.field(*i).name()))
                 .collect::<Vec<_>>()
                 .join(", "),
-            _ => "*".to_string(),
+            None => "*".to_string(),
         };
         let mut sql = format!("SELECT {cols} FROM {}", self.relation);
         let clauses: Vec<String> = filters
@@ -182,10 +186,15 @@ impl PartitionStream for DuckDbScanStream {
     }
 
     fn execute(&self, _ctx: Arc<TaskContext>) -> SendableRecordBatchStream {
-        use futures::stream::TryStreamExt;
+        use futures::stream::{StreamExt, TryStreamExt};
         let pool = self.pool.clone();
         let sql = self.sql.clone();
         let schema = self.schema.clone();
+        // An empty output schema (`COUNT(*)` etc.) means the SQL selected a
+        // throwaway constant column (`SELECT 1`); rewrite each batch to zero
+        // columns, preserving only the row count.
+        let empty = schema.fields().is_empty();
+        let out = schema.clone();
         // `fetch_arrow_stream` is async and may fail; wrap it in a one-shot
         // stream and `try_flatten` so the partition stream yields RecordBatch
         // results lazily. The future's `Ok` is a `SendableRecordBatchStream`
@@ -197,7 +206,19 @@ impl PartitionStream for DuckDbScanStream {
                 .await
                 .map_err(|e| DataFusionError::External(Box::new(e)))
         })
-        .try_flatten();
+        .try_flatten()
+        .map(move |res| {
+            res.and_then(|batch| {
+                if empty {
+                    let opts = arrow_array::RecordBatchOptions::new()
+                        .with_row_count(Some(batch.num_rows()));
+                    arrow_array::RecordBatch::try_new_with_options(out.clone(), vec![], &opts)
+                        .map_err(DataFusionError::from)
+                } else {
+                    Ok(batch)
+                }
+            })
+        });
         Box::pin(RecordBatchStreamAdapter::new(schema, inner))
     }
 }
@@ -305,17 +326,31 @@ pub async fn register_duckdb_source(
     def: &SourceDef,
     pool: &Arc<DuckDbPool>,
     catalog: &dyn CatalogProvider,
+    workspace_dir: &std::path::Path,
 ) -> Result<RegisterReport, RegisterError> {
     match def.kind {
         SourceKind::Postgres | SourceKind::Mysql | SourceKind::Snowflake | SourceKind::Duckdb => {
-            register_attach(def, pool, catalog).await
+            register_attach(def, pool, catalog, workspace_dir).await
         }
-        SourceKind::Iceberg | SourceKind::Delta => register_scan(def, pool, catalog).await,
-        SourceKind::Ducklake => register_ducklake(def, pool, catalog).await,
-        SourceKind::File => register_object_store(def, pool, catalog).await,
+        SourceKind::Iceberg | SourceKind::Delta => {
+            register_scan(def, pool, catalog, workspace_dir).await
+        }
+        SourceKind::Ducklake => register_ducklake(def, pool, catalog, workspace_dir).await,
+        SourceKind::File => register_object_store(def, pool, catalog, workspace_dir).await,
         other => Err(RegisterError::Other(format!(
             "register_duckdb_source called for unsupported kind `{other}`"
         ))),
+    }
+}
+
+/// Resolve a local path against the workspace directory. Remote URLs (`s3://…`)
+/// and absolute paths are returned unchanged; relative local paths are joined to
+/// `workspace_dir` so they resolve against the config file, not the CWD.
+fn resolve_local(workspace_dir: &std::path::Path, raw: &str) -> String {
+    if raw.contains("://") || std::path::Path::new(raw).is_absolute() {
+        raw.to_string()
+    } else {
+        workspace_dir.join(raw).to_string_lossy().into_owned()
     }
 }
 
@@ -326,6 +361,7 @@ async fn register_attach(
     def: &SourceDef,
     pool: &Arc<DuckDbPool>,
     catalog: &dyn CatalogProvider,
+    workspace_dir: &std::path::Path,
 ) -> Result<RegisterReport, RegisterError> {
     // `ext` is the DuckDB extension to load (None for native .duckdb attach);
     // `ty` is the ATTACH `TYPE` (None for a .duckdb file, which DuckDB infers).
@@ -345,7 +381,11 @@ async fn register_attach(
             Some("snowflake"),
             snowflake_conn(&def.config)?,
         ),
-        SourceKind::Duckdb => (None, None, duckdb_file_path(&def.config)?),
+        SourceKind::Duckdb => (
+            None,
+            None,
+            resolve_local(workspace_dir, &duckdb_file_path(&def.config)?),
+        ),
         other => {
             return Err(RegisterError::Other(format!(
                 "register_attach called for `{other}`"
@@ -400,6 +440,7 @@ async fn register_scan(
     def: &SourceDef,
     pool: &Arc<DuckDbPool>,
     catalog: &dyn CatalogProvider,
+    workspace_dir: &std::path::Path,
 ) -> Result<RegisterReport, RegisterError> {
     let ext = match def.kind {
         SourceKind::Iceberg => "iceberg",
@@ -423,7 +464,7 @@ async fn register_scan(
                 table.name
             ))
         })?;
-        let loc_esc = loc.replace('\'', "''");
+        let loc_esc = resolve_local(workspace_dir, &loc).replace('\'', "''");
         let relation = match def.kind {
             SourceKind::Iceberg => format!("iceberg_scan('{loc_esc}')"),
             _ => format!("delta_scan('{loc_esc}')"),
@@ -452,6 +493,7 @@ async fn register_ducklake(
     def: &SourceDef,
     pool: &Arc<DuckDbPool>,
     catalog: &dyn CatalogProvider,
+    workspace_dir: &std::path::Path,
 ) -> Result<RegisterReport, RegisterError> {
     pool.ensure_extension("ducklake")
         .await
@@ -476,11 +518,11 @@ async fn register_ducklake(
         }
     }
 
-    let catalog_esc = catalog_uri.replace('\'', "''");
+    let catalog_esc = resolve_local(workspace_dir, catalog_uri).replace('\'', "''");
     let name = &def.name;
     let attach = match def.config.get("data_path").and_then(|v| v.as_str()) {
         Some(data_path) => {
-            let dp_esc = data_path.replace('\'', "''");
+            let dp_esc = resolve_local(workspace_dir, data_path).replace('\'', "''");
             format!("ATTACH 'ducklake:{catalog_esc}' AS \"{name}\" (DATA_PATH '{dp_esc}')")
         }
         None => format!("ATTACH 'ducklake:{catalog_esc}' AS \"{name}\""),
@@ -504,6 +546,7 @@ async fn register_object_store(
     def: &SourceDef,
     pool: &Arc<DuckDbPool>,
     catalog: &dyn CatalogProvider,
+    workspace_dir: &std::path::Path,
 ) -> Result<RegisterReport, RegisterError> {
     pool.ensure_extension("httpfs")
         .await
@@ -518,12 +561,14 @@ async fn register_object_store(
     let schema = ensure_memory_schema(catalog, &def.name)?;
     let mut summaries = Vec::with_capacity(def.tables.len());
     for table in &def.tables {
-        let url = table_location(&table.config).ok_or_else(|| {
-            RegisterError::Other(format!(
-                "table `{}` is missing `path`/`location`",
-                table.name
-            ))
-        })?;
+        let url = table_location(&table.config)
+            .map(|loc| resolve_local(workspace_dir, &loc))
+            .ok_or_else(|| {
+                RegisterError::Other(format!(
+                    "table `{}` is missing `path`/`location`",
+                    table.name
+                ))
+            })?;
         let url_esc = url.replace('\'', "''");
         let format = table
             .config
@@ -860,6 +905,20 @@ mod tests {
     fn no_storage_block_no_secret() {
         let def = file_def(serde_json::json!({ "path": "./x/*.parquet" }));
         assert!(build_secret_sql(&def).is_none());
+    }
+
+    #[test]
+    fn resolve_local_rules() {
+        let ws = std::path::Path::new("/work/space");
+        // Relative local path → joined to the workspace dir.
+        assert_eq!(resolve_local(ws, "./a.duckdb"), "/work/space/./a.duckdb");
+        // Absolute path → unchanged.
+        assert_eq!(resolve_local(ws, "/data/a.duckdb"), "/data/a.duckdb");
+        // Remote URL → unchanged.
+        assert_eq!(
+            resolve_local(ws, "s3://bucket/x.parquet"),
+            "s3://bucket/x.parquet"
+        );
     }
 
     #[test]
