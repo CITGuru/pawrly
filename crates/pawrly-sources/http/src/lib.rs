@@ -15,6 +15,7 @@ mod typed;
 pub use raw::RawHttpTableProvider;
 pub use register::{HttpBuildError, HttpSourceReport, HttpTableSummary, register_http_source};
 pub use source::{
-    AuthSpec, HttpSource, HttpTableSpec, PaginationConfig, ParamSpec, RateLimitConfig, RetryConfig,
+    AuthHeader, AuthSpec, HttpSource, HttpTableSpec, PaginationConfig, ParamSpec, QueryCredential,
+    RateLimitConfig, RetryConfig,
 };
 pub use typed::HttpTableProvider;

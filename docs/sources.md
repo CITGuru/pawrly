@@ -1,6 +1,6 @@
 # Sources
 
-A **source** is a named connection to some external system or set of files, exposed to the query engine as one or more tables. Every table is addressed in SQL as `<source>.<table>` — the source `name` is the schema prefix. Sources are declared under `sources:` in your workspace `pawrly.yaml` (see [Configuration](./config.md), and `[examples/pawrly.yaml](../examples/pawrly.yaml)` for a worked file).
+A **source** is a named connection to some external system or set of files, exposed to the query engine as one or more tables. Every table is addressed in SQL as `<source>.<table>` — the source `name` is the schema prefix. Sources are declared under `sources:` in your workspace `pawrly.yaml` (see [Configuration](./config.md), and the [examples/pawrly.yaml](../examples/pawrly.yaml) worked file).
 
 ```yaml
 sources:
@@ -32,8 +32,8 @@ Every entry under `sources:` is one source. These are the top-level fields:
 | `description`      | string  | no       | —               | Free text; surfaced in `pawrly source list`.                                                         |
 | `config`           | mapping | no¹      | `{}`            | Per-kind settings (connection, auth, paths, storage, …). Shape depends on `kind`.                    |
 | `tables`           | list    | no¹      | `[]`            | Explicit per-table declarations. Required for some kinds, optional for others (which auto-discover). |
-| `cache`            | mapping | no       | `mode: none`    | Per-source caching. See `[cache](#the-cache-block)`.                                                 |
-| `safety`           | mapping | no       | permissive      | Per-source guard rails. See `[safety](#the-safety-block)`.                                           |
+| `cache`            | mapping | no       | `mode: none`    | Per-source caching. See [the cache block](#the-cache-block).                                          |
+| `safety`           | mapping | no       | permissive      | Per-source guard rails. See [the safety block](#the-safety-block).                                    |
 | `raw_table`        | bool    | no       | `false`         | `http` only: register a raw-HTTP escape-hatch table named after the source.                          |
 | `raw_table_safety` | mapping | no       | filter-required | Safety policy for the raw table when `raw_table: true`.                                              |
 
@@ -281,8 +281,6 @@ With no `auth` block, the ambient credential chain is used.
 
 > Remote files are read by DuckDB's `read_parquet`/`read_csv`/`read_json`, so the local-file `csv`/`json`/`partition_cols`/`schema` options do **not** apply to object-store tables — DuckDB infers the schema and reader from the URL and `format`.
 
-
-
 ### Http Backend (`http)` — REST & GraphQL APIs
 
 Turns an HTTP API into SQL tables: you declare each table's request and how to shape its JSON response into rows. Source-level `config` carries `base_url` (**required**), auth, retries, and rate limiting; each `tables:` entry maps one request shape to rows.
@@ -318,29 +316,55 @@ WHERE owner = 'withpawrly' AND repo = 'pawrly' AND state = 'open' LIMIT 20
 
 #### Authentication
 
-Set source-level auth either with a shorthand or the full `auth:` block (the block wins if both are present):
+Set source-level auth with the `config.token` shorthand or a full `auth:` block (the block wins if both are present). The block is tagged by `type` — `header`, `basic`, `custom`, or `oauth2`:
 
-- **Shorthand** — `config.token` or `config.api_key` → sent as `Authorization: Bearer <value>`.
-- `**auth:` block**, tagged by `type`:
-
-
-| `type`    | Fields                                                                  | Behaviour                                                                                                                                  |
-| --------- | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| `bearer`  | `token`                                                                 | `Authorization: Bearer <token>`.                                                                                                           |
-| `api_key` | `header` (default `X-API-Key`), `value`                                 | Sends `value` in the named header.                                                                                                         |
-| `basic`   | `username`, `password`                                                  | HTTP Basic.                                                                                                                                |
-| `oauth2`  | `token_url`, `client_id`, `client_secret`, optional `scope`, `audience` | Client-credentials grant: a token is fetched on first use, cached, re-fetched before expiry, then sent as `Authorization: Bearer <token>`. |
-
+`header` — attach one or more headers (bearer tokens *and* API keys live here). `headers` is a list; each entry gives a `name` plus exactly one of `bearer` (sent as `Bearer <value>`) or `value` (sent verbatim). Multiple entries cover APIs that need several auth headers at once (e.g. Datadog).
 
 ```yaml
     config:
       base_url: https://api.example.com
+      auth:
+        type: header
+        headers:
+          - { name: Authorization, bearer: "${secret:GITHUB_TOKEN}" }   # → "Bearer …"
+          - { name: X-Api-Key,     value: "${secret:API_KEY}" }         # literal
+```
+
+`basic` — base64-encodes `username:password` into `Authorization: Basic …`.
+
+```yaml
+      auth:
+        type: basic
+        username: "${secret:API_USER}"
+        password: "${secret:API_PASSWORD}"
+```
+
+`custom` — credentials carried in the query string (the many `?api_key=…` APIs). `query` is a list of `{ name, value }` appended to every request.
+
+```yaml
+      auth:
+        type: custom
+        query:
+          - { name: api_key, value: "${secret:API_KEY}" }
+```
+
+`oauth2` — client-credentials grant: a token is fetched on first use, cached, re-fetched before expiry, then sent as `Authorization: Bearer <token>`. Fields: `token_url`, `client_id`, `client_secret`, optional `scope`, `audience`.
+
+```yaml
       auth:
         type: oauth2
         token_url:     https://login.example.com/oauth/token
         client_id:     ${secret:CLIENT_ID}
         client_secret: ${secret:CLIENT_SECRET}
         scope:         read:data       # optional
+```
+
+**Shorthand** — `config.token` is the dead-simple single-bearer case, equivalent to a `header` block with one `Authorization: Bearer <token>` entry:
+
+```yaml
+    config:
+      base_url: https://api.github.com
+      token: ${secret:GITHUB_TOKEN}
 ```
 
 #### Request
@@ -373,8 +397,8 @@ Each table's request is built from these flat fields:
 
 `params` declares the columns a table accepts as filters. Each is `{ name, type (default varchar), required (default false), default, accepts, emit }`:
 
-- `**required: true**` — the param must appear as a SQL filter, or the scan fails with a clear error (rather than fetching an unbounded result).
-- `**default**` — value used when the user doesn't filter on it.
+- `required: true` — the param must appear as a SQL filter, or the scan fails with a clear error (rather than fetching an unbounded result).
+- `default` — value used when the user doesn't filter on it.
 - **Equality** pushes down by default: `WHERE state = 'open'` → `?state=open`.
 - **Comparisons** — to push `>=` / `<=` etc., list them in `accepts` and map each to a query-parameter name in `emit`:
 
@@ -391,12 +415,12 @@ A param can also be surfaced as an output column with `source: param` on a `resp
 
 `response` describes how to turn the JSON payload into rows:
 
-- `**path**` — JSONPath to the array of rows. `$` (the default) means the body *is* the array; `$.data` digs into a wrapper object.
-- `**schema`** — the columns to extract per row, each `{ name, type, source? }`:
-  - `**type*`* ∈ `varchar`/`string`/`text`, `bigint`/`int64`, `int`/`int32`, `double`, `float`, `bool`/`boolean`, `date`, `timestamp`, `timestamptz` (ISO-8601 / RFC 3339 strings are parsed), and `json` (a nested object/array kept as raw JSON text).
-  - `**source**` — defaults to the row's top-level field of the same name. Set `$.nested.field` to read a different path, `$` to capture the whole row element (usually into a `json` column), or `param` to inject a request parameter as a column.
-- `**allow_404_empty**` — treat a `404` as an empty result set instead of an error.
-- `**error**` — surface API failures as a clear scan error: `status` (a list of codes or matchers like `">=400"`, `"5xx"`, `"<500"`) and/or `path` (a JSONPath to an error message inside a `200`-with-error body).
+- `path` — JSONPath to the array of rows. `$` (the default) means the body *is* the array; `$.data` digs into a wrapper object.
+- `schema` — the columns to extract per row, each `{ name, type, source? }`:
+  - `type` ∈ `varchar`/`string`/`text`, `bigint`/`int64`, `int`/`int32`, `double`, `float`, `bool`/`boolean`, `date`, `timestamp`, `timestamptz` (ISO-8601 / RFC 3339 strings are parsed), and `json` (a nested object/array kept as raw JSON text).
+  - `source` — defaults to the row's top-level field of the same name. Set `$.nested.field` to read a different path, `$` to capture the whole row element (usually into a `json` column), or `param` to inject a request parameter as a column.
+- `allow_404_empty` — treat a `404` as an empty result set instead of an error.
+- `error` — surface API failures as a clear scan error: `status` (a list of codes or matchers like `">=400"`, `"5xx"`, `"<500"`) and/or `path` (a JSONPath to an error message inside a `200`-with-error body).
 
 ```yaml
         response:
@@ -431,7 +455,7 @@ Set `pagination` to keep fetching pages; absent means a single request. A SQL `L
 
 #### Rate limiting & retries
 
-`**rate_limit**` keeps requests within the API's quota:
+`rate_limit` keeps requests within the API's quota:
 
 
 | Field                 | Notes                                                                                                                                    |
@@ -442,7 +466,7 @@ Set `pagination` to keep fetching pages; absent means a single request. A SQL `L
 | `extra_statuses`      | Status codes besides `429`/`503` also treated as rate-limit signals (e.g. GitHub's secondary-limit `403`).                               |
 
 
-`**retry**` governs transient failures (transport errors, 5xx, 429, 503, and any `extra_statuses`): `max_retries` (default 3), `base_backoff_ms` (default 200, doubles each attempt), `max_backoff_ms` (default 5000). Backoff honours a `Retry-After` header when present.
+`retry` governs transient failures (transport errors, 5xx, 429, 503, and any `extra_statuses`): `max_retries` (default 3), `base_backoff_ms` (default 200, doubles each attempt), `max_backoff_ms` (default 5000). Backoff honours a `Retry-After` header when present.
 
 ```yaml
     config:
@@ -455,7 +479,7 @@ Set `pagination` to keep fetching pages; absent means a single request. A SQL `L
         max_retries: 5
 ```
 
-A runnable cache-over-API walkthrough lives at `[examples/cache-http/](../examples/cache-http/pawrly.yaml)`.
+A runnable cache-over-API walkthrough lives at [examples/cache-http/](../examples/cache-http/pawrly.yaml).
 
 ### `sqlite` — local SQLite databases
 
@@ -526,7 +550,7 @@ sources:
 
 ### `iceberg`, `delta` — table formats
 
-Each declared table maps to a DuckDB scan function over a table location. `**tables:` is required**, each with a `path` (or `location`).
+Each declared table maps to a DuckDB scan function over a table location. `tables:` is required, each with a `path` (or `location`).
 
 ```yaml
 sources:
@@ -562,7 +586,7 @@ Every source is a table in one DataFusion plan, so you can join across kinds in 
 SELECT u.email, COUNT(p.number) AS open_prs
 FROM oltp.users u
 JOIN gh.pulls p ON p.user = u.github_login
-WHERE p.owner = 'withpawrly' AND p.repo = 'pawrly' AND p.state = 'open'
+WHERE p.owner = 'pawrly' AND p.repo = 'pawrly' AND p.state = 'open'
 GROUP BY u.email
 ```
 

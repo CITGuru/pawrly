@@ -7,22 +7,29 @@ use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use reqwest::header::HeaderMap;
 use serde::{Deserialize, Serialize};
 
-/// Auth declaration. Supports bearer + api-key + basic + OAuth2 client-credentials.
+/// Auth declaration, tagged by `type`: `header` (tokens / API keys in headers),
+/// `basic` (HTTP Basic), `custom` (credentials in the query string), and
+/// `oauth2` (client-credentials token fetch).
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AuthSpec {
     #[default]
     None,
-    Bearer {
-        token: String,
-    },
-    ApiKey {
-        header: String,
-        value: String,
+    /// One or more headers attached to every request — bearer tokens and API
+    /// keys alike.
+    Header {
+        #[serde(default)]
+        headers: Vec<AuthHeader>,
     },
     Basic {
         username: String,
         password: String,
+    },
+    /// Credentials carried outside headers. Currently query parameters appended
+    /// to every request (`?api_key=…`); reserved for request signers later.
+    Custom {
+        #[serde(default)]
+        query: Vec<QueryCredential>,
     },
     /// OAuth2 client-credentials grant. A token is fetched on first use and
     /// re-fetched on expiry, then sent as `Authorization: Bearer <token>`.
@@ -35,6 +42,38 @@ pub enum AuthSpec {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         audience: Option<String>,
     },
+}
+
+/// One header in a `type: header` auth block. Provide exactly one of `bearer`
+/// (sent as `Bearer <bearer>`) or `value` (sent verbatim).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthHeader {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bearer: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<String>,
+}
+
+/// One query-string credential in a `type: custom` auth block.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QueryCredential {
+    pub name: String,
+    pub value: String,
+}
+
+impl AuthSpec {
+    /// A single bearer header on `Authorization` — the `config.token` shorthand.
+    #[must_use]
+    pub fn bearer(token: impl Into<String>) -> Self {
+        AuthSpec::Header {
+            headers: vec![AuthHeader {
+                name: "Authorization".into(),
+                bearer: Some(token.into()),
+                value: None,
+            }],
+        }
+    }
 }
 
 /// A cached OAuth2 access token with its expiry.
@@ -389,9 +428,25 @@ impl HttpSource {
     ) -> Result<reqwest::RequestBuilder, String> {
         Ok(match &self.auth {
             AuthSpec::None => req,
-            AuthSpec::Bearer { token } => req.bearer_auth(token),
-            AuthSpec::ApiKey { header, value } => req.header(header, value),
+            AuthSpec::Header { headers } => {
+                let mut req = req;
+                for h in headers {
+                    match (&h.bearer, &h.value) {
+                        (Some(b), _) => req = req.header(&h.name, format!("Bearer {b}")),
+                        (None, Some(v)) => req = req.header(&h.name, v),
+                        (None, None) => {}
+                    }
+                }
+                req
+            }
             AuthSpec::Basic { username, password } => req.basic_auth(username, Some(password)),
+            AuthSpec::Custom { query } => {
+                let pairs: Vec<(&str, &str)> = query
+                    .iter()
+                    .map(|q| (q.name.as_str(), q.value.as_str()))
+                    .collect();
+                req.query(&pairs)
+            }
             AuthSpec::Oauth2 { .. } => req.bearer_auth(self.oauth_bearer().await?),
         })
     }
