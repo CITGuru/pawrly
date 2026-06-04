@@ -1,5 +1,8 @@
 # Pawrly workspace config.
 # yaml-language-server: $schema=../schemas/pawrly.schema.json
+#
+# Kitchen-sink: one source of every kind. Two foundational backends — `file`
+# and `http` — plus the first-class database / lakehouse builtins.
 
 version: 1
 name: kitchen-sink
@@ -25,32 +28,71 @@ secrets:
     service: pawrly
 
 sources:
-  # ----- Local files (csv/json/parquet/excel) --------------------------------
+  # ----- Local files (parquet/csv/json) --------------------------------------
   - name: data
     kind: file
     config:
       path: ./data/*.parquet
 
-  # ----- HTTP / bundled GitHub -----------------------------------------------
-  - name: gh
-    kind: github
+  # ----- Object storage, under `file` via a `storage:` block -----------------
+  #       `type: s3` also covers S3-compatible stores (set `endpoint`).
+  - name: lake
+    kind: file
     config:
+      storage:
+        type: s3                  # s3 | gcs | azure
+        region: us-east-1
+        auth:
+          type: access_key        # access_key | credential_chain
+          access_key_id: ${secret:AWS_KEY_ID}
+          secret_access_key: ${secret:AWS_SECRET}
+          # endpoint: ${env:AWS_ENDPOINT}   # S3-compatible stores
+    tables:
+      - name: events
+        path: s3://example-bucket/events/*.parquet
+
+  # ----- HTTP (define your own typed tables; raw escape hatch optional) ------
+  - name: gh
+    kind: http
+    config:
+      base_url: https://api.github.com
       token: ${secret:GITHUB_TOKEN}
     raw_table: true
+    tables:
+      - name: pulls
+        endpoint: /repos/{owner}/{repo}/pulls
+        params:
+          - { name: owner, required: true }
+          - { name: repo, required: true }
+          - { name: state, required: false, default: open }
+        response:
+          path: $
+          schema:
+            - { name: number, type: bigint }
+            - { name: title, type: varchar }
+            - { name: state, type: varchar }
 
-  # ----- HTTP / bundled Linear -----------------------------------------------
+  # ----- HTTP (another API) --------------------------------------------------
   - name: linear
-    kind: linear
+    kind: http
     config:
-      api_key: ${secret:LINEAR_API_KEY}
+      base_url: https://api.linear.app
+      token: ${secret:LINEAR_API_KEY}
+    raw_table: true
 
-  # ----- DuckDB-backed Postgres ----------------------------------------------
+  # ----- Postgres (DuckDB ATTACH, read-only) ---------------------------------
   - name: oltp
     kind: postgres
     config:
       dsn: ${secret:PG_DSN}
 
-  # ----- DuckDB-backed Snowflake ---------------------------------------------
+  # ----- Local DuckDB database file ------------------------------------------
+  - name: local_db
+    kind: duckdb
+    config:
+      path: ./analytics.duckdb
+
+  # ----- Snowflake (DuckDB ATTACH) -------------------------------------------
   - name: warehouse
     kind: snowflake
     config:
@@ -63,10 +105,16 @@ sources:
       mode: refresh
       every: 1h
 
-  # ----- AI / OpenAI-compatible ----------------------------------------------
-  - name: models
-    kind: ai
+  # ----- Iceberg table format (DuckDB iceberg_scan) --------------------------
+  - name: lakehouse
+    kind: iceberg
+    tables:
+      - name: orders
+        path: ./warehouse/orders
+
+  # ----- DuckLake lakehouse catalog ------------------------------------------
+  - name: dl
+    kind: ducklake
     config:
-      provider: openai
-      api_key: ${secret:OPENAI_API_KEY}
-      default_model: gpt-5
+      catalog: ./metadata.ducklake
+      data_path: ./lake_data

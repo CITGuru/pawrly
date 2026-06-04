@@ -63,6 +63,15 @@ fn shipped_multi_file_example_loads() {
     let wh = cfg.sources.iter().find(|s| s.name == "warehouse").unwrap();
     assert_eq!(wh.config["schema"].as_str(), Some("STAGING"));
     assert_eq!(wh.config["database"].as_str(), Some("ANALYTICS"));
+
+    // The model co-located in `github.yaml` was spliced into the semantic layer.
+    let sem = cfg
+        .semantic
+        .expect("co-located model created a semantic block");
+    assert!(
+        sem.models.iter().any(|m| m.name == "gh_issues"),
+        "co-located model missing from semantic.models"
+    );
 }
 
 #[test]
@@ -104,17 +113,282 @@ fn include_glob_concatenates_in_lexicographic_order() {
     write(
         dir.path(),
         "sources/zeta.yaml",
-        "sources:\n  - name: zeta\n    kind: github\n",
+        "sources:\n  - name: zeta\n    kind: http\n",
     );
     write(
         dir.path(),
         "sources/alpha.yaml",
-        "sources:\n  - name: alpha\n    kind: github\n",
+        "sources:\n  - name: alpha\n    kind: http\n",
     );
 
     let cfg = load(&dir.path().join("pawrly.yaml"), &StaticStore::new()).unwrap();
     let names: Vec<&str> = cfg.sources.iter().map(|s| s.name.as_str()).collect();
     assert_eq!(names, ["alpha", "zeta"]);
+}
+
+#[test]
+fn include_accepts_bare_single_source() {
+    let dir = tempfile::tempdir().unwrap();
+    write(
+        dir.path(),
+        "pawrly.yaml",
+        "version: 1\ninclude:\n  - ./sources/*.yaml\n",
+    );
+    // No `sources:` wrapper — the file *is* the SourceDef, recognised by `kind:`.
+    write(
+        dir.path(),
+        "sources/github.yaml",
+        "name: gh\nkind: http\nconfig:\n  token: ${secret:TOKEN}\nraw_table: true\n",
+    );
+
+    let secrets = StaticStore::new();
+    secrets.insert("TOKEN", "ghp_x");
+    let cfg = load(&dir.path().join("pawrly.yaml"), &secrets)
+        .unwrap_or_else(|e| panic!("load failed: {e}"));
+    let gh = cfg
+        .sources
+        .iter()
+        .find(|s| s.name == "gh")
+        .expect("bare single source spliced in");
+    assert_eq!(gh.config["token"].as_str(), Some("ghp_x"));
+    assert!(gh.raw_table);
+}
+
+#[test]
+fn include_mixes_bare_source_and_fragment() {
+    let dir = tempfile::tempdir().unwrap();
+    write(
+        dir.path(),
+        "pawrly.yaml",
+        "version: 1\ninclude:\n  - ./sources/*.yaml\n",
+    );
+    // Bare single-source form.
+    write(dir.path(), "sources/github.yaml", "name: gh\nkind: http\n");
+    // Fragment (`sources:` list) form — both coexist behind one glob.
+    write(
+        dir.path(),
+        "sources/team.yaml",
+        "sources:\n  - name: lin\n    kind: http\n  - name: gh2\n    kind: http\n",
+    );
+
+    let cfg = load(&dir.path().join("pawrly.yaml"), &StaticStore::new()).unwrap();
+    let names: Vec<&str> = cfg.sources.iter().map(|s| s.name.as_str()).collect();
+    for expected in ["gh", "lin", "gh2"] {
+        assert!(
+            names.contains(&expected),
+            "missing `{expected}` in {names:?}"
+        );
+    }
+}
+
+#[test]
+fn bare_single_source_rejects_root_only_keys() {
+    let dir = tempfile::tempdir().unwrap();
+    write(
+        dir.path(),
+        "pawrly.yaml",
+        "version: 1\ninclude:\n  - ./frag.yaml\n",
+    );
+    // A bare source's top-level `name` is its own, but `defaults` stays root-only.
+    write(
+        dir.path(),
+        "frag.yaml",
+        "name: gh\nkind: http\ndefaults:\n  http:\n    timeout: 10s\n",
+    );
+
+    let err = load(&dir.path().join("pawrly.yaml"), &StaticStore::new()).unwrap_err();
+    match err {
+        ConfigError::Source(_, msg) => {
+            assert!(msg.contains("defaults"), "msg: {msg}");
+            assert!(
+                msg.contains("only allowed in the root config"),
+                "msg: {msg}"
+            );
+        }
+        other => panic!("expected Source error, got {other:?}"),
+    }
+}
+
+// ---- include:d fragments carrying their own `models:` (file-level co-location) ----
+
+/// A single model list-entry for a top-level `models:` block, indented for a
+/// 2-space `models:` list.
+fn model_entry(name: &str, source: &str) -> String {
+    format!(
+        "  - name: {name}\n    source: {source}\n    \
+         dimensions:\n      - {{ name: status, expr: status, type: string }}\n    \
+         measures:\n      - {{ name: revenue, agg: sum, expr: total }}\n"
+    )
+}
+
+#[test]
+fn include_fragment_carries_models() {
+    let dir = tempfile::tempdir().unwrap();
+    write(
+        dir.path(),
+        "pawrly.yaml",
+        "version: 1\ninclude:\n  - ./sources/*.yaml\n",
+    );
+    // A fragment carrying both its source and the model defined over it.
+    write(
+        dir.path(),
+        "sources/github.yaml",
+        &format!(
+            "sources:\n  - name: gh\n    kind: http\nmodels:\n{}",
+            model_entry("gh_issues", "gh.issues")
+        ),
+    );
+
+    let cfg = load(&dir.path().join("pawrly.yaml"), &StaticStore::new())
+        .unwrap_or_else(|e| panic!("load failed: {e}"));
+    let sem = cfg
+        .semantic
+        .expect("fragment models created a semantic block");
+    assert!(
+        sem.models.iter().any(|m| m.name == "gh_issues"),
+        "model not spliced into semantic.models"
+    );
+}
+
+#[test]
+fn bare_single_source_carries_models() {
+    // The headline locality story: one file = a source *and* its models.
+    let dir = tempfile::tempdir().unwrap();
+    write(
+        dir.path(),
+        "pawrly.yaml",
+        "version: 1\ninclude:\n  - ./sources/*.yaml\n",
+    );
+    write(
+        dir.path(),
+        "sources/github.yaml",
+        &format!(
+            "name: gh\nkind: http\nconfig:\n  token: x\nmodels:\n{}",
+            model_entry("gh_issues", "gh.issues")
+        ),
+    );
+
+    let cfg = load(&dir.path().join("pawrly.yaml"), &StaticStore::new())
+        .unwrap_or_else(|e| panic!("load failed: {e}"));
+    // The source registered with its config intact (no `models` leakage)...
+    let gh = cfg
+        .sources
+        .iter()
+        .find(|s| s.name == "gh")
+        .expect("source gh");
+    assert_eq!(gh.config["token"].as_str(), Some("x"));
+    // ...and the model landed in the semantic layer.
+    let sem = cfg.semantic.expect("semantic block");
+    assert!(sem.models.iter().any(|m| m.name == "gh_issues"));
+}
+
+#[test]
+fn fragment_models_relate_across_source_files() {
+    let dir = tempfile::tempdir().unwrap();
+    write(
+        dir.path(),
+        "pawrly.yaml",
+        "version: 1\ninclude:\n  - ./sources/*.yaml\n",
+    );
+    // github.yaml owns the `gh` source and a model that relates to a model
+    // defined in a *different* source file — the relationship resolves against
+    // the merged model graph.
+    write(
+        dir.path(),
+        "sources/github.yaml",
+        "name: gh\nkind: http\nmodels:\n  - name: gh_issues\n    source: gh.issues\n    \
+         dimensions:\n      - { name: status, expr: status, type: string }\n    \
+         measures:\n      - { name: revenue, agg: sum, expr: total }\n    \
+         relationships:\n      - name: ticket\n        kind: many_to_one\n        \
+         target: lin_tickets\n        on: this.ticket_id = lin_tickets.id\n",
+    );
+    write(
+        dir.path(),
+        "sources/linear.yaml",
+        &format!(
+            "name: lin\nkind: http\nmodels:\n{}",
+            model_entry("lin_tickets", "lin.tickets")
+        ),
+    );
+
+    let cfg = load(&dir.path().join("pawrly.yaml"), &StaticStore::new())
+        .unwrap_or_else(|e| panic!("cross-source relationship failed: {e}"));
+    let sem = cfg.semantic.expect("semantic block");
+    let names: Vec<&str> = sem.models.iter().map(|m| m.name.as_str()).collect();
+    assert!(
+        names.contains(&"gh_issues") && names.contains(&"lin_tickets"),
+        "{names:?}"
+    );
+    let issues = sem.models.iter().find(|m| m.name == "gh_issues").unwrap();
+    assert!(
+        issues
+            .relationships
+            .iter()
+            .any(|r| r.target_model == "lin_tickets"),
+        "cross-file relationship did not resolve"
+    );
+}
+
+#[test]
+fn fragment_model_duplicate_across_files_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    write(
+        dir.path(),
+        "pawrly.yaml",
+        "version: 1\ninclude:\n  - ./sources/*.yaml\n",
+    );
+    write(
+        dir.path(),
+        "sources/a.yaml",
+        &format!(
+            "sources:\n  - name: gh\n    kind: http\nmodels:\n{}",
+            model_entry("dup", "gh.x")
+        ),
+    );
+    write(
+        dir.path(),
+        "sources/b.yaml",
+        &format!(
+            "sources:\n  - name: lin\n    kind: http\nmodels:\n{}",
+            model_entry("dup", "lin.y")
+        ),
+    );
+
+    let err = load(&dir.path().join("pawrly.yaml"), &StaticStore::new()).unwrap_err();
+    match err {
+        ConfigError::SemanticInvalid { model, msg } => {
+            assert_eq!(model, "dup");
+            assert!(msg.contains("a.yaml"), "msg: {msg}");
+            assert!(msg.contains("b.yaml"), "msg: {msg}");
+        }
+        other => panic!("expected SemanticInvalid, got {other:?}"),
+    }
+}
+
+#[test]
+fn fragment_model_validated_against_merged_sources() {
+    // A fragment model referencing a source that isn't configured anywhere must
+    // fail, proving fragment models go through the same post-merge validation.
+    let dir = tempfile::tempdir().unwrap();
+    write(
+        dir.path(),
+        "pawrly.yaml",
+        "version: 1\ninclude:\n  - ./sources/*.yaml\n",
+    );
+    write(
+        dir.path(),
+        "sources/github.yaml",
+        &format!(
+            "name: gh\nkind: http\nmodels:\n{}",
+            model_entry("orphan", "nope.table")
+        ),
+    );
+
+    let err = load(&dir.path().join("pawrly.yaml"), &StaticStore::new()).unwrap_err();
+    assert!(
+        matches!(&err, ConfigError::SemanticInvalid { msg, .. } if msg.contains("unknown source")),
+        "got {err:?}"
+    );
 }
 
 #[test]
@@ -226,12 +500,12 @@ fn from_target_with_name_or_kind_rejected() {
     write(
         dir.path(),
         "body.yaml",
-        "name: sneaky\nkind: github\nconfig:\n  token: x\n",
+        "name: sneaky\nkind: http\nconfig:\n  token: x\n",
     );
     write(
         dir.path(),
         "pawrly.yaml",
-        "version: 1\nsources:\n  - name: gh\n    kind: github\n    from: ./body.yaml\n",
+        "version: 1\nsources:\n  - name: gh\n    kind: http\n    from: ./body.yaml\n",
     );
 
     let err = load(&dir.path().join("pawrly.yaml"), &StaticStore::new()).unwrap_err();
@@ -251,7 +525,7 @@ fn from_is_not_transitive() {
     write(
         dir.path(),
         "pawrly.yaml",
-        "version: 1\nsources:\n  - name: gh\n    kind: github\n    from: ./body.yaml\n",
+        "version: 1\nsources:\n  - name: gh\n    kind: http\n    from: ./body.yaml\n",
     );
 
     let err = load(&dir.path().join("pawrly.yaml"), &StaticStore::new()).unwrap_err();
@@ -288,12 +562,12 @@ fn duplicate_source_names_across_files_name_both_files() {
     write(
         dir.path(),
         "one.yaml",
-        "sources:\n  - name: dup\n    kind: github\n",
+        "sources:\n  - name: dup\n    kind: http\n",
     );
     write(
         dir.path(),
         "two.yaml",
-        "sources:\n  - name: dup\n    kind: linear\n",
+        "sources:\n  - name: dup\n    kind: http\n",
     );
 
     let err = load(&dir.path().join("pawrly.yaml"), &StaticStore::new()).unwrap_err();
@@ -319,7 +593,7 @@ fn from_in_included_file_resolves_against_that_files_dir() {
     write(
         dir.path(),
         "sub/frag.yaml",
-        "sources:\n  - name: gh\n    kind: github\n    from: ./body.yaml\n",
+        "sources:\n  - name: gh\n    kind: http\n    from: ./body.yaml\n",
     );
     write(
         dir.path(),
@@ -343,7 +617,7 @@ fn secrets_resolve_in_fragments() {
     write(
         dir.path(),
         "frag.yaml",
-        "sources:\n  - name: gh\n    kind: github\n    config:\n      token: ${secret:TOKEN}\n",
+        "sources:\n  - name: gh\n    kind: http\n    config:\n      token: ${secret:TOKEN}\n",
     );
 
     let secrets = StaticStore::new();
@@ -359,12 +633,12 @@ fn assemble_config_reports_source_origins() {
     write(
         dir.path(),
         "pawrly.yaml",
-        "version: 1\ninclude:\n  - ./frag.yaml\nsources:\n  - name: inline\n    kind: github\n",
+        "version: 1\ninclude:\n  - ./frag.yaml\nsources:\n  - name: inline\n    kind: http\n",
     );
     write(
         dir.path(),
         "frag.yaml",
-        "sources:\n  - name: included\n    kind: linear\n",
+        "sources:\n  - name: included\n    kind: http\n",
     );
 
     let (cfg, origins) = pawrly_config::assemble_config(&dir.path().join("pawrly.yaml")).unwrap();
@@ -385,7 +659,7 @@ fn assemble_config_preserves_secret_refs() {
     write(
         dir.path(),
         "pawrly.yaml",
-        "version: 1\nsources:\n  - name: gh\n    kind: github\n    config:\n      token: ${secret:TOKEN}\n",
+        "version: 1\nsources:\n  - name: gh\n    kind: http\n    config:\n      token: ${secret:TOKEN}\n",
     );
 
     let (cfg, _) = pawrly_config::assemble_config(&dir.path().join("pawrly.yaml")).unwrap();
@@ -556,7 +830,7 @@ fn semantic_include_file_with_sources_rejected() {
     write(
         dir.path(),
         "models/sneaky.yaml",
-        "sources:\n  - name: evil\n    kind: github\nmodels: []\n",
+        "sources:\n  - name: evil\n    kind: http\nmodels: []\n",
     );
 
     let err = load(&dir.path().join("pawrly.yaml"), &StaticStore::new()).unwrap_err();

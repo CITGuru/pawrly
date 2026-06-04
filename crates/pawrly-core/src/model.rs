@@ -8,36 +8,26 @@ use serde::{Deserialize, Serialize};
 
 /// Every supported `kind:` for a source declaration.
 ///
-/// This list is closed: adding a new kind requires a code change so the
-/// router can dispatch it. Kind aliases are matched case-insensitively at
-/// parse time but the canonical form is lowercase.
+/// Two foundational backends — `file` (local files, or object storage via a
+/// `storage:` block) and `http` (any REST/GraphQL API) — plus a small set of
+/// first-class database / lakehouse builtins. The list is closed: adding a new
+/// kind requires a code change so the router can dispatch it. Kind aliases are
+/// matched case-insensitively at parse time but the canonical form is lowercase.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum SourceKind {
-    // HTTP-shaped
+    // Foundational backends
     Http,
-    Github,
-    Linear,
-    Stripe,
-    Sentry,
-    Datadog,
-    Slack,
-    Notion,
-    // AI
-    Ai,
-    // DuckDB-backed
     File,
+    // First-class builtins (DuckDB-backed)
+    Sqlite,
     Postgres,
     Mysql,
-    Sqlite,
+    Duckdb,
     Snowflake,
-    Bigquery,
-    Redshift,
     Iceberg,
+    Ducklake,
     Delta,
-    S3,
-    Gcs,
-    Azure,
 }
 
 impl SourceKind {
@@ -46,26 +36,15 @@ impl SourceKind {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Http => "http",
-            Self::Github => "github",
-            Self::Linear => "linear",
-            Self::Stripe => "stripe",
-            Self::Sentry => "sentry",
-            Self::Datadog => "datadog",
-            Self::Slack => "slack",
-            Self::Notion => "notion",
-            Self::Ai => "ai",
             Self::File => "file",
+            Self::Sqlite => "sqlite",
             Self::Postgres => "postgres",
             Self::Mysql => "mysql",
-            Self::Sqlite => "sqlite",
+            Self::Duckdb => "duckdb",
             Self::Snowflake => "snowflake",
-            Self::Bigquery => "bigquery",
-            Self::Redshift => "redshift",
             Self::Iceberg => "iceberg",
+            Self::Ducklake => "ducklake",
             Self::Delta => "delta",
-            Self::S3 => "s3",
-            Self::Gcs => "gcs",
-            Self::Azure => "azure",
         }
     }
 
@@ -73,36 +52,25 @@ impl SourceKind {
     /// pure-Rust DataFusion `TableProvider`.
     #[must_use]
     pub fn is_http_shaped(&self) -> bool {
-        matches!(
-            self,
-            Self::Http
-                | Self::Github
-                | Self::Linear
-                | Self::Stripe
-                | Self::Sentry
-                | Self::Datadog
-                | Self::Slack
-                | Self::Notion
-        )
+        matches!(self, Self::Http)
     }
 
-    /// True if this source kind is implemented through DuckDB extensions.
+    /// True if this source kind is implemented through the DuckDB pool (attach,
+    /// scan functions, or object-store reads). The `file` kind is DataFusion-
+    /// backed for local paths and DuckDB-backed only when a `storage:` block is
+    /// present, so that routing decision lives in the registry, not here.
     #[must_use]
     pub fn is_duckdb_backed(&self) -> bool {
         matches!(
             self,
-            Self::File
+            Self::Sqlite
                 | Self::Postgres
                 | Self::Mysql
-                | Self::Sqlite
+                | Self::Duckdb
                 | Self::Snowflake
-                | Self::Bigquery
-                | Self::Redshift
                 | Self::Iceberg
+                | Self::Ducklake
                 | Self::Delta
-                | Self::S3
-                | Self::Gcs
-                | Self::Azure
         )
     }
 }
@@ -120,26 +88,15 @@ impl std::str::FromStr for SourceKind {
         let lowered = s.to_ascii_lowercase();
         match lowered.as_str() {
             "http" => Ok(Self::Http),
-            "github" => Ok(Self::Github),
-            "linear" => Ok(Self::Linear),
-            "stripe" => Ok(Self::Stripe),
-            "sentry" => Ok(Self::Sentry),
-            "datadog" => Ok(Self::Datadog),
-            "slack" => Ok(Self::Slack),
-            "notion" => Ok(Self::Notion),
-            "ai" => Ok(Self::Ai),
             "file" => Ok(Self::File),
+            "sqlite" => Ok(Self::Sqlite),
             "postgres" | "pg" | "postgresql" => Ok(Self::Postgres),
             "mysql" => Ok(Self::Mysql),
-            "sqlite" => Ok(Self::Sqlite),
+            "duckdb" => Ok(Self::Duckdb),
             "snowflake" => Ok(Self::Snowflake),
-            "bigquery" | "bq" => Ok(Self::Bigquery),
-            "redshift" => Ok(Self::Redshift),
             "iceberg" => Ok(Self::Iceberg),
+            "ducklake" => Ok(Self::Ducklake),
             "delta" | "deltalake" => Ok(Self::Delta),
-            "s3" => Ok(Self::S3),
-            "gcs" | "gs" => Ok(Self::Gcs),
-            "azure" | "abfs" => Ok(Self::Azure),
             other => Err(format!("unknown source kind `{other}`")),
         }
     }
@@ -153,11 +110,14 @@ mod tests {
     fn round_trip() {
         for kind in [
             SourceKind::Http,
-            SourceKind::Github,
+            SourceKind::File,
+            SourceKind::Sqlite,
+            SourceKind::Postgres,
+            SourceKind::Duckdb,
             SourceKind::Snowflake,
             SourceKind::Iceberg,
-            SourceKind::Ai,
-            SourceKind::File,
+            SourceKind::Ducklake,
+            SourceKind::Delta,
         ] {
             let s = kind.as_str();
             let parsed: SourceKind = s.parse().unwrap();
@@ -169,16 +129,26 @@ mod tests {
     fn aliases_resolve() {
         let pg: SourceKind = "postgresql".parse().unwrap();
         assert_eq!(pg, SourceKind::Postgres);
-        let bq: SourceKind = "bq".parse().unwrap();
-        assert_eq!(bq, SourceKind::Bigquery);
+        let pg2: SourceKind = "pg".parse().unwrap();
+        assert_eq!(pg2, SourceKind::Postgres);
+        let delta: SourceKind = "deltalake".parse().unwrap();
+        assert_eq!(delta, SourceKind::Delta);
     }
 
     #[test]
     fn classification() {
-        assert!(SourceKind::Github.is_http_shaped());
+        assert!(SourceKind::Http.is_http_shaped());
+        assert!(!SourceKind::File.is_http_shaped());
         assert!(SourceKind::Snowflake.is_duckdb_backed());
-        assert!(!SourceKind::Ai.is_http_shaped());
-        assert!(!SourceKind::Ai.is_duckdb_backed());
+        assert!(SourceKind::Ducklake.is_duckdb_backed());
+        assert!(!SourceKind::Http.is_duckdb_backed());
+    }
+
+    #[test]
+    fn removed_kinds_error() {
+        for s in ["github", "linear", "ai", "s3", "gcs", "azure", "bigquery"] {
+            assert!(s.parse::<SourceKind>().is_err(), "{s} should be removed");
+        }
     }
 
     #[test]

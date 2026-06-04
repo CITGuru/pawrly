@@ -2,7 +2,7 @@
 # yaml-language-server: $schema=../../schemas/pawrly.schema.json
 #
 # Two CSV tables (orders, customers) auto-discovered from ./data/*.csv are
-# turned into two business models. See docs/internal/13-semantic.md for the full design.
+# turned into two business models. See docs/semantic.md for the full design.
 #
 # Try it (paths resolve relative to this file):
 #   pawrly --config examples/semantic/pawrly.yaml semantic list

@@ -1,5 +1,6 @@
-//! DuckDB-backed sources: postgres / mysql / snowflake (ATTACH databases),
-//! iceberg / delta (scan functions), and s3 / gcs / azure object stores.
+//! DuckDB-backed sources: postgres / mysql / snowflake / duckdb (ATTACH
+//! databases), iceberg / delta (scan functions), ducklake (DuckLake catalog),
+//! and object storage for remote `file` sources (`read_parquet`/csv/json).
 //!
 //! Every kind converges on a single piece of machinery: each table ends up as
 //! a DuckDB SQL relation — a FROM-clause snippet — that one
@@ -72,12 +73,16 @@ impl DuckDbTableProvider {
         limit: Option<usize>,
     ) -> String {
         let cols = match projection {
-            Some(p) if !p.is_empty() => p
+            // An empty projection (e.g. `COUNT(*)`) needs rows but no columns.
+            // SQL can't select zero columns, so select a constant and drop it in
+            // the stream (see `DuckDbScanStream::execute`).
+            Some(p) if p.is_empty() => "1".to_string(),
+            Some(p) => p
                 .iter()
                 .map(|i| format!("\"{}\"", self.schema.field(*i).name()))
                 .collect::<Vec<_>>()
                 .join(", "),
-            _ => "*".to_string(),
+            None => "*".to_string(),
         };
         let mut sql = format!("SELECT {cols} FROM {}", self.relation);
         let clauses: Vec<String> = filters
@@ -181,10 +186,15 @@ impl PartitionStream for DuckDbScanStream {
     }
 
     fn execute(&self, _ctx: Arc<TaskContext>) -> SendableRecordBatchStream {
-        use futures::stream::TryStreamExt;
+        use futures::stream::{StreamExt, TryStreamExt};
         let pool = self.pool.clone();
         let sql = self.sql.clone();
         let schema = self.schema.clone();
+        // An empty output schema (`COUNT(*)` etc.) means the SQL selected a
+        // throwaway constant column (`SELECT 1`); rewrite each batch to zero
+        // columns, preserving only the row count.
+        let empty = schema.fields().is_empty();
+        let out = schema.clone();
         // `fetch_arrow_stream` is async and may fail; wrap it in a one-shot
         // stream and `try_flatten` so the partition stream yields RecordBatch
         // results lazily. The future's `Ok` is a `SendableRecordBatchStream`
@@ -196,7 +206,19 @@ impl PartitionStream for DuckDbScanStream {
                 .await
                 .map_err(|e| DataFusionError::External(Box::new(e)))
         })
-        .try_flatten();
+        .try_flatten()
+        .map(move |res| {
+            res.and_then(|batch| {
+                if empty {
+                    let opts = arrow_array::RecordBatchOptions::new()
+                        .with_row_count(Some(batch.num_rows()));
+                    arrow_array::RecordBatch::try_new_with_options(out.clone(), vec![], &opts)
+                        .map_err(DataFusionError::from)
+                } else {
+                    Ok(batch)
+                }
+            })
+        });
         Box::pin(RecordBatchStreamAdapter::new(schema, inner))
     }
 }
@@ -297,42 +319,73 @@ fn string_column(batches: &[arrow_array::RecordBatch]) -> Vec<String> {
     out
 }
 
-/// Register a DuckDB-backed source. Dispatches on `def.kind` into one of three
-/// strategies: ATTACH databases, scan functions, or object stores.
+/// Register a DuckDB-backed source. Dispatches on `def.kind` into one of four
+/// strategies: ATTACH databases, lakehouse scan functions, DuckLake catalogs,
+/// or object stores (remote `file`).
 pub async fn register_duckdb_source(
     def: &SourceDef,
     pool: &Arc<DuckDbPool>,
     catalog: &dyn CatalogProvider,
+    workspace_dir: &std::path::Path,
 ) -> Result<RegisterReport, RegisterError> {
     match def.kind {
-        SourceKind::Postgres | SourceKind::Mysql | SourceKind::Snowflake => {
-            register_attach(def, pool, catalog).await
+        SourceKind::Postgres | SourceKind::Mysql | SourceKind::Snowflake | SourceKind::Duckdb => {
+            register_attach(def, pool, catalog, workspace_dir).await
         }
-        SourceKind::Iceberg | SourceKind::Delta => register_scan(def, pool, catalog).await,
-        SourceKind::S3 | SourceKind::Gcs | SourceKind::Azure => {
-            register_object_store(def, pool, catalog).await
+        SourceKind::Iceberg | SourceKind::Delta => {
+            register_scan(def, pool, catalog, workspace_dir).await
         }
+        SourceKind::Ducklake => register_ducklake(def, pool, catalog, workspace_dir).await,
+        SourceKind::File => register_object_store(def, pool, catalog, workspace_dir).await,
         other => Err(RegisterError::Other(format!(
             "register_duckdb_source called for unsupported kind `{other}`"
         ))),
     }
 }
 
-/// ATTACH a foreign database (postgres / mysql / snowflake) and expose its
-/// tables lazily via a [`DuckDbSchemaProvider`].
+/// Resolve a local path against the workspace directory. Remote URLs (`s3://…`)
+/// and absolute paths are returned unchanged; relative local paths are joined to
+/// `workspace_dir` so they resolve against the config file, not the CWD.
+fn resolve_local(workspace_dir: &std::path::Path, raw: &str) -> String {
+    if raw.contains("://") || std::path::Path::new(raw).is_absolute() {
+        raw.to_string()
+    } else {
+        workspace_dir.join(raw).to_string_lossy().into_owned()
+    }
+}
+
+/// ATTACH a foreign database (postgres / mysql / snowflake) or a local DuckDB
+/// database file (`duckdb`), and expose its tables lazily via a
+/// [`DuckDbSchemaProvider`].
 async fn register_attach(
     def: &SourceDef,
     pool: &Arc<DuckDbPool>,
     catalog: &dyn CatalogProvider,
+    workspace_dir: &std::path::Path,
 ) -> Result<RegisterReport, RegisterError> {
-    let (ext, ty, conn) = match def.kind {
+    // `ext` is the DuckDB extension to load (None for native .duckdb attach);
+    // `ty` is the ATTACH `TYPE` (None for a .duckdb file, which DuckDB infers).
+    let (ext, ty, conn): (Option<&str>, Option<&str>, String) = match def.kind {
         SourceKind::Postgres => (
-            "postgres",
-            "postgres",
+            Some("postgres"),
+            Some("postgres"),
             postgres_mysql_conn(&def.config, "postgresql")?,
         ),
-        SourceKind::Mysql => ("mysql", "mysql", postgres_mysql_conn(&def.config, "mysql")?),
-        SourceKind::Snowflake => ("snowflake", "snowflake", snowflake_conn(&def.config)?),
+        SourceKind::Mysql => (
+            Some("mysql"),
+            Some("mysql"),
+            postgres_mysql_conn(&def.config, "mysql")?,
+        ),
+        SourceKind::Snowflake => (
+            Some("snowflake"),
+            Some("snowflake"),
+            snowflake_conn(&def.config)?,
+        ),
+        SourceKind::Duckdb => (
+            None,
+            None,
+            resolve_local(workspace_dir, &duckdb_file_path(&def.config)?),
+        ),
         other => {
             return Err(RegisterError::Other(format!(
                 "register_attach called for `{other}`"
@@ -341,7 +394,8 @@ async fn register_attach(
     };
 
     // Load the extension. Snowflake's is a community extension, not bundled, so
-    // it is installed explicitly (skipping INSTALL offline).
+    // it is installed explicitly (skipping INSTALL offline). A `.duckdb` file
+    // needs no extension.
     if def.kind == SourceKind::Snowflake {
         let sql = if pool.offline() {
             "LOAD snowflake;".to_string()
@@ -351,7 +405,7 @@ async fn register_attach(
         pool.execute(&sql)
             .await
             .map_err(|e| RegisterError::Other(e.to_string()))?;
-    } else {
+    } else if let Some(ext) = ext {
         pool.ensure_extension(ext)
             .await
             .map_err(|e| RegisterError::Other(e.to_string()))?;
@@ -359,11 +413,12 @@ async fn register_attach(
 
     let conn_esc = conn.replace('\'', "''");
     let name = &def.name;
-    // postgres & mysql attach READ_ONLY; snowflake does not accept it.
-    let attach = if def.kind == SourceKind::Snowflake {
-        format!("ATTACH '{conn_esc}' AS \"{name}\" (TYPE {ty})")
-    } else {
-        format!("ATTACH '{conn_esc}' AS \"{name}\" (TYPE {ty}, READ_ONLY)")
+    // Snowflake does not accept READ_ONLY; everything else attaches read-only.
+    // A `.duckdb` file attaches with no TYPE clause (DuckDB infers it).
+    let attach = match (ty, def.kind == SourceKind::Snowflake) {
+        (Some(ty), true) => format!("ATTACH '{conn_esc}' AS \"{name}\" (TYPE {ty})"),
+        (Some(ty), false) => format!("ATTACH '{conn_esc}' AS \"{name}\" (TYPE {ty}, READ_ONLY)"),
+        (None, _) => format!("ATTACH '{conn_esc}' AS \"{name}\" (READ_ONLY)"),
     };
     pool.execute(&attach)
         .await
@@ -385,6 +440,7 @@ async fn register_scan(
     def: &SourceDef,
     pool: &Arc<DuckDbPool>,
     catalog: &dyn CatalogProvider,
+    workspace_dir: &std::path::Path,
 ) -> Result<RegisterReport, RegisterError> {
     let ext = match def.kind {
         SourceKind::Iceberg => "iceberg",
@@ -408,7 +464,7 @@ async fn register_scan(
                 table.name
             ))
         })?;
-        let loc_esc = loc.replace('\'', "''");
+        let loc_esc = resolve_local(workspace_dir, &loc).replace('\'', "''");
         let relation = match def.kind {
             SourceKind::Iceberg => format!("iceberg_scan('{loc_esc}')"),
             _ => format!("delta_scan('{loc_esc}')"),
@@ -431,12 +487,66 @@ async fn register_scan(
     })
 }
 
-/// s3 / gcs / azure object stores: create a secret, then `read_parquet` (or
-/// csv/json) each declared table's URL.
+/// DuckLake catalog: ATTACH `'ducklake:<catalog>'` (optionally with a
+/// `DATA_PATH`), then expose its tables lazily via a [`DuckDbSchemaProvider`].
+async fn register_ducklake(
+    def: &SourceDef,
+    pool: &Arc<DuckDbPool>,
+    catalog: &dyn CatalogProvider,
+    workspace_dir: &std::path::Path,
+) -> Result<RegisterReport, RegisterError> {
+    pool.ensure_extension("ducklake")
+        .await
+        .map_err(|e| RegisterError::Other(e.to_string()))?;
+
+    let catalog_uri = def
+        .config
+        .get("catalog")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            RegisterError::Other("`kind: ducklake` requires `config.catalog`".to_string())
+        })?;
+    // A remote `data_path` needs object-store credentials (via httpfs + secret).
+    if def.config.get("storage").is_some() {
+        pool.ensure_extension("httpfs")
+            .await
+            .map_err(|e| RegisterError::Other(e.to_string()))?;
+        if let Some(secret) = build_secret_sql(def) {
+            pool.execute(&secret)
+                .await
+                .map_err(|e| RegisterError::Other(e.to_string()))?;
+        }
+    }
+
+    let catalog_esc = resolve_local(workspace_dir, catalog_uri).replace('\'', "''");
+    let name = &def.name;
+    let attach = match def.config.get("data_path").and_then(|v| v.as_str()) {
+        Some(data_path) => {
+            let dp_esc = resolve_local(workspace_dir, data_path).replace('\'', "''");
+            format!("ATTACH 'ducklake:{catalog_esc}' AS \"{name}\" (DATA_PATH '{dp_esc}')")
+        }
+        None => format!("ATTACH 'ducklake:{catalog_esc}' AS \"{name}\""),
+    };
+    pool.execute(&attach)
+        .await
+        .map_err(|e| RegisterError::Other(e.to_string()))?;
+
+    let schema: Arc<dyn SchemaProvider> =
+        Arc::new(DuckDbSchemaProvider::new(pool.clone(), def.name.clone()));
+    register_schema(catalog, &def.name, schema)?;
+    Ok(RegisterReport {
+        table_count: 0,
+        tables: Vec::new(),
+    })
+}
+
+/// Remote `file` over an object store: create a secret from the `storage:`
+/// block, then `read_parquet` (or csv/json) each declared table's URL.
 async fn register_object_store(
     def: &SourceDef,
     pool: &Arc<DuckDbPool>,
     catalog: &dyn CatalogProvider,
+    workspace_dir: &std::path::Path,
 ) -> Result<RegisterReport, RegisterError> {
     pool.ensure_extension("httpfs")
         .await
@@ -451,12 +561,14 @@ async fn register_object_store(
     let schema = ensure_memory_schema(catalog, &def.name)?;
     let mut summaries = Vec::with_capacity(def.tables.len());
     for table in &def.tables {
-        let url = table_location(&table.config).ok_or_else(|| {
-            RegisterError::Other(format!(
-                "table `{}` is missing `path`/`location`",
-                table.name
-            ))
-        })?;
+        let url = table_location(&table.config)
+            .map(|loc| resolve_local(workspace_dir, &loc))
+            .ok_or_else(|| {
+                RegisterError::Other(format!(
+                    "table `{}` is missing `path`/`location`",
+                    table.name
+                ))
+            })?;
         let url_esc = url.replace('\'', "''");
         let format = table
             .config
@@ -486,44 +598,80 @@ async fn register_object_store(
     })
 }
 
-/// Build a DuckDB `CREATE SECRET` for an object store from `def.config`, or
-/// `None` when no credential keys are present. Lenient: only emits keys given.
+/// Build a DuckDB `CREATE SECRET` for an object store from the source's
+/// `config.storage` block, or `None` when there's no storage block / nothing to
+/// emit. The provider is `storage.type` (`s3` | `gcs` | `azure`); `storage.region`
+/// sits at the storage level, and credentials live under a typed `storage.auth`
+/// block (`auth.type` selects the method — default `access_key`). Lenient: only
+/// emits the keys that are present.
 fn build_secret_sql(def: &SourceDef) -> Option<String> {
-    let cfg = &def.config;
-    let mut params: Vec<String> = Vec::new();
-    let mut push = |k: &str, cfg_key: &str| {
-        if let Some(v) = cfg.get(cfg_key).and_then(|v| v.as_str()) {
-            let esc = v.replace('\'', "''");
-            params.push(format!("{k} '{esc}'"));
+    let storage = def.config.get("storage")?;
+    let provider = storage.get("type").and_then(|v| v.as_str())?;
+    if !matches!(provider, "s3" | "gcs" | "azure") {
+        return None;
+    }
+    let auth = storage.get("auth");
+    let auth_type = auth
+        .and_then(|a| a.get("type"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("access_key");
+    // `region` is a location, not a credential, so it lives at the storage level.
+    let region = storage.get("region").and_then(|v| v.as_str());
+    let from_auth = |key: &str| auth.and_then(|a| a.get(key)).and_then(|v| v.as_str());
+    let q = |v: &str| v.replace('\'', "''");
+
+    // (DuckDB secret key, value) pairs; `None` values are dropped.
+    let pairs: Vec<(&str, Option<&str>)> = if matches!(auth_type, "credential_chain" | "chain") {
+        // Let DuckDB resolve credentials from the ambient provider chain
+        // (env / instance profile / gcloud / az login).
+        vec![
+            ("PROVIDER", Some("credential_chain")),
+            ("REGION", region),
+            ("ENDPOINT", from_auth("endpoint")),
+            ("ACCOUNT_NAME", from_auth("account_name")),
+        ]
+    } else {
+        // `access_key` (and any explicit-credential style): emit the keys given.
+        match provider {
+            "s3" => vec![
+                ("KEY_ID", from_auth("access_key_id")),
+                ("SECRET", from_auth("secret_access_key")),
+                ("SESSION_TOKEN", from_auth("session_token")),
+                ("REGION", region),
+                ("ENDPOINT", from_auth("endpoint")),
+                ("URL_STYLE", from_auth("url_style")),
+            ],
+            "gcs" => vec![
+                ("KEY_ID", from_auth("access_key_id")),
+                ("SECRET", from_auth("secret_access_key")),
+            ],
+            // azure
+            _ => vec![
+                ("CONNECTION_STRING", from_auth("connection_string")),
+                ("ACCOUNT_NAME", from_auth("account_name")),
+            ],
         }
     };
-    let ty = match def.kind {
-        SourceKind::S3 => {
-            push("KEY_ID", "key_id");
-            push("SECRET", "secret");
-            push("REGION", "region");
-            push("SESSION_TOKEN", "session_token");
-            push("ENDPOINT", "endpoint");
-            "s3"
-        }
-        SourceKind::Gcs => {
-            push("KEY_ID", "key_id");
-            push("SECRET", "secret");
-            "gcs"
-        }
-        SourceKind::Azure => {
-            push("CONNECTION_STRING", "connection_string");
-            push("ACCOUNT_NAME", "account_name");
-            "azure"
-        }
-        _ => return None,
-    };
+
+    let params: Vec<String> = pairs
+        .into_iter()
+        .filter_map(|(k, v)| {
+            v.map(|v| {
+                // PROVIDER is a keyword (unquoted); everything else is a quoted literal.
+                if k == "PROVIDER" {
+                    format!("{k} {v}")
+                } else {
+                    format!("{k} '{}'", q(v))
+                }
+            })
+        })
+        .collect();
     if params.is_empty() {
         return None;
     }
     let name = def.name.replace('"', "\"\"");
     Some(format!(
-        "CREATE OR REPLACE SECRET \"{name}\" (TYPE {ty}, {})",
+        "CREATE OR REPLACE SECRET \"{name}\" (TYPE {provider}, {})",
         params.join(", ")
     ))
 }
@@ -535,6 +683,15 @@ fn table_location(config: &JsonValue) -> Option<String> {
         .or_else(|| config.get("location"))
         .and_then(|v| v.as_str())
         .map(str::to_string)
+}
+
+/// Path to a local DuckDB database file for `kind: duckdb` (`config.path`).
+fn duckdb_file_path(config: &JsonValue) -> Result<String, RegisterError> {
+    config
+        .get("path")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .ok_or_else(|| RegisterError::Other("`kind: duckdb` requires `config.path`".to_string()))
 }
 
 /// Build a postgres / mysql connection string: either an explicit `dsn` or an
@@ -677,6 +834,91 @@ mod tests {
         let cfg = serde_json::json!({ "dsn": "postgresql://u:p@h/db" });
         let conn = postgres_mysql_conn(&cfg, "postgresql").unwrap();
         assert_eq!(conn, "postgresql://u:p@h/db");
+    }
+
+    fn file_def(config: serde_json::Value) -> SourceDef {
+        SourceDef {
+            name: "lake".into(),
+            kind: SourceKind::File,
+            description: None,
+            config,
+            cache: pawrly_core::CachePolicy::None,
+            safety: None,
+            tables: Vec::new(),
+            raw_table: false,
+            raw_table_safety: None,
+        }
+    }
+
+    #[test]
+    fn storage_access_key_auth() {
+        let def = file_def(serde_json::json!({
+            "storage": {
+                "type": "s3",
+                "region": "us-east-1",
+                "auth": {
+                    "type": "access_key",
+                    "access_key_id": "AKIA",
+                    "secret_access_key": "shh",
+                    "endpoint": "https://minio.local"
+                }
+            }
+        }));
+        let sql = build_secret_sql(&def).unwrap();
+        assert!(sql.contains("TYPE s3"), "{sql}");
+        assert!(sql.contains("KEY_ID 'AKIA'"), "{sql}");
+        assert!(sql.contains("SECRET 'shh'"), "{sql}");
+        assert!(sql.contains("REGION 'us-east-1'"), "{sql}");
+        assert!(sql.contains("ENDPOINT 'https://minio.local'"), "{sql}");
+    }
+
+    #[test]
+    fn storage_credential_chain_auth() {
+        let def = file_def(serde_json::json!({
+            "storage": { "type": "s3", "region": "eu-west-1", "auth": { "type": "credential_chain" } }
+        }));
+        let sql = build_secret_sql(&def).unwrap();
+        assert!(sql.contains("PROVIDER credential_chain"), "{sql}");
+        // PROVIDER is a keyword, not a quoted literal.
+        assert!(
+            !sql.contains("'credential_chain'"),
+            "provider must be unquoted: {sql}"
+        );
+        assert!(sql.contains("REGION 'eu-west-1'"), "{sql}");
+    }
+
+    #[test]
+    fn storage_default_auth_is_access_key() {
+        // No `auth.type` → defaults to access_key.
+        let def = file_def(serde_json::json!({
+            "storage": { "type": "gcs", "auth": { "access_key_id": "k", "secret_access_key": "s" } }
+        }));
+        let sql = build_secret_sql(&def).unwrap();
+        assert!(sql.contains("TYPE gcs"), "{sql}");
+        assert!(
+            sql.contains("KEY_ID 'k'") && sql.contains("SECRET 's'"),
+            "{sql}"
+        );
+    }
+
+    #[test]
+    fn no_storage_block_no_secret() {
+        let def = file_def(serde_json::json!({ "path": "./x/*.parquet" }));
+        assert!(build_secret_sql(&def).is_none());
+    }
+
+    #[test]
+    fn resolve_local_rules() {
+        let ws = std::path::Path::new("/work/space");
+        // Relative local path → joined to the workspace dir.
+        assert_eq!(resolve_local(ws, "./a.duckdb"), "/work/space/./a.duckdb");
+        // Absolute path → unchanged.
+        assert_eq!(resolve_local(ws, "/data/a.duckdb"), "/data/a.duckdb");
+        // Remote URL → unchanged.
+        assert_eq!(
+            resolve_local(ws, "s3://bucket/x.parquet"),
+            "s3://bucket/x.parquet"
+        );
     }
 
     #[test]

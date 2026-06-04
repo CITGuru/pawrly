@@ -1,9 +1,9 @@
 # Pawrly
 
-> **One SQL dialect over your APIs, files, warehouses, and AI models.**
+> **One SQL dialect over your APIs, files, and warehouses.**
 > No ETL, no warehouse, no per-source query language — just `pawrly sql`.
 
-Pawrly is a Rust binary (and embeddable library) that gives you a single SQL interface over heterogeneous data: REST APIs (GitHub, Linear, Stripe), local files (parquet, csv, json, excel), relational databases (Postgres, MySQL, SQLite), warehouses (Snowflake), lakehouses (Iceberg, Delta, Ducklake), and OpenAI-compatible models — all joinable in one statement, all served from one config file.
+Pawrly is a Rust binary (and embeddable library) that gives you a single SQL interface over heterogeneous data: any REST/GraphQL API (`kind: http`), local files (parquet, csv, json), object storage (S3/GCS/Azure under `kind: file`), relational databases (Postgres, MySQL, SQLite, DuckDB), warehouses (Snowflake), and lakehouses (Iceberg, Delta, DuckLake) — all joinable in one statement, all served from one config file.
 
 It is built for two audiences:
 
@@ -123,7 +123,7 @@ You should see Acme on top with two orders totalling 619, then Initech at 300, t
 
 `pawrly schema` will list every table the workspace knows about (`data.customers`, `data.orders` here). `pawrly validate` will sanity-check the YAML without running anything.
 
-For more sources — GitHub, Linear, Postgres, Snowflake, AI models — see the worked examples in [`examples/pawrly.yaml`](./examples/pawrly.yaml). Source coverage tracks the roadmap below; start with files (M3) and add sources as their milestones land.
+For more sources — HTTP APIs, object storage, Postgres, DuckDB, Snowflake, Iceberg/Delta/DuckLake — see the worked examples in [`examples/pawrly.yaml`](./examples/pawrly.yaml) and the [sources reference](./docs/sources.md).
 
 ### 7. (Optional) Run as a daemon
 
@@ -162,7 +162,7 @@ cargo deny check
 
 House rules (no `unwrap`/`unsafe`/`panic!` outside test code, source-spec ergonomics, local + daemon parity as a release-blocking invariant) are enforced by clippy.
 
-Adding a new HTTP source should be a YAML edit + a bundled spec file, not a new Rust crate. See the existing `github` bundle for a reference.
+Adding an HTTP-backed source is a YAML edit — declare `kind: http` with a `base_url` and your own typed `tables:` — not a new Rust crate. See the [sources reference](./docs/sources.md#http--rest--graphql-apis).
 
 Bug reports, source requests, and design feedback all welcome via GitHub Issues.
 

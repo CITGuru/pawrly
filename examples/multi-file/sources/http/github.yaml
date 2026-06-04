@@ -1,8 +1,21 @@
-# Config fragment: its `sources:` list is appended via the root's `include:`.
-# Fragments may only contain `sources:`, `secrets:`, and (nested) `include:`.
-sources:
-  - name: gh
-    kind: github
-    config:
-      token: ${secret:GITHUB_TOKEN}
-    raw_table: true
+# One file fully describes an integration: the source *and* the semantic models
+# defined over it. The root's `include:` glob recognises the source by the
+# top-level `kind:` (no `sources:` wrapper needed) and splices the top-level
+# `models:` block into `semantic.models`. (Fragments with a `sources:` list —
+# see `linear.yaml` — are still accepted too.)
+name: gh
+kind: http
+config:
+  base_url: https://api.github.com
+  token: ${secret:GITHUB_TOKEN}
+raw_table: true
+
+# Models live next to the source they cover. They're merged into the global
+# semantic layer, so they can still relate to models in other files.
+models:
+  - name: gh_issues
+    source: gh.issues
+    dimensions:
+      - { name: state, expr: state, type: string }
+    measures:
+      - { name: issue_count, agg: count, expr: id }

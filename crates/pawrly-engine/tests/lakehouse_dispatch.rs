@@ -1,10 +1,11 @@
-//! Acceptance: lakehouse / warehouse / object-store kinds (`snowflake`,
-//! `iceberg`, `delta`, `s3`, `gcs`, `azure`) and DB-attach kinds (`postgres`,
-//! `mysql`) are now wired to the in-process DuckDB pool. Offline (no network),
-//! extension `INSTALL` is skipped, so registration surfaces a real
-//! attach/extension/scan error — NOT the old "lakehouse"/"feature-gated"
-//! placeholder. These smoke tests assert exactly that: the dispatch reaches
-//! DuckDB, and the legacy gated strings are gone.
+//! Acceptance: lakehouse / warehouse kinds (`snowflake`, `iceberg`, `delta`,
+//! `ducklake`), the local `duckdb` file, object storage under `file` (a
+//! `storage:` block), and DB-attach kinds (`postgres`, `mysql`) are wired to
+//! the in-process DuckDB pool. Offline (no network), extension `INSTALL` is
+//! skipped, so registration surfaces a real attach/extension/scan error — NOT
+//! the old "lakehouse"/"feature-gated" placeholder. These smoke tests assert
+//! exactly that: the dispatch reaches DuckDB, and the legacy gated strings are
+//! gone.
 
 #![allow(
     clippy::unwrap_used,
@@ -22,17 +23,17 @@ fn cfg_yaml(yaml: &str) -> Config {
     pawrly_config::load_str(yaml, &secrets).unwrap()
 }
 
-/// `snowflake` / `iceberg` / `delta` / `s3` / `gcs` / `azure` reach DuckDB.
-/// Offline, the extension can't be installed, so registration errors — but the
-/// error is now a real DuckDB error, not the old "lakehouse feature" message.
+/// `snowflake` / `iceberg` / `delta` / `ducklake` / `duckdb`, and object
+/// storage under `file` (a `storage:` block) all reach DuckDB. Offline, the
+/// extension can't be installed, so registration errors — but the error is now
+/// a real DuckDB error, not the old "lakehouse feature" message.
 #[tokio::test]
 async fn lakehouse_kinds_dispatch_to_duckdb_offline() {
     // Run under `PAWRLY_OFFLINE=1` so the pool skips extension INSTALL and the
     // test never touches the network.
     let workspace = TempDir::new().unwrap();
     // Each kind gets a config valid enough to pass `validate` and reach the
-    // DuckDB dispatch (snowflake needs creds; the scan/object kinds need a
-    // table with a path).
+    // DuckDB dispatch.
     let cases: [(&str, &str); 6] = [
         (
             "snowflake",
@@ -47,16 +48,16 @@ async fn lakehouse_kinds_dispatch_to_duckdb_offline() {
             "    tables:\n      - name: t\n        path: /tmp/does-not-exist\n",
         ),
         (
-            "s3",
-            "    tables:\n      - name: t\n        path: s3://b/x.parquet\n",
+            "duckdb",
+            "    config:\n      path: /tmp/does-not-exist.duckdb\n",
         ),
         (
-            "gcs",
-            "    tables:\n      - name: t\n        path: gs://b/x.parquet\n",
+            "ducklake",
+            "    config:\n      catalog: /tmp/does-not-exist.ducklake\n",
         ),
         (
-            "azure",
-            "    tables:\n      - name: t\n        path: az://b/x.parquet\n",
+            "file",
+            "    config:\n      storage:\n        type: s3\n        region: us-east-1\n    tables:\n      - name: t\n        path: s3://b/x.parquet\n",
         ),
     ];
     for (kind, extra) in cases {
@@ -115,34 +116,15 @@ sources:
     }
 }
 
-/// `bigquery` / `redshift` are explicitly out of scope and return a clear
-/// "not yet supported" error.
-#[tokio::test]
-async fn bigquery_redshift_not_yet_supported() {
-    let workspace = TempDir::new().unwrap();
-    for kind in ["bigquery", "redshift"] {
-        let yaml = format!(
-            r#"version: 1
-sources:
-  - name: wh
-    kind: {kind}
-    config:
-      account: test
-"#
-        );
-        let cfg = cfg_yaml(&yaml);
-        let res = LocalEngine::new(LocalEngineConfig {
-            config: cfg,
-            workspace_dir: workspace.path().to_path_buf(),
-            duckdb_pool_size: Some(1),
-        })
-        .await;
-        let err = res.expect_err(&format!("kind `{kind}` should error"));
-        assert!(
-            err.to_string().contains("not yet supported"),
-            "kind `{kind}`: {}",
-            err
-        );
+/// `bigquery` / `redshift` (and the old SaaS/`ai`/object-store kinds) were
+/// removed: they're now unknown kinds and fail at config load.
+#[test]
+fn removed_kinds_fail_at_load() {
+    for kind in ["bigquery", "redshift", "github", "ai", "s3", "gcs", "azure"] {
+        let yaml = format!("version: 1\nsources:\n  - name: wh\n    kind: {kind}\n");
+        let secrets = pawrly_secrets::StaticStore::new();
+        let res = pawrly_config::load_str(&yaml, &secrets);
+        assert!(res.is_err(), "kind `{kind}` should be unknown now");
     }
 }
 
@@ -184,4 +166,41 @@ sources:
         .downcast_ref::<arrow_array::Int64Array>()
         .unwrap();
     assert_eq!(arr.value(0), 2);
+}
+
+/// `kind: duckdb` attaches a local `.duckdb` file. Exercises two fixes: a
+/// relative `config.path` resolves against the workspace dir (not the CWD), and
+/// `COUNT(*)` (an empty projection) returns through the DuckDB provider.
+#[tokio::test]
+async fn duckdb_file_relative_path_and_count() {
+    let workspace = TempDir::new().unwrap();
+    {
+        let conn = duckdb::Connection::open(workspace.path().join("analytics.duckdb")).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE widgets(id INTEGER, name TEXT); \
+             INSERT INTO widgets VALUES (1,'a'),(2,'b'),(3,'c');",
+        )
+        .unwrap();
+    }
+    // `path` is relative — it must resolve against the workspace, not the CWD.
+    let yaml = "version: 1\nsources:\n  - name: db\n    kind: duckdb\n    config:\n      path: ./analytics.duckdb\n";
+    let cfg = cfg_yaml(yaml);
+    let engine = LocalEngine::new(LocalEngineConfig {
+        config: cfg,
+        workspace_dir: workspace.path().to_path_buf(),
+        duckdb_pool_size: None,
+    })
+    .await
+    .unwrap();
+    use pawrly_core::EngineServiceExt;
+    let batches = engine
+        .query_collect("SELECT count(*) AS n FROM db.widgets")
+        .await
+        .unwrap();
+    let arr = batches[0]
+        .column(0)
+        .as_any()
+        .downcast_ref::<arrow_array::Int64Array>()
+        .unwrap();
+    assert_eq!(arr.value(0), 3);
 }

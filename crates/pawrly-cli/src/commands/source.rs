@@ -37,7 +37,8 @@ pub enum SourceCommand {
 
 #[derive(ClapArgs, Debug)]
 pub struct AddArgs {
-    /// Source kind: `file`, `http`, `github`, `postgres`, `snowflake`, …
+    /// Source kind: `file`, `http`, `sqlite`, `postgres`, `mysql`, `duckdb`,
+    /// `snowflake`, `iceberg`, `ducklake`, `delta`.
     #[arg(value_name = "KIND")]
     pub kind: String,
 
@@ -60,10 +61,6 @@ pub struct AddArgs {
     /// Auth token (HTTP-shaped). Pass `${secret:NAME}` to indirect through the secret store.
     #[arg(long)]
     pub token: Option<String>,
-
-    /// Provider for `kind: ai` (e.g. `anthropic`, `openai`).
-    #[arg(long)]
-    pub provider: Option<String>,
 
     /// DSN / URL for SQL-engine sources (`postgres`, `mysql`, `snowflake`, …).
     #[arg(long)]
@@ -326,9 +323,6 @@ fn build_source_def(args: &AddArgs, kind: SourceKind) -> anyhow::Result<ConfigSo
     if let Some(t) = &args.token {
         config.insert("token".into(), Value::String(t.clone()));
     }
-    if let Some(p) = &args.provider {
-        config.insert("provider".into(), Value::String(p.clone()));
-    }
     if let Some(d) = &args.dsn {
         config.insert("dsn".into(), Value::String(d.clone()));
     }
@@ -453,7 +447,6 @@ mod tests {
             path: None,
             url: None,
             token: None,
-            provider: None,
             dsn: None,
             set: Vec::new(),
             raw_table: false,
@@ -472,11 +465,11 @@ mod tests {
 
     #[test]
     fn build_source_def_config_kv_parses_json() {
-        let mut a = add_args("github", "gh");
-        a.token = Some("${secret:GH_TOKEN}".into());
+        let mut a = add_args("http", "api");
+        a.token = Some("${secret:API_TOKEN}".into());
         a.set = vec!["per_page=100".into(), "repos=[\"a\",\"b\"]".into()];
-        let def = build_source_def(&a, SourceKind::Github).unwrap();
-        assert_eq!(def.config["token"], "${secret:GH_TOKEN}");
+        let def = build_source_def(&a, SourceKind::Http).unwrap();
+        assert_eq!(def.config["token"], "${secret:API_TOKEN}");
         assert_eq!(def.config["per_page"], 100);
         assert!(def.config["repos"].is_array());
     }
@@ -503,7 +496,7 @@ mod tests {
         let p = tmp.path().join("pawrly.yaml");
         std::fs::write(
             &p,
-            "version: 1\nsources:\n  - name: gh\n    kind: github\n    config:\n      token: ${secret:GH}\n",
+            "version: 1\nsources:\n  - name: gh\n    kind: http\n    config:\n      base_url: https://api.example.com\n      token: ${secret:GH}\n",
         )
         .unwrap();
         let cfg = read_or_init_config(&p).unwrap();

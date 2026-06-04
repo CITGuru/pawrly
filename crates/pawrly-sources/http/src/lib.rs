@@ -18,6 +18,3 @@ pub use source::{
     AuthSpec, HttpSource, HttpTableSpec, PaginationConfig, ParamSpec, RateLimitConfig, RetryConfig,
 };
 pub use typed::HttpTableProvider;
-
-/// Bundled HTTP source specs (github / linear / stripe).
-pub mod bundled;

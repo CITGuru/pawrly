@@ -37,12 +37,12 @@ fn write_multi_file_workspace(dir: &Path) -> PathBuf {
     let root = dir.join("pawrly.yaml");
     std::fs::write(
         &root,
-        "version: 1\nname: smoke\ninclude:\n  - ./team.yaml\nsources:\n  - name: gh_root\n    kind: github\n    config:\n      token: ${secret:GH_TOKEN}\n",
+        "version: 1\nname: smoke\ninclude:\n  - ./team.yaml\nsources:\n  - name: gh_root\n    kind: http\n    config:\n      token: ${secret:GH_TOKEN}\n",
     )
     .unwrap();
     std::fs::write(
         dir.join("team.yaml"),
-        "sources:\n  - name: gh_team\n    kind: github\n    config:\n      token: literal\n",
+        "sources:\n  - name: gh_team\n    kind: http\n    config:\n      token: literal\n",
     )
     .unwrap();
     root

@@ -37,12 +37,29 @@ async fn http_typed_provider_implements_dynamic_filter() {
 
     let def = SourceDef {
         name: "gh".into(),
-        kind: SourceKind::Github,
+        kind: SourceKind::Http,
         description: None,
         config: json!({"base_url": "https://api.github.com", "token": "x"}),
         cache: CachePolicy::None,
         safety: None,
-        tables: Vec::new(),
+        tables: vec![pawrly_core::TableDef {
+            name: "pulls".into(),
+            description: None,
+            config: json!({
+                "endpoint": "/repos/{owner}/{repo}/pulls",
+                "params": [
+                    {"name": "owner", "required": true},
+                    {"name": "repo", "required": true},
+                    {"name": "state", "required": false}
+                ],
+                "response": {
+                    "path": "$",
+                    "schema": [{"name": "number", "type": "bigint"}]
+                }
+            }),
+            cache: None,
+            safety: None,
+        }],
         raw_table: false,
         raw_table_safety: None,
     };
@@ -53,7 +70,7 @@ async fn http_typed_provider_implements_dynamic_filter() {
     let schema = catalog.schema("gh").unwrap();
     let pulls = schema.table("pulls").await.unwrap().unwrap();
     let cols = pawrly_engine::optimizer::capable_columns(&pulls);
-    // Bundled github.pulls declares owner, repo, state as params.
+    // The typed table declares owner, repo, state as params.
     assert!(cols.contains(&"owner".to_string()), "got: {cols:?}");
     assert!(cols.contains(&"repo".to_string()));
 }
