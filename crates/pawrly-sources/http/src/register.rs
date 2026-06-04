@@ -181,68 +181,19 @@ fn table_spec_from_def(t: &pawrly_core::TableDef) -> Result<HttpTableSpec, HttpB
     })
 }
 
+/// Resolve a source's auth from `config`. The `config.token` shorthand is a
+/// single bearer header; otherwise the `config.auth` block deserializes into an
+/// [`AuthSpec`] (`header` / `basic` / `custom` / `oauth2`). A malformed or
+/// absent block falls back to no auth.
 fn parse_auth(def: &SourceDef) -> AuthSpec {
     let cfg = &def.config;
     if let Some(token) = cfg.get("token").and_then(|v| v.as_str()) {
-        return AuthSpec::Bearer {
-            token: token.to_string(),
-        };
+        return AuthSpec::bearer(token);
     }
-    if let Some(api_key) = cfg.get("api_key").and_then(|v| v.as_str()) {
-        return AuthSpec::Bearer {
-            token: api_key.to_string(),
-        };
+    match cfg.get("auth") {
+        Some(auth) => serde_json::from_value::<AuthSpec>(auth.clone()).unwrap_or(AuthSpec::None),
+        None => AuthSpec::None,
     }
-    if let Some(auth) = cfg.get("auth")
-        && let Some(t) = auth.get("type").and_then(|v| v.as_str())
-    {
-        match t {
-            "bearer" => {
-                if let Some(token) = auth.get("token").and_then(|v| v.as_str()) {
-                    return AuthSpec::Bearer {
-                        token: token.to_string(),
-                    };
-                }
-            }
-            "api_key" => {
-                let header = auth
-                    .get("header")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("X-API-Key")
-                    .to_string();
-                if let Some(value) = auth.get("value").and_then(|v| v.as_str()) {
-                    return AuthSpec::ApiKey {
-                        header,
-                        value: value.to_string(),
-                    };
-                }
-            }
-            "basic" => {
-                let user = auth.get("username").and_then(|v| v.as_str()).unwrap_or("");
-                let pass = auth.get("password").and_then(|v| v.as_str()).unwrap_or("");
-                return AuthSpec::Basic {
-                    username: user.to_string(),
-                    password: pass.to_string(),
-                };
-            }
-            "oauth2" => {
-                let s = |k: &str| auth.get(k).and_then(|v| v.as_str()).map(str::to_string);
-                if let (Some(token_url), Some(client_id), Some(client_secret)) =
-                    (s("token_url"), s("client_id"), s("client_secret"))
-                {
-                    return AuthSpec::Oauth2 {
-                        token_url,
-                        client_id,
-                        client_secret,
-                        scope: s("scope"),
-                        audience: s("audience"),
-                    };
-                }
-            }
-            _ => {}
-        }
-    }
-    AuthSpec::None
 }
 
 /// Parse the retry policy from `config.retry.{max_retries,base_backoff_ms,
