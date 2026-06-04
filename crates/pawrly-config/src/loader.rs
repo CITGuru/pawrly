@@ -212,7 +212,7 @@ sources: []
 version: 1
 sources:
   - name: gh
-    kind: github
+    kind: http
     config:
       token: ${secret:GITHUB_TOKEN}
 "#;
@@ -241,7 +241,7 @@ sources: []
 version: 1
 sources:
   - name: gh
-    kind: github
+    kind: http
     config:
       token: ${secret:MISSING}
 "#;

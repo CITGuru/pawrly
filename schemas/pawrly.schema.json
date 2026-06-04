@@ -357,6 +357,36 @@
         }
       }
     },
+    "FilterOp": {
+      "description": "Comparison operators usable in a [`SemanticFilter`].",
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "equals",
+            "not_equals",
+            "in",
+            "not_in",
+            "gt",
+            "gte",
+            "lt",
+            "lte",
+            "contains",
+            "starts_with",
+            "ends_with",
+            "is_null",
+            "is_not_null"
+          ]
+        },
+        {
+          "description": "`values: [start, end]` → `BETWEEN start AND end`.",
+          "type": "string",
+          "enum": [
+            "in_range"
+          ]
+        }
+      ]
+    },
     "HttpDefaults": {
       "description": "HTTP section under `defaults:`.",
       "type": "object",
@@ -718,10 +748,43 @@
         }
       ]
     },
+    "Segment": {
+      "description": "A named, reusable set of filters defined on a [`SemanticModel`].\n\nA segment is a label that expands into its predicates at compile time, referenced from a [`SemanticQuery`] as `model.segment` (e.g. `\"orders.high_value\"`). `describe_semantic_model` returns the model's segments so a client can discover and compose them, and they are auditable because the predicates live in trusted config — never in the request.",
+      "type": "object",
+      "required": [
+        "filters",
+        "name"
+      ],
+      "properties": {
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "filters": {
+          "description": "Predicates AND-ed into the query when the segment is selected.",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/SemanticFilter"
+          }
+        },
+        "name": {
+          "type": "string"
+        }
+      }
+    },
     "SemanticConfig": {
       "description": "The `semantic:` config block — a set of business-named models.",
       "type": "object",
       "properties": {
+        "include": {
+          "description": "Files (or glob patterns) that contain *only* semantic models, merged into `models` before validation. Each file is either a top-level `models:` list or a bare YAML sequence of model mappings — never sources, secrets, or other config. Resolved relative to the declaring file. The loader consumes this during multi-file assembly, so it is always empty on a fully-loaded `Config`.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
         "models": {
           "default": [],
           "type": "array",
@@ -731,6 +794,29 @@
         }
       },
       "additionalProperties": false
+    },
+    "SemanticFilter": {
+      "description": "A predicate over one member.",
+      "type": "object",
+      "required": [
+        "member",
+        "op"
+      ],
+      "properties": {
+        "member": {
+          "description": "`\"orders.status\"` or `\"orders.order_date.month\"`.",
+          "type": "string"
+        },
+        "op": {
+          "$ref": "#/definitions/FilterOp"
+        },
+        "values": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
     },
     "SemanticModel": {
       "description": "A logical entity anchored on one physical table.",
@@ -794,6 +880,13 @@
               "type": "null"
             }
           ]
+        },
+        "segments": {
+          "description": "Named, reusable filter sets. A query references one as `model.segment` and the compiler expands it into its predicates before planning.",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Segment"
+          }
         },
         "source": {
           "description": "`\"schema.table\"` reference to a table registered in the `pawrly` catalog (schema = source name). Parsed by the compiler, not at deserialization time, so a malformed value surfaces as a query-time error rather than a config-load panic.",
@@ -880,30 +973,19 @@
       "additionalProperties": false
     },
     "SourceKind": {
-      "description": "Every supported `kind:` for a source declaration.\n\nThis list is closed: adding a new kind requires a code change so the router can dispatch it. Kind aliases are matched case-insensitively at parse time but the canonical form is lowercase.",
+      "description": "Every supported `kind:` for a source declaration.\n\nTwo foundational backends — `file` (local files, or object storage via a `storage:` block) and `http` (any REST/GraphQL API) — plus a small set of first-class database / lakehouse builtins. The list is closed: adding a new kind requires a code change so the router can dispatch it. Kind aliases are matched case-insensitively at parse time but the canonical form is lowercase.",
       "type": "string",
       "enum": [
         "http",
-        "github",
-        "linear",
-        "stripe",
-        "sentry",
-        "datadog",
-        "slack",
-        "notion",
-        "ai",
         "file",
+        "sqlite",
         "postgres",
         "mysql",
-        "sqlite",
+        "duckdb",
         "snowflake",
-        "bigquery",
-        "redshift",
         "iceberg",
-        "delta",
-        "s3",
-        "gcs",
-        "azure"
+        "ducklake",
+        "delta"
       ]
     },
     "TableDef": {

@@ -358,27 +358,47 @@ fn validate_source(src: &crate::types::SourceDef, errors: &mut ConfigErrors) {
     // Per-kind hooks (lightweight; not all source kinds are validated yet).
     match src.kind {
         SourceKind::File => {
-            // Either top-level path glob or per-table paths required.
-            let top_path = src.config.get("path").and_then(|v| v.as_str());
-            let any_table_path = src.tables.iter().any(|t| t.body.get("path").is_some());
-            if top_path.is_none() && !any_table_path {
-                errors.push(ConfigError::Source(
-                    src.name.clone(),
-                    "`kind: file` requires either top-level `config.path` or per-table `path`"
-                        .into(),
-                ));
+            // Object-store `file` (a `config.storage` block) reads remote URLs
+            // via DuckDB and requires explicit per-table paths; local `file`
+            // accepts a top-level glob or per-table paths.
+            if let Some(storage) = src.config.get("storage") {
+                let ty = storage.get("type").and_then(|v| v.as_str());
+                if !matches!(ty, Some("s3" | "gcs" | "azure")) {
+                    errors.push(ConfigError::Source(
+                        src.name.clone(),
+                        "`config.storage.type` must be one of `s3`, `gcs`, `azure`".into(),
+                    ));
+                }
+                let any_table_path = src.tables.iter().any(|t| t.body.get("path").is_some());
+                if !any_table_path {
+                    errors.push(ConfigError::Source(
+                        src.name.clone(),
+                        "object-store `kind: file` requires at least one `tables[]` entry with a `path`"
+                            .into(),
+                    ));
+                }
+            } else {
+                let top_path = src.config.get("path").and_then(|v| v.as_str());
+                let any_table_path = src.tables.iter().any(|t| t.body.get("path").is_some());
+                if top_path.is_none() && !any_table_path {
+                    errors.push(ConfigError::Source(
+                        src.name.clone(),
+                        "`kind: file` requires either top-level `config.path` or per-table `path`"
+                            .into(),
+                    ));
+                }
             }
         }
-        SourceKind::Ai
-            if src
-                .config
-                .get("provider")
-                .and_then(|v| v.as_str())
-                .is_none() =>
-        {
+        SourceKind::Duckdb if src.config.get("path").and_then(|v| v.as_str()).is_none() => {
             errors.push(ConfigError::Source(
                 src.name.clone(),
-                "`kind: ai` requires `config.provider`".into(),
+                "`kind: duckdb` requires `config.path` (a .duckdb file)".into(),
+            ));
+        }
+        SourceKind::Ducklake if src.config.get("catalog").and_then(|v| v.as_str()).is_none() => {
+            errors.push(ConfigError::Source(
+                src.name.clone(),
+                "`kind: ducklake` requires `config.catalog`".into(),
             ));
         }
         SourceKind::Postgres | SourceKind::Mysql => {
@@ -410,11 +430,7 @@ fn validate_source(src: &crate::types::SourceDef, errors: &mut ConfigErrors) {
                 }
             }
         }
-        SourceKind::Iceberg
-        | SourceKind::Delta
-        | SourceKind::S3
-        | SourceKind::Gcs
-        | SourceKind::Azure => {
+        SourceKind::Iceberg | SourceKind::Delta => {
             if src.tables.is_empty() {
                 errors.push(ConfigError::Source(
                     src.name.clone(),
@@ -495,8 +511,16 @@ mod tests {
     #[test]
     fn duplicate_source_names_caught() {
         let c = cfg(vec![
-            src("gh", SourceKind::Github, serde_json::json!({"token": "x"})),
-            src("gh", SourceKind::Github, serde_json::json!({"token": "y"})),
+            src(
+                "gh",
+                SourceKind::Http,
+                serde_json::json!({"base_url": "https://x"}),
+            ),
+            src(
+                "gh",
+                SourceKind::Http,
+                serde_json::json!({"base_url": "https://y"}),
+            ),
         ]);
         let errs = validate(&c);
         assert!(!errs.is_empty());
@@ -537,14 +561,37 @@ mod tests {
     }
 
     #[test]
-    fn ai_requires_provider() {
-        let s = src("models", SourceKind::Ai, serde_json::json!({}));
+    fn duckdb_requires_path() {
+        let s = src("local", SourceKind::Duckdb, serde_json::json!({}));
         let c = cfg(vec![s]);
         let errs = validate(&c);
         assert!(
             errs.0
                 .iter()
-                .any(|e| matches!(e, ConfigError::Source(_, msg) if msg.contains("provider")))
+                .any(|e| matches!(e, ConfigError::Source(_, msg) if msg.contains("path")))
+        );
+    }
+
+    #[test]
+    fn object_store_file_requires_storage_type_and_table() {
+        // A `file` source with a storage block but a bad type and no tables.
+        let mut s = src(
+            "lake",
+            SourceKind::File,
+            serde_json::json!({"storage": {"type": "bogus"}}),
+        );
+        s.tables = Vec::new();
+        let c = cfg(vec![s]);
+        let errs = validate(&c);
+        assert!(
+            errs.0
+                .iter()
+                .any(|e| matches!(e, ConfigError::Source(_, msg) if msg.contains("storage.type")))
+        );
+        assert!(
+            errs.0
+                .iter()
+                .any(|e| matches!(e, ConfigError::Source(_, msg) if msg.contains("tables")))
         );
     }
 
@@ -605,8 +652,8 @@ mod tests {
         fn cfg_with(models: Vec<SemanticModel>) -> Config {
             let mut c = cfg(vec![src(
                 "warehouse",
-                SourceKind::Github,
-                serde_json::json!({"token": "x"}),
+                SourceKind::Http,
+                serde_json::json!({"base_url": "https://x"}),
             )]);
             c.semantic = Some(SemanticConfig {
                 include: Vec::new(),

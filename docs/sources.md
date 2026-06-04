@@ -1,53 +1,225 @@
 # Sources
 
-A **source** is a named set of tables backed by some external system or local files. Every source is exposed to the query engine as one or more tables, addressed in SQL as `<source>.<table>`. Sources are declared under `sources:` in [`pawrly.yaml`](./config.md).
-
-This page covers each source kind. The common shape — `name`, `kind`, `config`, `tables`, `cache`, `safety` — is described in [Configuration](./config.md).
-
-## Available today
-
-### `file` — Parquet, CSV, JSON
-
-Serves columnar and row files from disk. Point it at a glob, or define tables explicitly.
+A **source** is a named connection to some external system or set of files, exposed to the query engine as one or more tables. Every table is addressed in SQL as `<source>.<table>` — the source `name` is the schema prefix. Sources are declared under `sources:` in your workspace `pawrly.yaml` (see [Configuration](./config.md), and `[examples/pawrly.yaml](../examples/pawrly.yaml)` for a worked file).
 
 ```yaml
 sources:
   - name: data
     kind: file
     config:
-      path: ./data/*.csv          # glob; table names derive from file names
+      path: ./data/*.parquet
 ```
 
-Or per-table, with explicit formats and paths:
+```sql
+SELECT * FROM data.orders          -- table `orders` in source `data`
+```
+
+Pawrly has **two foundational backends** — `file` (local files, or object storage) and `http` (any REST/GraphQL API) — plus a small set of **first-class database / lakehouse builtins** that run through an in-process DuckDB engine.
+
+This page is the reference for the **source block** (every top-level field) and the **per-kind config** for each kind. For the surrounding config — secrets, caching internals, safety semantics, defaults, and multi-file assembly — see [Configuration](./config.md).
+
+---
+
+## The source block
+
+Every entry under `sources:` is one source. These are the top-level fields:
+
+
+| Field              | Type    | Required | Default         | Notes                                                                                                |
+| ------------------ | ------- | -------- | --------------- | ---------------------------------------------------------------------------------------------------- |
+| `name`             | string  | **yes**  | —               | SQL identifier; becomes the schema prefix (`name.table`). Must be unique.                            |
+| `kind`             | enum    | **yes**  | —               | The source kind — see [Source kinds](#source-kinds). Case-insensitive; some kinds have aliases.      |
+| `description`      | string  | no       | —               | Free text; surfaced in `pawrly source list`.                                                         |
+| `config`           | mapping | no¹      | `{}`            | Per-kind settings (connection, auth, paths, storage, …). Shape depends on `kind`.                    |
+| `tables`           | list    | no¹      | `[]`            | Explicit per-table declarations. Required for some kinds, optional for others (which auto-discover). |
+| `cache`            | mapping | no       | `mode: none`    | Per-source caching. See `[cache](#the-cache-block)`.                                                 |
+| `safety`           | mapping | no       | permissive      | Per-source guard rails. See `[safety](#the-safety-block)`.                                           |
+| `raw_table`        | bool    | no       | `false`         | `http` only: register a raw-HTTP escape-hatch table named after the source.                          |
+| `raw_table_safety` | mapping | no       | filter-required | Safety policy for the raw table when `raw_table: true`.                                              |
+
+
+¹ Whether `config` or `tables` is required depends on the kind (see each kind below).
+
+The config-layer source block also accepts `from:` (load the body from another file) — see [Configuration → Multi-file configs](./config.md#multi-file-configs).
+
+### `name`
+
+A valid SQL identifier (letter or `_`, then alphanumerics/`_`). It's the schema under which the source's tables are registered, so `SELECT … FROM <name>.<table>`. Names must be unique across the merged config.
+
+### `kind`
+
+The kind selects the backend and the shape of `config`/`tables`. The list is closed (adding a kind is a code change). Matching is case-insensitive; the aliases below resolve to the same kind.
+
+
+| Kind        | Aliases            | Backend                                                                                   |
+| ----------- | ------------------ | ----------------------------------------------------------------------------------------- |
+| `file`      | —                  | DataFusion native readers (local), or DuckDB object-store reads (with a `storage:` block) |
+| `http`      | —                  | native HTTP table provider                                                                |
+| `sqlite`    | —                  | read-only attach                                                                          |
+| `postgres`  | `pg`, `postgresql` | DuckDB `ATTACH` (read-only)                                                               |
+| `mysql`     | —                  | DuckDB `ATTACH` (read-only)                                                               |
+| `duckdb`    | —                  | DuckDB `ATTACH` of a local `.duckdb` file (read-only)                                     |
+| `snowflake` | —                  | DuckDB `ATTACH` (community extension)                                                     |
+| `iceberg`   | —                  | DuckDB `iceberg_scan`                                                                     |
+| `delta`     | `deltalake`        | DuckDB `delta_scan`                                                                       |
+| `ducklake`  | —                  | DuckDB `ATTACH 'ducklake:…'`                                                              |
+
+
+> The DuckDB-backed kinds load a DuckDB extension on first use (e.g. `postgres`, `iceberg`, `ducklake`, `httpfs`; Snowflake's is a community extension). The first registration in a fresh environment may need network access to fetch the extension.
+
+### `description`
+
+Optional human-readable text. No effect on behavior; shown by `pawrly source list`.
+
+### `config`
+
+A per-kind mapping, opaque to the config layer and interpreted by the kind's builder (so each kind documents its own keys below). Strings here may use `${secret:NAME}`, `${env:NAME}`, and `${file:PATH}` interpolation (see [Configuration → Secrets](./config.md#secrets)).
+
+### `tables`
+
+Explicit per-table declarations. **Per-table fields are written flat** — the kind-specific keys (`path`, `format`, `endpoint`, `params`, `response`, `query`, …) sit directly under the table entry, not under a nested `config:`:
+
+```yaml
+tables:
+  - name: orders                 # required; the SQL table name
+    description: Daily orders     # optional
+    path: ./data/orders.parquet   # ← kind-specific fields, flat
+    format: parquet
+    cache:  { mode: ttl, ttl: 1h }  # optional; overrides the source-level cache
+    safety: { max_rows: 100000 }    # optional; overrides the source-level safety
+```
+
+Only `name`, `description`, `cache`, and `safety` are common; everything else is kind-specific. Some kinds **auto-discover** tables when `tables:` is omitted (`file` globs, `sqlite`/`postgres`/`mysql`/`duckdb`/`snowflake`/`ducklake` enumerate). Others **require** `tables:` (`iceberg`, `delta`, and object-store `file`).
+
+### The `cache` block
+
+Opt-in caching for a source (or an individual table). With no block, reads always go live.
+
+```yaml
+cache:
+  mode: ttl        # none | ttl | refresh | cron | append
+  ttl: 10m
+```
+
+
+| `mode`    | Extra field            | Behaviour                                                                                |
+| --------- | ---------------------- | ---------------------------------------------------------------------------------------- |
+| `none`    | —                      | No caching (default when `cache:` is absent).                                            |
+| `ttl`     | `ttl: <dur>`           | Serve the cached result until `ttl` elapses, then re-fetch on the next read.             |
+| `refresh` | `every: <dur>`         | Always read the cache; a background loop re-fetches every `every`.                       |
+| `cron`    | `cron: "<expr>"`       | Like `refresh`, scheduled by a cron expression.                                          |
+| `append`  | `cursor_column: <col>` | Incremental: only rows newer than the cached `cursor_column` max are fetched on refresh. |
+
+
+Durations use humantime (`30s`, `10m`, `1h`). Storage location, namespacing, and cache-management commands are covered in [Configuration → Caching](./config.md#caching).
+
+### The `safety` block
+
+Guard rails enforced before a scan runs. All fields are optional and default to permissive.
+
+```yaml
+safety:
+  require_filters_on: [order_date]   # error unless a filter touches each of these columns
+  require_at_least_one_filter: true  # refuse a full-table scan
+  max_rows: 1000000                  # hard cap on returned rows
+  max_pages: 50                      # cap on HTTP pagination calls
+  timeout: 30s                       # per-query timeout
+  required_predicates:               # predicates AND-ed into every scan
+    - "tenant_id = ${param:tenant_id}"
+```
+
+`required_predicates` is most useful with the [semantic layer](./semantic.md), where `${param:NAME}` placeholders are bound from query params as safe literals (row-level security). See [Configuration → Safety](./config.md#safety).
+
+### `raw_table` / `raw_table_safety`
+
+For `kind: http` only, `raw_table: true` registers an escape-hatch table named after the source for endpoints with no typed spec. You provide the request as filters; Pawrly returns the raw response as rows. Columns:
+
+
+| Column            | Type    | Notes                                 |
+| ----------------- | ------- | ------------------------------------- |
+| `request_method`  | varchar | defaults to `GET` if not filtered     |
+| `request_path`    | varchar | **filter required** (`=` or `IN (…)`) |
+| `request_query`   | varchar | optional query string                 |
+| `response_status` | int     | HTTP status code                      |
+| `response_body`   | varchar | raw response body                     |
+
+
+```sql
+SELECT response_status, response_body
+FROM gh                                   -- the source itself is the raw table
+WHERE request_path = '/rate_limit'
+```
+
+`raw_table_safety` overrides the default policy, which requires a filter on `request_path` (so a bare `SELECT *` can't fan out arbitrarily).
+
+---
+
+## Source kinds
+
+### File Backend (`file)` — local files & object storage
+
+The `file` backend serves columnar and row files. **Local** files use DataFusion's native readers; **object storage** (S3/GCS/Azure) is expressed with a `storage:` block and read through DuckDB. A `file` source needs **either** a top-level `config.path` glob **or** at least one `tables:` entry.
 
 ```yaml
 sources:
   - name: data
     kind: file
+    config:
+      path: ./data/*.csv          # glob; one table per file, named by file stem
+```
+
+Per-table fields are written **flat** under each `tables:` entry: `path`, `format`, `csv`, `json`, `schema`, `partition_cols`. The three big topics — formats, globs/partitioning, and object storage — follow.
+
+#### File formats
+
+`format` is one of `parquet`, `csv`, `json`. It's **inferred from the file extension** when omitted (`.parquet` → parquet; `.csv` → csv; `.json` / `.jsonl` / `.ndjson` → json). Specify it explicitly for extensionless paths or directories.
+
+**CSV** — override the dialect with a `csv:` block (all optional):
+
+
+| Key         | Default | Notes                                                                                     |
+| ----------- | ------- | ----------------------------------------------------------------------------------------- |
+| `header`    | `true`  | First row is a header. Set `false` for headerless files (pair with an explicit `schema`). |
+| `delimiter` | `,`     | Single character. `"\t"` is accepted for tab.                                             |
+| `quote`     | `"`     | Single quote character.                                                                   |
+
+
+```yaml
     tables:
-      - name: orders
-        path: ./data/orders.parquet
-        format: parquet           # parquet | csv | json
-      - name: events
-        path: ./data/events.json
+      - name: metrics
+        path: ./data/metrics.tsv
+        format: csv
+        csv: { header: false, delimiter: "\t" }
+        schema:                       # name + type the columns for a headerless file
+          - { name: host,  type: varchar }
+          - { name: value, type: bigint }
+```
+
+**JSON/JSONL** — files may be newline-delimited (NDJSON) or a single `[ … ]` array. The layout is auto-detected from the first non-whitespace byte; force it with a `json:` block:
+
+```yaml
+      - name: facts
+        path: ./data/facts.json
         format: json
+        json: { format: array }       # array | ndjson | auto (default)
 ```
 
-Once registered, query them like any table: `SELECT * FROM data.orders`. Files of different formats can be joined freely — the SQL is identical regardless of format.
+**Explicit schema** — a `schema:` list of `{ name, type }` overrides inference (useful for headerless CSV or mis-inferred columns). Column `type` values (here and in `partition_cols`): `bool`/`boolean`, `int`/`int32`, `bigint`/`int64`, `float`/`float32`, `double`/`float64`, `date`, and `varchar` (the default for anything else).
 
-A per-table `path` may be a single file, a **glob**, or a **directory** — a glob or directory is read as one table unioning every matching file (the natural shape for a partitioned dataset):
+#### File Partitions
+
+A per-table `path` may be:
+
+- a **single file** — `./data/orders.parquet`;
+- a **glob** — `./data/orders/*.parquet` (all matches unioned into one table);
+- a **directory** — `./lake/events` (every file beneath it, read as one table).
+
+For partitioned datasets, declare `partition_cols` so the partition keys become queryable columns. This applies to all three formats (`parquet`, `csv`, `json`). Two styles, **one per table**:
+
+**Hive Partition** — `key=value` directories (e.g. `events/dt=2026-05-31/region=us/*.parquet`). The keys are exposed as columns and **prune by directory** (a filter on `dt` skips non-matching folders). Streams through the file reader.
 
 ```yaml
-    tables:
-      - name: orders
-        path: ./data/orders/*.parquet     # all parts → one `orders` table
-        format: parquet
-```
-
-**Hive partitions** — for `key=value` directory layouts, declare `partition_cols` to expose the keys as queryable, prunable columns:
-
-```yaml
-      - name: events                        # events/dt=2026-05-31/region=us/*.parquet
+      - name: events                  # events/dt=…/region=…/*.parquet
         path: ./lake/events
         format: parquet
         partition_cols:
@@ -59,46 +231,235 @@ A per-table `path` may be a single file, a **glob**, or a **directory** — a gl
 SELECT * FROM data.events WHERE dt = '2026-05-31'   -- only that dt= directory is read
 ```
 
-For directory layouts that *aren't* `key=value`, a **segment** partition takes its value from the directory name at a positional `index` beneath the glob base:
+**Segment** — positional partitions for layouts that *aren't* `key=value`. Each column takes its value from the directory name at a zero-based `index` beneath the glob base. Segment-partitioned tables are materialized in memory, so they don't prune.
 
 ```yaml
-      - name: sessions                        # projects/<project>/*.jsonl
+      - name: sessions                # projects/<project>/*.jsonl
         path: ./projects/*/*.jsonl
         format: json
         partition_cols:
           - { name: project, type: varchar, kind: segment, index: 0 }
 ```
 
-Hive partitions stream through the file reader (and prune by directory); segment-partitioned tables are materialized in memory, so they don't prune. A table uses one partition style or the other, not both.
+Each `partition_cols` entry is `{ name, type (default varchar), kind: hive | segment (default hive), index (required for segment) }`.
 
-**CSV options & explicit schema** — override the dialect, and (optionally) the inferred schema for headerless or mis-inferred files:
+#### Object storage (S3 / GCS / Azure)
 
-```yaml
-      - name: metrics
-        path: ./data/metrics.tsv
-        format: csv
-        csv:
-          header: false          # default true
-          delimiter: "\t"        # default ","
-          quote: '"'
-        schema:                  # optional: name + type the columns
-          - { name: host,  type: varchar }
-          - { name: value, type: bigint }
-```
-
-**JSON layout** — JSON files may be newline-delimited (NDJSON) or a single array `[ {…}, {…} ]`. The layout is auto-detected from the first non-whitespace byte; set it explicitly with a `json` block:
+Add a `storage:` block to read from a bucket. `storage.type` selects the provider; `storage.region` and the bucket URLs are the location; credentials live under a typed `storage.auth` block. Object-store `file` sources **require explicit `tables:`**, each pointing at a remote URL.
 
 ```yaml
-      - name: facts
-        path: ./data/facts.json
-        format: json
-        json:
-          format: array          # array | ndjson | auto (default)
+sources:
+  - name: lake
+    kind: file
+    config:
+      storage:
+        type: s3                      # s3 | gcs | azure
+        region: us-east-1             # location, not a credential
+        auth:
+          type: access_key            # access_key | credential_chain
+          access_key_id: ${secret:AWS_KEY_ID}
+          secret_access_key: ${secret:AWS_SECRET}
+          # endpoint: ${env:AWS_ENDPOINT}   # S3-compatible stores (MinIO, R2, …)
+    tables:
+      - name: events
+        path: s3://my-bucket/events/*.parquet
+        format: parquet               # parquet (default) | csv | json
 ```
+
+`auth.type` selects the method (default `access_key`); each provider supports more than one:
+
+
+| `type`  | `auth.type`        | Fields                                                                                                                      |
+| ------- | ------------------ | --------------------------------------------------------------------------------------------------------------------------- |
+| `s3`    | `access_key`       | `access_key_id`, `secret_access_key`, `session_token`, `endpoint`, `url_style`                                              |
+| `gcs`   | `access_key`       | `access_key_id`, `secret_access_key` (HMAC keys)                                                                            |
+| `azure` | `access_key`       | `connection_string`, `account_name`                                                                                         |
+| any     | `credential_chain` | none — resolve from the ambient chain (env / instance profile / `gcloud` / `az login`); optional `endpoint`, `account_name` |
+
+
+With no `auth` block, the ambient credential chain is used.
+
+> Remote files are read by DuckDB's `read_parquet`/`read_csv`/`read_json`, so the local-file `csv`/`json`/`partition_cols`/`schema` options do **not** apply to object-store tables — DuckDB infers the schema and reader from the URL and `format`.
+
+
+
+### Http Backend (`http)` — REST & GraphQL APIs
+
+Turns an HTTP API into SQL tables: you declare each table's request and how to shape its JSON response into rows. Source-level `config` carries `base_url` (**required**), auth, retries, and rate limiting; each `tables:` entry maps one request shape to rows.
+
+```yaml
+sources:
+  - name: gh
+    kind: http
+    config:
+      base_url: https://api.github.com     # joined with each table's endpoint
+      token: ${secret:GITHUB_TOKEN}
+    raw_table: true
+    tables:
+      - name: pulls
+        endpoint: /repos/{owner}/{repo}/pulls
+        params:
+          - { name: owner, required: true }
+          - { name: repo,  required: true }
+          - { name: state, required: false, default: open }
+        response:
+          path: $
+          schema:
+            - { name: number, type: bigint }
+            - { name: title,  type: varchar }
+            - { name: state,  type: varchar }
+        pagination: { type: link_header }
+```
+
+```sql
+SELECT number, title FROM gh.pulls
+WHERE owner = 'withpawrly' AND repo = 'pawrly' AND state = 'open' LIMIT 20
+```
+
+#### Authentication
+
+Set source-level auth either with a shorthand or the full `auth:` block (the block wins if both are present):
+
+- **Shorthand** — `config.token` or `config.api_key` → sent as `Authorization: Bearer <value>`.
+- `**auth:` block**, tagged by `type`:
+
+
+| `type`    | Fields                                                                  | Behaviour                                                                                                                                  |
+| --------- | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `bearer`  | `token`                                                                 | `Authorization: Bearer <token>`.                                                                                                           |
+| `api_key` | `header` (default `X-API-Key`), `value`                                 | Sends `value` in the named header.                                                                                                         |
+| `basic`   | `username`, `password`                                                  | HTTP Basic.                                                                                                                                |
+| `oauth2`  | `token_url`, `client_id`, `client_secret`, optional `scope`, `audience` | Client-credentials grant: a token is fetched on first use, cached, re-fetched before expiry, then sent as `Authorization: Bearer <token>`. |
+
+
+```yaml
+    config:
+      base_url: https://api.example.com
+      auth:
+        type: oauth2
+        token_url:     https://login.example.com/oauth/token
+        client_id:     ${secret:CLIENT_ID}
+        client_secret: ${secret:CLIENT_SECRET}
+        scope:         read:data       # optional
+```
+
+#### Request
+
+Each table's request is built from these flat fields:
+
+- **endpoint** (required) — path appended to `base_url`. May carry a query string and `{param}` placeholders; a param whose name matches a `{placeholder}` fills the URL **path**, the rest become query parameters.
+- **method** — defaults to `GET`.
+- **headers** — a per-table map of extra request headers.
+- **body** — for POST/PUT/GraphQL: `kind` (`json`, the default, sets `Content-Type: application/json`; or `form` for `application/x-www-form-urlencoded`) and `template` (body text with `{param}` placeholders; other braces — JSON/GraphQL syntax — are left untouched).
+- **requests** — conditional request shapes tried in order; the first whose `when_filters` are **all** bound replaces the default `endpoint`/`method`/`body`. Each entry is `{ when_filters: [...], endpoint, method?, body? }`. The classic use is a get-by-id endpoint when an id filter is present, falling back to a list endpoint otherwise.
+
+```yaml
+      - name: search
+        endpoint: /graphql
+        method: POST
+        params:
+          - { name: q, required: true }
+        body:
+          kind: json
+          template: '{"query": "{ search(q: \"{q}\") { id name } }"}'
+        response:
+          path: $.data.search
+          schema:
+            - { name: id,   type: varchar }
+            - { name: name, type: varchar }
+```
+
+#### Query parameters
+
+`params` declares the columns a table accepts as filters. Each is `{ name, type (default varchar), required (default false), default, accepts, emit }`:
+
+- `**required: true**` — the param must appear as a SQL filter, or the scan fails with a clear error (rather than fetching an unbounded result).
+- `**default**` — value used when the user doesn't filter on it.
+- **Equality** pushes down by default: `WHERE state = 'open'` → `?state=open`.
+- **Comparisons** — to push `>=` / `<=` etc., list them in `accepts` and map each to a query-parameter name in `emit`:
+
+```yaml
+        params:
+          - name: created
+            accepts: [">=", "<="]
+            emit: { ">=": since, "<=": until }   # WHERE created >= X → ?since=X
+```
+
+A param can also be surfaced as an output column with `source: param` on a `response.schema` entry (see below).
+
+#### Response
+
+`response` describes how to turn the JSON payload into rows:
+
+- `**path**` — JSONPath to the array of rows. `$` (the default) means the body *is* the array; `$.data` digs into a wrapper object.
+- `**schema`** — the columns to extract per row, each `{ name, type, source? }`:
+  - `**type*`* ∈ `varchar`/`string`/`text`, `bigint`/`int64`, `int`/`int32`, `double`, `float`, `bool`/`boolean`, `date`, `timestamp`, `timestamptz` (ISO-8601 / RFC 3339 strings are parsed), and `json` (a nested object/array kept as raw JSON text).
+  - `**source**` — defaults to the row's top-level field of the same name. Set `$.nested.field` to read a different path, `$` to capture the whole row element (usually into a `json` column), or `param` to inject a request parameter as a column.
+- `**allow_404_empty**` — treat a `404` as an empty result set instead of an error.
+- `**error**` — surface API failures as a clear scan error: `status` (a list of codes or matchers like `">=400"`, `"5xx"`, `"<500"`) and/or `path` (a JSONPath to an error message inside a `200`-with-error body).
+
+```yaml
+        response:
+          path: $.data
+          allow_404_empty: true
+          schema:
+            - { name: id,       type: bigint }
+            - { name: author,   type: varchar, source: $.user.login }
+            - { name: payload,  type: json,    source: $ }
+            - { name: repo,     type: varchar, source: param }
+          error:
+            status: [">=400"]
+            path: $.message
+```
+
+#### Pagination
+
+Set `pagination` to keep fetching pages; absent means a single request. A SQL `LIMIT` stops pagination early once enough rows are collected, and `safety.max_pages` caps the loop. The strategy is tagged by `type`:
+
+
+| `type`        | Fields                                               | Behaviour                                                                                                                                               |
+| ------------- | ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `link_header` | —                                                    | Follows the RFC 5988 `Link:` header's `rel="next"` URL until absent.                                                                                    |
+| `cursor`      | `next_path`, `param`                                 | Reads an opaque cursor from the body at `next_path` (`$.a.b`) and echoes it back as the `param` query parameter; stops when the cursor is absent/empty. |
+| `page`        | `param`, `start` (default 1), `size_param?`, `size?` | Increments the page number in `param` until a page returns zero rows; optionally sends a page size via `size_param`/`size`.                             |
+| `offset`      | `param`, `size_param`, `size`                        | Increments `param` by `size` each page until a short page (fewer than `size` rows).                                                                     |
+
+
+```yaml
+        pagination: { type: cursor, next_path: $.response_metadata.next_cursor, param: cursor }
+```
+
+#### Rate limiting & retries
+
+`**rate_limit**` keeps requests within the API's quota:
+
+
+| Field                 | Notes                                                                                                                                    |
+| --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `requests_per_second` | Local token-bucket ceiling shared across scans. Omit/zero to disable.                                                                    |
+| `remaining_header`    | Response header carrying remaining quota (e.g. `x-ratelimit-remaining`); when it reads `0`, the next request waits until the reset time. |
+| `reset_header`        | Response header carrying the reset time as an epoch-seconds timestamp.                                                                   |
+| `extra_statuses`      | Status codes besides `429`/`503` also treated as rate-limit signals (e.g. GitHub's secondary-limit `403`).                               |
+
+
+`**retry**` governs transient failures (transport errors, 5xx, 429, 503, and any `extra_statuses`): `max_retries` (default 3), `base_backoff_ms` (default 200, doubles each attempt), `max_backoff_ms` (default 5000). Backoff honours a `Retry-After` header when present.
+
+```yaml
+    config:
+      base_url: https://api.github.com
+      rate_limit:
+        remaining_header: x-ratelimit-remaining
+        reset_header:     x-ratelimit-reset
+        extra_statuses:   [403]            # GitHub secondary limit
+      retry:
+        max_retries: 5
+```
+
+A runnable cache-over-API walkthrough lives at `[examples/cache-http/](../examples/cache-http/pawrly.yaml)`.
 
 ### `sqlite` — local SQLite databases
 
-Attaches a SQLite database file read-only and exposes its tables. Equality filters are pushed down into SQLite.
+Attaches a SQLite file read-only and exposes its tables; equality filters push down. When `tables:` is omitted, every user table is auto-registered.
 
 ```yaml
 sources:
@@ -106,141 +467,103 @@ sources:
     kind: sqlite
     config:
       path: ./app.db
+    # tables:                       # optional: restrict / reshape
+    #   - name: active_users
+    #     query: SELECT id, email FROM users WHERE active = 1
 ```
 
-### HTTP — REST APIs
+### `postgres`, `mysql` — foreign databases
 
-Turns a REST API into SQL tables. Pawrly ships **bundled specs** for common services and also supports generic, user-defined HTTP tables.
+DuckDB `ATTACH`es the database **read-only** and exposes its tables lazily (`<source>.<table>`); equality predicates, projection, and limits push down. No `tables:` needed.
 
-Bundled `github` (currently exposes a `pulls` table):
+
+| Key                        | Notes                                           |
+| -------------------------- | ----------------------------------------------- |
+| `dsn`                      | Full connection string. If present, used as-is. |
+| `host`                     | Required if no `dsn`.                           |
+| `database` / `dbname`      | Database name.                                  |
+| `port`, `user`, `password` | Optional.                                       |
+
 
 ```yaml
 sources:
-  - name: gh
-    kind: github
+  - name: oltp
+    kind: postgres            # aliases: pg, postgresql
     config:
-      token: ${secret:GITHUB_TOKEN}
+      host: db.internal
+      database: app
+      user: readonly
+      password: ${secret:PG_PASSWORD}
 ```
 
-```sql
-SELECT number, title, state
-FROM gh.pulls
-WHERE owner = 'withpawrly' AND repo = 'pawrly' AND state = 'open'
-LIMIT 20
-```
+### `duckdb` — local DuckDB database file
 
-Some columns are **required filters** (above, `owner` and `repo`) — Pawrly returns a clear error if they're missing, rather than scanning an entire API. Supported authentication modes are `bearer`, `api_key`, `basic`, and `oauth2` (client-credentials):
-
-```yaml
-    config:
-      auth:
-        type: oauth2
-        token_url:     https://login.example.com/oauth/token
-        client_id:     ${secret:CLIENT_ID}
-        client_secret: ${secret:CLIENT_SECRET}
-        scope:         read:data        # optional
-        audience:      https://api.example.com   # optional
-```
-
-The access token is fetched on first use, cached, and re-fetched on expiry, then sent as `Authorization: Bearer <token>`.
-
-**Generic HTTP** — point `kind: http` at any REST endpoint and declare your own
-tables. Each table gives an `endpoint` and a `response` describing how to turn
-the JSON into rows:
+Attaches a `.duckdb` database file read-only and exposes its tables lazily.
 
 ```yaml
 sources:
-  - name: cats
-    kind: http
+  - name: local_db
+    kind: duckdb
     config:
-      base_url: https://catfact.ninja
+      path: ./analytics.duckdb
+```
+
+### `snowflake`
+
+DuckDB `ATTACH` via the Snowflake community extension (installed on first use). Requires `account`, `user`, `password`; optional `database`, `schema`, `warehouse`, `role`.
+
+```yaml
+sources:
+  - name: warehouse
+    kind: snowflake
+    config:
+      account: acme.us-east-1
+      user: ${secret:SNOWFLAKE_USER}
+      password: ${secret:SNOWFLAKE_PASSWORD}
+      database: ANALYTICS
+      schema: PUBLIC
+```
+
+### `iceberg`, `delta` — table formats
+
+Each declared table maps to a DuckDB scan function over a table location. `**tables:` is required**, each with a `path` (or `location`).
+
+```yaml
+sources:
+  - name: lake
+    kind: iceberg                 # or: delta (alias deltalake)
     tables:
-      - name: facts
-        endpoint: /facts?limit=50        # relative to base_url
-        response:
-          path: $.data                   # JSONPath to the row array ($ = body is the array)
-          schema:
-            - { name: fact,   type: varchar }
-            - { name: length, type: bigint }
+      - name: orders
+        path: s3://bucket/warehouse/orders
 ```
 
-```sql
-SELECT length, fact FROM cats.facts ORDER BY length DESC LIMIT 5
-```
+For tables on an object store, provide credentials with a `storage:` block (same keys as object-store `file`); the `httpfs` extension loads automatically.
 
-Field reference:
+### `ducklake` — DuckLake lakehouse catalog
 
-- `endpoint` — path appended to `base_url`; may carry a query string and `{param}` placeholders.
-- `method` — defaults to `GET`.
-- `body` — request body for POST/PUT/GraphQL endpoints: `kind` (`json` — the default, sets `Content-Type: application/json` — or `form`) and `template` (body text with `{param}` placeholders filled from bound params/filters; other braces, e.g. JSON/GraphQL, are left untouched).
-- `requests` — conditional request shapes for one table, tried in order; the first whose `when_filters` are all bound replaces the default `endpoint`/`method`/`body` (e.g. a get-by-id endpoint when `number` is filtered, list otherwise). Each entry has `when_filters`, `endpoint`, optional `method`, and optional `body`.
-- `response.path` — JSONPath to the array of rows. `$` means the body *is* the array; `$.data` digs into a wrapper object.
-- `response.schema` — columns to extract per row. `type` ∈ `varchar`, `bigint`, `int`, `double`, `float`, `bool`, `date`, `timestamp`, `timestamptz` (ISO-8601 / RFC 3339 strings are parsed), and `json` (a nested object/array kept as raw JSON text). Add `source: $.nested.field` to read a different path, `source: $` to capture the whole row element (typically into a `json` column), or `source: param` to inject a request parameter as a column.
-- `response.allow_404_empty` — treat a `404` as an empty result set instead of an error.
-- `response.error` — turn API failures into a clear scan error: `status` (codes or matchers like `">=400"`, `"5xx"`) and/or `path` (a JSONPath to an error message inside a `200`-with-error body).
-- `params` — declared query/path parameters (`name`, `type`, `required`, `default`); a `required` param must appear as a SQL filter. Equality pushes down by default; add `accepts` (e.g. `[">=", "<="]`) plus an `emit` map (operator → query parameter, e.g. `{ ">=": since, "<=": until }`) to push comparison filters down as separate query parameters.
-
-A `LIMIT` stops pagination early — once enough rows are collected, no further pages are fetched.
-
-The source-level `rate_limit` block can track the API's own quota headers: `remaining_header` / `reset_header` (when remaining hits `0`, the next request waits until the reset time) and `extra_statuses` (codes besides `429`/`503` — e.g. GitHub's secondary-limit `403` — that are also treated as rate-limit signals and retried).
-
-A runnable end-to-end example **with caching** lives at [`examples/cache-http/`](../examples/cache-http/pawrly.yaml).
-
-There's also a raw escape hatch (`raw_table: true`) for endpoints without a typed spec, where you provide the request path as a filter and Pawrly hands back the JSON response as rows.
-
-### `ai` — OpenAI-compatible models
-
-Registers an AI provider so you can call a model from SQL. It exposes a `chat` function and a `models` table:
+Attaches a [DuckLake](https://ducklake.select) catalog (a metadata database plus a data path) and exposes its tables lazily.
 
 ```yaml
 sources:
-  - name: ai
-    kind: ai
+  - name: lake
+    kind: ducklake
     config:
-      provider: openai
-      base_url: https://api.openai.com/v1
-      api_key: ${secret:OPENAI_API_KEY}
-      default_model: gpt-5-mini
+      catalog: ./metadata.ducklake     # sqlite/duckdb/postgres catalog
+      data_path: ./lake_data            # local or s3://… (+ optional storage block)
 ```
 
-```sql
-SELECT id,
-       ai.chat('gpt-5-mini', 'Summarize in one line: ' || body) AS summary
-FROM data.tickets
-LIMIT 5
-
-SELECT * FROM ai.models      -- name, model, provider
-```
-
-Any OpenAI-compatible endpoint works via `base_url`.
-
-## Caching any source
-
-Any source or table can opt into caching with a `cache:` block — useful for rate-limited APIs and expensive AI calls. See [Configuration → Caching](./config.md#caching).
-
-```yaml
-sources:
-  - name: gh
-    kind: github
-    config:
-      token: ${secret:GITHUB_TOKEN}
-    cache:
-      mode: ttl
-      ttl: 10m
-```
-
-See [`examples/cache-http/`](../examples/cache-http/pawrly.yaml) for a runnable cache-over-a-public-API walkthrough.
-
-## Planned source kinds
-
-The following kinds are recognized by the config and on the roadmap; today they return a clear "not available in this build" error so your config stays forward-compatible:
-
-- **Relational databases** — Postgres, MySQL, Excel.
-- **Warehouses & lakehouses** — Snowflake, Iceberg, Delta.
-- **Object stores** — S3, GCS, Azure.
-
-Declaring one of these validates fine; querying it tells you the kind isn't available yet. Check `examples/pawrly.yaml` for the full kitchen-sink configuration covering every kind.
+---
 
 ## Federation
 
-Because every source is a table in one DataFusion plan, you can join across kinds in a single statement — a local file against a SQLite table against a GitHub query — with no import step. The SQL is the same whether the data is local or remote.
+Every source is a table in one DataFusion plan, so you can join across kinds in a single statement — a local Parquet file against a Postgres table against an HTTP query — with no import step:
+
+```sql
+SELECT u.email, COUNT(p.number) AS open_prs
+FROM oltp.users u
+JOIN gh.pulls p ON p.user = u.github_login
+WHERE p.owner = 'withpawrly' AND p.repo = 'pawrly' AND p.state = 'open'
+GROUP BY u.email
+```
+
+See `examples/pawrly.yaml` for a kitchen-sink configuration covering every kind.

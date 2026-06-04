@@ -1,6 +1,7 @@
 # Config fragment included via the root's `include:` glob.
 sources:
   - name: linear
-    kind: linear
+    kind: http
     config:
-      api_key: ${secret:LINEAR_API_KEY}
+      base_url: https://api.linear.app
+      token: ${secret:LINEAR_API_KEY}

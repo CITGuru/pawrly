@@ -19,26 +19,15 @@ impl From<core::SourceKind> for v1::SourceKind {
     fn from(k: core::SourceKind) -> Self {
         match k {
             core::SourceKind::Http => Self::Http,
-            core::SourceKind::Github => Self::Github,
-            core::SourceKind::Linear => Self::Linear,
-            core::SourceKind::Stripe => Self::Stripe,
-            core::SourceKind::Sentry => Self::Sentry,
-            core::SourceKind::Datadog => Self::Datadog,
-            core::SourceKind::Slack => Self::Slack,
-            core::SourceKind::Notion => Self::Notion,
-            core::SourceKind::Ai => Self::Ai,
             core::SourceKind::File => Self::File,
+            core::SourceKind::Sqlite => Self::Sqlite,
             core::SourceKind::Postgres => Self::Postgres,
             core::SourceKind::Mysql => Self::Mysql,
-            core::SourceKind::Sqlite => Self::Sqlite,
+            core::SourceKind::Duckdb => Self::Duckdb,
             core::SourceKind::Snowflake => Self::Snowflake,
-            core::SourceKind::Bigquery => Self::Bigquery,
-            core::SourceKind::Redshift => Self::Redshift,
             core::SourceKind::Iceberg => Self::Iceberg,
+            core::SourceKind::Ducklake => Self::Ducklake,
             core::SourceKind::Delta => Self::Delta,
-            core::SourceKind::S3 => Self::S3,
-            core::SourceKind::Gcs => Self::Gcs,
-            core::SourceKind::Azure => Self::Azure,
         }
     }
 }
@@ -50,26 +39,15 @@ impl TryFrom<v1::SourceKind> for core::SourceKind {
         match k {
             v1::SourceKind::Unspecified => Err(ConvError::UnspecifiedSourceKind),
             v1::SourceKind::Http => Ok(Self::Http),
-            v1::SourceKind::Github => Ok(Self::Github),
-            v1::SourceKind::Linear => Ok(Self::Linear),
-            v1::SourceKind::Stripe => Ok(Self::Stripe),
-            v1::SourceKind::Sentry => Ok(Self::Sentry),
-            v1::SourceKind::Datadog => Ok(Self::Datadog),
-            v1::SourceKind::Slack => Ok(Self::Slack),
-            v1::SourceKind::Notion => Ok(Self::Notion),
-            v1::SourceKind::Ai => Ok(Self::Ai),
             v1::SourceKind::File => Ok(Self::File),
+            v1::SourceKind::Sqlite => Ok(Self::Sqlite),
             v1::SourceKind::Postgres => Ok(Self::Postgres),
             v1::SourceKind::Mysql => Ok(Self::Mysql),
-            v1::SourceKind::Sqlite => Ok(Self::Sqlite),
+            v1::SourceKind::Duckdb => Ok(Self::Duckdb),
             v1::SourceKind::Snowflake => Ok(Self::Snowflake),
-            v1::SourceKind::Bigquery => Ok(Self::Bigquery),
-            v1::SourceKind::Redshift => Ok(Self::Redshift),
             v1::SourceKind::Iceberg => Ok(Self::Iceberg),
+            v1::SourceKind::Ducklake => Ok(Self::Ducklake),
             v1::SourceKind::Delta => Ok(Self::Delta),
-            v1::SourceKind::S3 => Ok(Self::S3),
-            v1::SourceKind::Gcs => Ok(Self::Gcs),
-            v1::SourceKind::Azure => Ok(Self::Azure),
         }
     }
 }
@@ -828,10 +806,11 @@ mod tests {
     fn source_kind_round_trip() {
         for k in [
             core::SourceKind::Http,
-            core::SourceKind::Github,
+            core::SourceKind::File,
             core::SourceKind::Snowflake,
             core::SourceKind::Iceberg,
-            core::SourceKind::Ai,
+            core::SourceKind::Duckdb,
+            core::SourceKind::Ducklake,
         ] {
             let proto: v1::SourceKind = k.into();
             let back: core::SourceKind = proto.try_into().unwrap();

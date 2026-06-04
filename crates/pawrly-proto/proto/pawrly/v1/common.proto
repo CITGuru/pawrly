@@ -17,30 +17,27 @@ message TableName {
   string table = 2;
 }
 
-// Closed enum mirroring pawrly_core::SourceKind.
+// Closed enum mirroring pawrly_core::SourceKind. Numbers are stable for kept
+// kinds; removed kinds' numbers are retired (not reused).
 enum SourceKind {
   SOURCE_KIND_UNSPECIFIED = 0;
   SOURCE_KIND_HTTP = 1;
-  SOURCE_KIND_GITHUB = 2;
-  SOURCE_KIND_LINEAR = 3;
-  SOURCE_KIND_STRIPE = 4;
-  SOURCE_KIND_SENTRY = 5;
-  SOURCE_KIND_DATADOG = 6;
-  SOURCE_KIND_SLACK = 7;
-  SOURCE_KIND_NOTION = 8;
-  SOURCE_KIND_AI = 10;
   SOURCE_KIND_FILE = 20;
   SOURCE_KIND_POSTGRES = 21;
   SOURCE_KIND_MYSQL = 22;
   SOURCE_KIND_SQLITE = 23;
+  SOURCE_KIND_DUCKDB = 24;
   SOURCE_KIND_SNOWFLAKE = 30;
-  SOURCE_KIND_BIGQUERY = 31;
-  SOURCE_KIND_REDSHIFT = 32;
   SOURCE_KIND_ICEBERG = 33;
   SOURCE_KIND_DELTA = 34;
-  SOURCE_KIND_S3 = 40;
-  SOURCE_KIND_GCS = 41;
-  SOURCE_KIND_AZURE = 42;
+  SOURCE_KIND_DUCKLAKE = 35;
+
+  reserved 2, 3, 4, 5, 6, 7, 8, 10, 31, 32, 40, 41, 42;
+  reserved "SOURCE_KIND_GITHUB", "SOURCE_KIND_LINEAR", "SOURCE_KIND_STRIPE",
+           "SOURCE_KIND_SENTRY", "SOURCE_KIND_DATADOG", "SOURCE_KIND_SLACK",
+           "SOURCE_KIND_NOTION", "SOURCE_KIND_AI", "SOURCE_KIND_BIGQUERY",
+           "SOURCE_KIND_REDSHIFT", "SOURCE_KIND_S3", "SOURCE_KIND_GCS",
+           "SOURCE_KIND_AZURE";
 }
 
 // Cache mode mirroring pawrly_core::CacheMode.

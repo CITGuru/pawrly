@@ -33,7 +33,8 @@ fn mock_secrets() -> StaticStore {
     s.insert("PG_DSN", "postgresql://test:test@localhost/test");
     s.insert("SNOWFLAKE_USER", "svc_pawrly");
     s.insert("SNOWFLAKE_PASSWORD", "p4ssw0rd!");
-    s.insert("OPENAI_API_KEY", "sk-test-key");
+    s.insert("AWS_KEY_ID", "AKIAEXAMPLE");
+    s.insert("AWS_SECRET", "secret-example");
     s
 }
 
@@ -48,7 +49,16 @@ fn loads_kitchen_sink_example() {
 
     // Every named source from the kitchen-sink example should be present.
     let names: Vec<&str> = cfg.sources.iter().map(|s| s.name.as_str()).collect();
-    for expected in ["data", "gh", "linear", "oltp", "warehouse", "models"] {
+    for expected in [
+        "data",
+        "lake",
+        "gh",
+        "linear",
+        "oltp",
+        "warehouse",
+        "local_db",
+        "dl",
+    ] {
         assert!(
             names.contains(&expected),
             "missing source `{expected}` in {names:?}"

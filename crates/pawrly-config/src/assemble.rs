@@ -3,8 +3,13 @@
 //! Runs before interpolation so secret resolution and validation operate on
 //! the fully-merged tree. Three orthogonal primitives:
 //!
-//! - `include:` — top-level field, splices the `sources:` (and optional
-//!   `secrets:`) lists of other YAML files (glob-aware) into this config.
+//! - `include:` — top-level field, splices other YAML files (glob-aware) into
+//!   this config. Each included file is either a *fragment* (carrying
+//!   `sources:` / `secrets:` lists) or a *bare single source* (the SourceDef
+//!   itself, recognised by a top-level `kind:`, with no `sources:` wrapper).
+//!   Either form may also carry a top-level `models:` list — the semantic
+//!   models defined over its sources — which is spliced into `semantic.models`,
+//!   so one file can fully describe an integration (its source and its models).
 //! - `from:` — inside one source, loads the body of that source from another
 //!   YAML file, with inline fields overriding the loaded fragment.
 //! - `semantic.include:` — splices the *models* of other YAML files (glob-aware)
@@ -45,6 +50,8 @@ pub(crate) fn assemble(tree: &mut Value, root_path: &Path) -> Result<Vec<PathBuf
     let mut sources: Vec<Value> = Vec::new();
     let mut origins: Vec<PathBuf> = Vec::new();
     let mut secrets: Vec<Value> = Vec::new();
+    let mut models: Vec<Value> = Vec::new();
+    let mut model_origins: Vec<PathBuf> = Vec::new();
     let mut visited: HashSet<PathBuf> = HashSet::new();
     let mut chain: Vec<PathBuf> = Vec::new();
 
@@ -58,6 +65,8 @@ pub(crate) fn assemble(tree: &mut Value, root_path: &Path) -> Result<Vec<PathBuf
         &mut sources,
         &mut origins,
         &mut secrets,
+        &mut models,
+        &mut model_origins,
         &mut visited,
         &mut chain,
     )?;
@@ -99,39 +108,55 @@ pub(crate) fn assemble(tree: &mut Value, root_path: &Path) -> Result<Vec<PathBuf
         obj.insert("secrets".to_string(), Value::Array(secrets));
     }
 
-    // Stage 3: splice external model-only files into `semantic.models`.
-    assemble_semantic_models(obj, root_path)?;
+    // Stage 3: splice models into `semantic.models` — both the models carried
+    // by `include:`d source fragments and the `semantic.include:` model-only
+    // files.
+    assemble_semantic_models(obj, root_path, models, model_origins)?;
 
     Ok(origins)
 }
 
-/// Splice the models of every file referenced by `semantic.include` into the
-/// root config's `semantic.models`. Inline models come first (origin = the root
-/// file), then each included file in glob order. Each include file must contain
-/// only models. Duplicate model names — within or across files — are rejected
-/// with a message naming both originating files.
+/// Merge models into the root config's `semantic.models` from three places, in
+/// this order: inline `semantic.models` (origin = the root file), then
+/// `semantic.include:` model-only files in glob order, then the models carried
+/// by `include:`d source fragments (`fragment_models`, in collection order).
+/// Duplicate model names — within or across any of those — are rejected with a
+/// message naming both originating files. A no-op when there are no include
+/// patterns and no fragment models, leaving any `semantic` block untouched.
 fn assemble_semantic_models(
     obj: &mut serde_json::Map<String, Value>,
     root_path: &Path,
+    fragment_models: Vec<Value>,
+    fragment_origins: Vec<PathBuf>,
 ) -> Result<(), ConfigError> {
-    let Some(sem) = obj.get_mut("semantic").and_then(Value::as_object_mut) else {
-        return Ok(());
+    // `semantic.include:` is consumed here whether or not it has entries, but
+    // only a real `semantic` mapping carries it.
+    let patterns = match obj.get_mut("semantic").and_then(Value::as_object_mut) {
+        Some(sem) => {
+            let p = parse_include_patterns(sem.get("include"), root_path)?;
+            sem.remove("include");
+            p
+        }
+        None => Vec::new(),
     };
-    let patterns = parse_include_patterns(sem.get("include"), root_path)?;
-    sem.remove("include");
-    if patterns.is_empty() {
+
+    // Nothing to splice: leave the (possibly absent) semantic block as-is.
+    if patterns.is_empty() && fragment_models.is_empty() {
         return Ok(());
     }
 
     let mut models: Vec<Value> = Vec::new();
     let mut origins: Vec<PathBuf> = Vec::new();
-    if let Some(Value::Array(inline)) = sem.get("models") {
+
+    // 1. Inline `semantic.models`.
+    if let Some(Value::Array(inline)) = obj.get("semantic").and_then(|s| s.get("models")) {
         for m in inline {
             models.push(m.clone());
             origins.push(root_path.to_path_buf());
         }
     }
 
+    // 2. `semantic.include:` model-only files, in glob order.
     let base_dir = root_path.parent().unwrap_or_else(|| Path::new("."));
     for pattern in patterns {
         for matched in glob_paths(base_dir, &pattern)? {
@@ -140,6 +165,12 @@ fn assemble_semantic_models(
                 origins.push(matched.clone());
             }
         }
+    }
+
+    // 3. Models carried by `include:`d source fragments, in collection order.
+    for (m, origin) in fragment_models.into_iter().zip(fragment_origins) {
+        models.push(m);
+        origins.push(origin);
     }
 
     let mut seen: HashMap<String, PathBuf> = HashMap::new();
@@ -159,6 +190,13 @@ fn assemble_semantic_models(
         }
     }
 
+    // Ensure a `semantic` mapping exists (fragment models may arrive with no
+    // root `semantic:` block), then write the merged model list.
+    let sem = obj
+        .entry("semantic".to_string())
+        .or_insert_with(|| Value::Object(serde_json::Map::new()))
+        .as_object_mut()
+        .ok_or_else(|| ConfigError::Yaml("`semantic` must be a mapping".to_string()))?;
     sem.insert("models".to_string(), Value::Array(models));
     Ok(())
 }
@@ -281,9 +319,9 @@ fn parse_include_patterns(
     }
 }
 
-/// Walk one file's tree, accumulating its sources (with origins) and secrets,
-/// then recurse into its `include:` entries. Inline content of a file precedes
-/// the content of the files it includes.
+/// Walk one file's tree, accumulating its sources (with origins), secrets, and
+/// any top-level `models:` it carries, then recurse into its `include:` entries.
+/// Inline content of a file precedes the content of the files it includes.
 #[allow(clippy::too_many_arguments)]
 fn collect(
     tree: &mut Value,
@@ -292,6 +330,8 @@ fn collect(
     sources: &mut Vec<Value>,
     origins: &mut Vec<PathBuf>,
     secrets: &mut Vec<Value>,
+    models: &mut Vec<Value>,
+    model_origins: &mut Vec<PathBuf>,
     visited: &mut HashSet<PathBuf>,
     chain: &mut Vec<PathBuf>,
 ) -> Result<(), ConfigError> {
@@ -302,9 +342,23 @@ fn collect(
         ))
     })?;
 
+    // A non-root included file may be either a *fragment* (a mapping carrying
+    // `sources:` / `secrets:` / `include:` lists) or a *bare single source*
+    // (the SourceDef itself, recognised by a top-level `kind:`). The bare form
+    // lets `include:` point straight at a one-source file with no `sources:`
+    // wrapper. The root config is always a fragment.
+    let is_single_source = !is_root && obj.contains_key("kind");
+
     if !is_root {
-        for key in ROOT_ONLY_KEYS {
-            if obj.contains_key(key) {
+        // `name` is root-only in a fragment, but in a bare single source the
+        // top-level `name:` is the source's own name, so it's allowed there.
+        let root_only: &[&str] = if is_single_source {
+            &["version", "defaults"]
+        } else {
+            &ROOT_ONLY_KEYS
+        };
+        for key in root_only {
+            if obj.contains_key(*key) {
                 return Err(ConfigError::Source(
                     path.display().to_string(),
                     format!("key `{key}` is only allowed in the root config"),
@@ -313,35 +367,55 @@ fn collect(
         }
     }
 
-    match obj.remove("sources") {
-        Some(Value::Array(arr)) => {
-            for s in arr {
-                sources.push(s);
-                origins.push(path.to_path_buf());
+    // A non-root file may carry a top-level `models:` list — the models defined
+    // over its sources — which is spliced into `semantic.models` post-merge. The
+    // root keeps its models under `semantic.models`, so it's left untouched here.
+    if !is_root {
+        take_models(obj, path, models, model_origins)?;
+    }
+
+    let patterns;
+    if is_single_source {
+        // Lift `include:` out before the remaining mapping becomes the source
+        // body, so a bare-source file may still nest further includes and the
+        // `include` key never leaks into the SourceDef. (`models:` was already
+        // taken above, so it doesn't leak into the SourceDef either.)
+        patterns = parse_include_patterns(obj.get("include"), path)?;
+        obj.remove("include");
+        let body = std::mem::take(obj);
+        sources.push(Value::Object(body));
+        origins.push(path.to_path_buf());
+    } else {
+        match obj.remove("sources") {
+            Some(Value::Array(arr)) => {
+                for s in arr {
+                    sources.push(s);
+                    origins.push(path.to_path_buf());
+                }
+            }
+            Some(Value::Null) | None => {}
+            Some(_) => {
+                return Err(ConfigError::Yaml(format!(
+                    "{}: `sources` must be a list",
+                    path.display()
+                )));
             }
         }
-        Some(Value::Null) | None => {}
-        Some(_) => {
-            return Err(ConfigError::Yaml(format!(
-                "{}: `sources` must be a list",
-                path.display()
-            )));
-        }
-    }
 
-    match obj.remove("secrets") {
-        Some(Value::Array(arr)) => secrets.extend(arr),
-        Some(Value::Null) | None => {}
-        Some(_) => {
-            return Err(ConfigError::Yaml(format!(
-                "{}: `secrets` must be a list",
-                path.display()
-            )));
+        match obj.remove("secrets") {
+            Some(Value::Array(arr)) => secrets.extend(arr),
+            Some(Value::Null) | None => {}
+            Some(_) => {
+                return Err(ConfigError::Yaml(format!(
+                    "{}: `secrets` must be a list",
+                    path.display()
+                )));
+            }
         }
-    }
 
-    let patterns = parse_include_patterns(obj.get("include"), path)?;
-    obj.remove("include");
+        patterns = parse_include_patterns(obj.get("include"), path)?;
+        obj.remove("include");
+    }
 
     let base_dir = path.parent().unwrap_or_else(|| Path::new("."));
     for pattern in patterns {
@@ -364,7 +438,16 @@ fn collect(
                 .map_err(|e| ConfigError::Yaml(format!("{}: {e}", matched.display())))?;
 
             collect(
-                &mut sub, &matched, false, sources, origins, secrets, visited, chain,
+                &mut sub,
+                &matched,
+                false,
+                sources,
+                origins,
+                secrets,
+                models,
+                model_origins,
+                visited,
+                chain,
             )?;
 
             chain.pop();
@@ -372,6 +455,31 @@ fn collect(
     }
 
     Ok(())
+}
+
+/// Remove a non-root file's optional top-level `models:` list and append its
+/// entries (with `path` as origin) to the shared model accumulator. A missing
+/// or null `models:` is a no-op; a non-list value is an error.
+fn take_models(
+    obj: &mut serde_json::Map<String, Value>,
+    path: &Path,
+    models: &mut Vec<Value>,
+    model_origins: &mut Vec<PathBuf>,
+) -> Result<(), ConfigError> {
+    match obj.remove("models") {
+        Some(Value::Array(arr)) => {
+            for m in arr {
+                models.push(m);
+                model_origins.push(path.to_path_buf());
+            }
+            Ok(())
+        }
+        Some(Value::Null) | None => Ok(()),
+        Some(_) => Err(ConfigError::Yaml(format!(
+            "{}: `models` must be a list",
+            path.display()
+        ))),
+    }
 }
 
 /// Resolve a single source's `from:` reference, deep-merging the inline body
@@ -602,7 +710,7 @@ mod tests {
 
     #[test]
     fn uses_file_primitives_detects_from() {
-        let tree = json!({"sources": [{"name": "x", "kind": "github", "from": "./x.yaml"}]});
+        let tree = json!({"sources": [{"name": "x", "kind": "http", "from": "./x.yaml"}]});
         assert!(uses_file_primitives(&tree));
     }
 

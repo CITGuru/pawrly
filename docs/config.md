@@ -75,8 +75,9 @@ secrets:
 
 sources:
   - name: gh
-    kind: github
+    kind: http
     config:
+      base_url: https://api.github.com
       token: ${secret:GITHUB_TOKEN}
 ```
 
@@ -153,13 +154,34 @@ safety:
 
 As a workspace grows, split `pawrly.yaml` so sources can live in their own files. Both primitives resolve paths relative to the **declaring file** and are assembled before validation, so the rest of the pipeline sees one merged tree.
 
-- **`include:`** (top-level) — splices the `sources:` (and optional `secrets:`) of other files into this one. Globs are allowed and sorted lexicographically.
+- **`include:`** (top-level) — splices other files into this one. Globs are allowed and sorted lexicographically. Each included file may be either form:
+  - a **fragment** — a mapping carrying a `sources:` (and optional `secrets:`) list; or
+  - a **bare single source** — the SourceDef itself, with `name`/`kind`/`config` at the top level and **no `sources:` wrapper** (recognised by the top-level `kind:`). Handy for one-source-per-file layouts behind a glob.
 
   ```yaml
   include:
-    - ./sources/*.yaml
+    - ./sources/*.yaml       # may hold fragments and/or bare single sources
     - ./team-sources.yaml
   ```
+
+  Either form may **also carry a top-level `models:` list** — the semantic models defined over its sources — which is spliced into `semantic.models`. This lets one file fully describe an integration (its source *and* its models). Models still merge into the one global semantic layer, so a co-located model may relate to a model declared in another file, and duplicate model names across files are rejected with both filenames.
+
+  ```yaml
+  # sources/github.yaml — a bare single source plus the models over it
+  name: gh
+  kind: http
+  config:
+    base_url: https://api.github.com
+    token: ${secret:GITHUB_TOKEN}
+  raw_table: true
+  models:
+    - name: gh_issues
+      source: gh.issues
+      dimensions: [{ name: state, expr: state, type: string }]
+      measures:  [{ name: issue_count, agg: count, expr: id }]
+  ```
+
+  (`include:`d `models:` is the file-level co-location convenience; for model-only files that aren't tied to one source, use `semantic.include:` below.)
 
 - **`from:`** (on a source) — loads one source's body from a sibling file:
 

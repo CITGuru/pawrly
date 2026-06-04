@@ -41,7 +41,10 @@ pub async fn register_source(
     pool: &std::sync::Arc<crate::duckdb_pool::DuckDbPool>,
 ) -> Result<RegisterReport, RegisterError> {
     match def.kind {
-        SourceKind::File => {
+        // Local files use DataFusion's native readers. A `file` source with a
+        // `config.storage` block (or a remote-scheme path) reads from an object
+        // store and is routed to the DuckDB object-store path instead.
+        SourceKind::File if !file_is_remote(def) => {
             // Validate first so the user gets a config error, not an IO error.
             pawrly_sources_duckdb::validate_file_def(def)?;
             let report =
@@ -61,16 +64,7 @@ pub async fn register_source(
                     .collect(),
             })
         }
-        // HTTP-shaped kinds: bundled (github / linear / stripe / …) +
-        // generic `http`. All share one register function.
-        SourceKind::Http
-        | SourceKind::Github
-        | SourceKind::Linear
-        | SourceKind::Stripe
-        | SourceKind::Sentry
-        | SourceKind::Datadog
-        | SourceKind::Slack
-        | SourceKind::Notion => {
+        SourceKind::Http => {
             let report = pawrly_sources_http::register_http_source(def, ctx, catalog)
                 .await
                 .map_err(|e| RegisterError::Other(e.to_string()))?;
@@ -112,36 +106,41 @@ pub async fn register_source(
                     .collect(),
             })
         }
-        SourceKind::Ai => {
-            let report = pawrly_sources_ai::register_ai_source(def, ctx, catalog)
-                .await
-                .map_err(|e| RegisterError::Other(e.to_string()))?;
-            Ok(RegisterReport {
-                table_count: report.table_count,
-                tables: vec![TableSummary {
-                    name: "models".into(),
-                    description: Some("AI models catalog".into()),
-                    required_filters: Vec::new(),
-                }],
-            })
-        }
-        // DuckDB-backed warehouses, lakehouse table formats, and object
-        // stores: all converge on the in-process DuckDB pool via ATTACH /
-        // scan-functions / object-store secrets.
-        SourceKind::Postgres
+        // First-class builtins on the in-process DuckDB pool: foreign-DB ATTACH
+        // (postgres / mysql / snowflake / duckdb), lakehouse scans (iceberg /
+        // delta / ducklake), and object-store reads (remote `file`).
+        SourceKind::File
+        | SourceKind::Postgres
         | SourceKind::Mysql
+        | SourceKind::Duckdb
         | SourceKind::Snowflake
         | SourceKind::Iceberg
-        | SourceKind::Delta
-        | SourceKind::S3
-        | SourceKind::Gcs
-        | SourceKind::Azure => {
+        | SourceKind::Ducklake
+        | SourceKind::Delta => {
             crate::duckdb_source::register_duckdb_source(def, pool, catalog).await
         }
-        // Bigquery / Redshift are recognized but not yet wired to a backend.
-        SourceKind::Bigquery | SourceKind::Redshift => Err(RegisterError::Other(format!(
-            "source kind `{}` is not yet supported",
-            def.kind
-        ))),
     }
+}
+
+/// A `file` source reads from an object store (vs the local filesystem) when it
+/// declares a `config.storage` block or any path uses a remote URL scheme.
+fn file_is_remote(def: &SourceDef) -> bool {
+    if def.config.get("storage").is_some() {
+        return true;
+    }
+    let is_remote_path = |v: &serde_json::Value| {
+        v.get("path")
+            .or_else(|| v.get("location"))
+            .and_then(|p| p.as_str())
+            .is_some_and(|p| {
+                let p = p.to_ascii_lowercase();
+                p.starts_with("s3://")
+                    || p.starts_with("gs://")
+                    || p.starts_with("gcs://")
+                    || p.starts_with("az://")
+                    || p.starts_with("azure://")
+                    || p.starts_with("abfss://")
+            })
+    };
+    is_remote_path(&def.config) || def.tables.iter().any(|t| is_remote_path(&t.config))
 }

@@ -3195,7 +3195,6 @@ dependencies = [
  "pawrly-core",
  "pawrly-secrets",
  "pawrly-semantic",
- "pawrly-sources-ai",
  "pawrly-sources-duckdb",
  "pawrly-sources-http",
  "rusqlite",
@@ -3311,25 +3310,6 @@ dependencies = [
  "tower 0.5.3",
  "tracing",
  "uuid",
-]
-
-[[package]]
-name = "pawrly-sources-ai"
-version = "0.0.1"
-dependencies = [
- "arrow-array",
- "arrow-schema",
- "async-trait",
- "datafusion",
- "pawrly-core",
- "reqwest",
- "serde",
- "serde_json",
- "thiserror 1.0.69",
- "tokio",
- "tracing",
- "url",
- "wiremock",
 ]
 
 [[package]]

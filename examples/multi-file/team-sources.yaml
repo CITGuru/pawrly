@@ -7,6 +7,7 @@ sources:
       dsn: ${secret:PG_DSN}
 
   - name: billing
-    kind: stripe
+    kind: http
     config:
-      api_key: ${secret:STRIPE_API_KEY}
+      base_url: https://api.stripe.com
+      token: ${secret:STRIPE_API_KEY}

@@ -10,7 +10,6 @@ use pawrly_core::{ConfigError, SourceDef};
 
 use std::num::NonZeroU32;
 
-use crate::bundled;
 use crate::raw::RawHttpTableProvider;
 use crate::source::{AuthSpec, HttpSource, HttpTableSpec, RateLimitPolicy, RetryConfig};
 use crate::typed::HttpTableProvider;
@@ -50,48 +49,26 @@ pub async fn register_http_source(
 ) -> Result<HttpSourceReport, HttpBuildError> {
     let _ = ctx;
 
-    // 1. Resolve base URL + auth from def.config.
+    // 1. Resolve base URL + auth from def.config. `base_url` is required for
+    //    `kind: http`; an empty/missing value is a config error.
     let cfg = &def.config;
 
-    // Bundled sources merge their YAML spec with the user-supplied config
-    // (which only contains credentials / overrides).
-    let (base_url_str, default_tables, default_raw_table, default_headers) =
-        match bundled::for_kind(def.kind) {
-            Some(spec) => (
-                spec.base_url.clone(),
-                spec.tables.clone(),
-                spec.raw_table_default,
-                spec.default_headers.clone(),
-            ),
-            None => (
-                cfg.get("base_url")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default()
-                    .to_string(),
-                Vec::new(),
-                false,
-                Default::default(),
-            ),
-        };
-    let base_url_override = cfg
+    let base_url_str = cfg
         .get("base_url")
         .and_then(|v| v.as_str())
-        .map(str::to_string);
-    let base_url_str = base_url_override.unwrap_or(base_url_str);
+        .unwrap_or_default()
+        .to_string();
+    if base_url_str.is_empty() {
+        return Err(HttpBuildError::BadUrl(
+            "`kind: http` requires `config.base_url`".to_string(),
+        ));
+    }
     let base_url =
         url::Url::parse(&base_url_str).map_err(|e| HttpBuildError::BadUrl(e.to_string()))?;
 
     let auth = parse_auth(def);
 
-    let mut headers = reqwest::header::HeaderMap::new();
-    for (k, v) in &default_headers {
-        if let (Ok(name), Ok(val)) = (
-            k.parse::<reqwest::header::HeaderName>(),
-            v.parse::<reqwest::header::HeaderValue>(),
-        ) {
-            headers.insert(name, val);
-        }
-    }
+    let headers = reqwest::header::HeaderMap::new();
 
     let retry = parse_retry(def);
     let rate_limit = parse_rate_limit(def);
@@ -110,21 +87,13 @@ pub async fn register_http_source(
     // 2. Ensure the schema provider exists on the catalog.
     let schema = ensure_schema(catalog, &def.name)?;
 
-    // 3. Combine tables from the bundled spec + any user table overrides.
-    //    User overrides not yet merged; we use bundled tables as-is
-    //    when the source is bundled, else expect user-declared tables (none
-    //    declared → empty).
-    // Bundled kinds ship their own table specs. Generic `kind: http` (and any
-    // user-declared tables on a bundled kind) are read from `def.tables`, whose
-    // opaque per-table `config` deserializes into an `HttpTableSpec`.
-    // The effective page cap falls back to the source-level safety policy when
-    // a table has no policy of its own.
+    // 3. Tables are user-declared under `def.tables`; each table's opaque
+    //    per-table `config` deserializes into an `HttpTableSpec`. The effective
+    //    page cap falls back to the source-level safety policy when a table has
+    //    no policy of its own.
     let source_max_pages = def.safety.as_ref().and_then(|s| s.max_pages);
 
-    let mut tables: Vec<(HttpTableSpec, Option<u32>)> = default_tables
-        .into_iter()
-        .map(|spec| (spec, source_max_pages))
-        .collect();
+    let mut tables: Vec<(HttpTableSpec, Option<u32>)> = Vec::new();
     for t in &def.tables {
         let max_pages = t
             .safety
@@ -163,8 +132,7 @@ pub async fn register_http_source(
 
     // 4. Optional raw HTTP table named after the source — registered in the
     //    *default* schema so `SELECT * FROM <source>` resolves to it.
-    let want_raw = def.raw_table || default_raw_table;
-    let raw_table_registered = if want_raw {
+    let raw_table_registered = if def.raw_table {
         let default_schema = catalog
             .schema("default")
             .ok_or_else(|| HttpBuildError::DataFusion("default schema missing".into()))?;
