@@ -1,0 +1,70 @@
+# HTTP file storage example — read file formats straight off an http(s) URL.
+# yaml-language-server: $schema=../../schemas/pawrly.schema.json
+#
+# STATUS: working, verified live against https://blobs.duckdb.org.
+#
+# A `kind: file` source reads csv / json / jsonl / parquet over `http(s)://` via
+# DuckDB's bundled httpfs — no `storage:` block needed for public files, and the
+# reader (read_parquet / read_csv / read_json) is inferred from the URL extension
+# (query strings and `.gz`/`.zst`/`.bz2` suffixes are handled). See
+# docs/internal/17-http-storage.md for the full design.
+#
+#   pawrly validate examples/http-storage/pawrly.yaml
+#   pawrly --config examples/http-storage/pawrly.yaml schema
+#   pawrly --config examples/http-storage/pawrly.yaml sql \
+#     'SELECT COUNT(*) FROM web.trains'
+#   pawrly --config examples/http-storage/pawrly.yaml sql \
+#     'SELECT * FROM web.startrek LIMIT 5'
+#   pawrly --config examples/http-storage/pawrly.yaml sql \
+#     'SELECT * FROM nl.stations LIMIT 5'
+
+version: 1
+name: http-storage-example
+
+# `auto` resolves ${secret:NAME} from env vars, the OS keyring, then a 0600
+# `.env` next to this file — used by the (commented) private-http source below.
+secrets:
+  - kind: auto
+
+sources:
+  # --- Public files over plain https (the headline feature) -------------------
+  - name: web
+    kind: file
+    description: Public parquet + csv read directly over https (no storage block).
+    tables:
+      # Format inferred from `.parquet`; ~381k rows of NL train services.
+      - name: trains
+        path: https://blobs.duckdb.org/train_services.parquet
+      # Format inferred from `.csv`; header row parsed automatically.
+      - name: startrek
+        path: https://blobs.duckdb.org/data/Star_Trek-Season_1.csv
+
+  # --- DuckLake catalog over https -------------------------------------------
+  # Attaches a remote `.ducklake` catalog read-only via httpfs. Its tables
+  # (nl.services / nl.stations / nl.distances) are enumerated at registration,
+  # so they appear in `pawrly schema` and MCP discovery.
+  - name: nl
+    kind: ducklake
+    description: NL railway DuckLake catalog served over https.
+    config:
+      catalog: https://blobs.duckdb.org/datalake/nl-railway.ducklake
+      storage:
+        type: http        # ensures httpfs; no auth → public, no secret minted
+
+  # --- Private http with auth (template; uncomment + set API_TOKEN) -----------
+  # The `storage: type: http` auth block reuses the http-source auth taxonomy
+  # (header / basic). It is translated into a DuckDB HTTP secret, scoped to the
+  # host so it never leaks onto requests for other hosts.
+  #
+  # - name: private
+  #   kind: file
+  #   config:
+  #     storage:
+  #       type: http
+  #       auth:
+  #         type: header
+  #         headers:
+  #           - { name: Authorization, bearer: "${secret:API_TOKEN}" }
+  #   tables:
+  #     - name: events
+  #       path: https://api.example.com/exports/events.jsonl

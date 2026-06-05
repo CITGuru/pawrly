@@ -38,6 +38,7 @@ num_cpus = { workspace = true }
 duckdb = { workspace = true }
 fs2 = { workspace = true }
 cron = { workspace = true }
+base64 = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

@@ -122,8 +122,9 @@ pub async fn register_source(
     }
 }
 
-/// A `file` source reads from an object store (vs the local filesystem) when it
-/// declares a `config.storage` block or any path uses a remote URL scheme.
+/// A `file` source reads from an object store / http (vs the local filesystem)
+/// when it declares a `config.storage` block or any path uses a remote URL
+/// scheme (`http(s)://`, `s3://`, `gs://`/`gcs://`, `az://`/`azure://`/`abfss://`).
 fn file_is_remote(def: &SourceDef) -> bool {
     if def.config.get("storage").is_some() {
         return true;
@@ -132,15 +133,96 @@ fn file_is_remote(def: &SourceDef) -> bool {
         v.get("path")
             .or_else(|| v.get("location"))
             .and_then(|p| p.as_str())
-            .is_some_and(|p| {
-                let p = p.to_ascii_lowercase();
-                p.starts_with("s3://")
-                    || p.starts_with("gs://")
-                    || p.starts_with("gcs://")
-                    || p.starts_with("az://")
-                    || p.starts_with("azure://")
-                    || p.starts_with("abfss://")
-            })
+            .is_some_and(|p| pawrly_core::StorageScheme::classify(p).is_remote())
     };
     is_remote_path(&def.config) || def.tables.iter().any(|t| is_remote_path(&t.config))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pawrly_core::TableDef;
+
+    fn file_def(config: serde_json::Value, tables: Vec<TableDef>) -> SourceDef {
+        SourceDef {
+            name: "f".into(),
+            kind: SourceKind::File,
+            description: None,
+            config,
+            cache: pawrly_core::CachePolicy::None,
+            safety: None,
+            tables,
+            raw_table: false,
+            raw_table_safety: None,
+        }
+    }
+
+    fn table(path: &str) -> TableDef {
+        TableDef {
+            name: "t".into(),
+            description: None,
+            config: serde_json::json!({ "path": path }),
+            cache: None,
+            safety: None,
+        }
+    }
+
+    #[test]
+    fn http_path_is_remote() {
+        // http(s) paths route to the object-store reader.
+        assert!(file_is_remote(&file_def(
+            serde_json::json!({}),
+            vec![table("https://h/data.parquet")]
+        )));
+        assert!(file_is_remote(&file_def(
+            serde_json::json!({ "path": "http://h/data.csv" }),
+            vec![]
+        )));
+    }
+
+    #[test]
+    fn object_store_schemes_are_remote() {
+        for p in [
+            "s3://b/k",
+            "gs://b/k",
+            "gcs://b/k",
+            "az://c/k",
+            "azure://c/k",
+            "abfss://c@a/k",
+        ] {
+            assert!(
+                file_is_remote(&file_def(serde_json::json!({}), vec![table(p)])),
+                "{p} should be remote"
+            );
+        }
+    }
+
+    #[test]
+    fn local_paths_are_not_remote() {
+        assert!(!file_is_remote(&file_def(
+            serde_json::json!({ "path": "./data/x.parquet" }),
+            vec![]
+        )));
+        assert!(!file_is_remote(&file_def(
+            serde_json::json!({}),
+            vec![table("/abs/data/x.parquet")]
+        )));
+    }
+
+    #[test]
+    fn table_level_remote_path_is_remote() {
+        // Config-level path is local, but a table points remote.
+        assert!(file_is_remote(&file_def(
+            serde_json::json!({ "path": "./local" }),
+            vec![table("s3://b/k")]
+        )));
+    }
+
+    #[test]
+    fn explicit_storage_block_is_remote_even_with_local_path() {
+        assert!(file_is_remote(&file_def(
+            serde_json::json!({ "storage": { "type": "s3" }, "path": "./local.parquet" }),
+            vec![]
+        )));
+    }
 }

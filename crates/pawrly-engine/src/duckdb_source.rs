@@ -1,6 +1,7 @@
 //! DuckDB-backed sources: postgres / mysql / snowflake / duckdb (ATTACH
 //! databases), iceberg / delta (scan functions), ducklake (DuckLake catalog),
-//! and object storage for remote `file` sources (`read_parquet`/csv/json).
+//! and object storage / http(s) for remote `file` sources
+//! (`read_parquet`/csv/json via httpfs).
 //!
 //! Every kind converges on a single piece of machinery: each table ends up as
 //! a DuckDB SQL relation — a FROM-clause snippet — that one
@@ -16,6 +17,7 @@ use std::sync::Arc;
 use arrow_array::{Array, StringArray};
 use arrow_schema::SchemaRef;
 use async_trait::async_trait;
+use base64::Engine as _;
 use datafusion::catalog::{
     CatalogProvider, MemoryCatalogProvider, MemorySchemaProvider, SchemaProvider, Session,
 };
@@ -28,7 +30,8 @@ use datafusion::physical_plan::SendableRecordBatchStream;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::streaming::{PartitionStream, StreamingTableExec};
 use parking_lot::Mutex;
-use pawrly_core::{SourceDef, SourceKind};
+use pawrly_core::{SourceDef, SourceKind, StorageScheme, origin_prefix};
+use pawrly_sources_http::AuthSpec;
 use serde_json::Value as JsonValue;
 
 use crate::duckdb_pool::DuckDbPool;
@@ -428,10 +431,12 @@ async fn register_attach(
         Arc::new(DuckDbSchemaProvider::new(pool.clone(), def.name.clone()));
     register_schema(catalog, &def.name, schema)?;
 
-    // Enumeration is lazy; report an empty table list.
+    // Eagerly enumerate the attached catalog so its tables show in `schema` and
+    // MCP discovery; per-table schema inference stays lazy (at query time).
+    let tables = enumerate_catalog_tables(pool, &def.name).await;
     Ok(RegisterReport {
-        table_count: 0,
-        tables: Vec::new(),
+        table_count: tables.len() as u64,
+        tables,
     })
 }
 
@@ -511,7 +516,7 @@ async fn register_ducklake(
         pool.ensure_extension("httpfs")
             .await
             .map_err(|e| RegisterError::Other(e.to_string()))?;
-        if let Some(secret) = build_secret_sql(def) {
+        for secret in build_secret_sql(def).map_err(RegisterError::Other)? {
             pool.execute(&secret)
                 .await
                 .map_err(|e| RegisterError::Other(e.to_string()))?;
@@ -520,12 +525,16 @@ async fn register_ducklake(
 
     let catalog_esc = resolve_local(workspace_dir, catalog_uri).replace('\'', "''");
     let name = &def.name;
+    // READ_ONLY matches pawrly's read-only model (like the other ATTACHes) and
+    // is required to read a remote catalog over httpfs (e.g. an http(s) `.ducklake`).
     let attach = match def.config.get("data_path").and_then(|v| v.as_str()) {
         Some(data_path) => {
             let dp_esc = resolve_local(workspace_dir, data_path).replace('\'', "''");
-            format!("ATTACH 'ducklake:{catalog_esc}' AS \"{name}\" (DATA_PATH '{dp_esc}')")
+            format!(
+                "ATTACH 'ducklake:{catalog_esc}' AS \"{name}\" (DATA_PATH '{dp_esc}', READ_ONLY)"
+            )
         }
-        None => format!("ATTACH 'ducklake:{catalog_esc}' AS \"{name}\""),
+        None => format!("ATTACH 'ducklake:{catalog_esc}' AS \"{name}\" (READ_ONLY)"),
     };
     pool.execute(&attach)
         .await
@@ -534,14 +543,39 @@ async fn register_ducklake(
     let schema: Arc<dyn SchemaProvider> =
         Arc::new(DuckDbSchemaProvider::new(pool.clone(), def.name.clone()));
     register_schema(catalog, &def.name, schema)?;
+    let tables = enumerate_catalog_tables(pool, &def.name).await;
     Ok(RegisterReport {
-        table_count: 0,
-        tables: Vec::new(),
+        table_count: tables.len() as u64,
+        tables,
     })
 }
 
-/// Remote `file` over an object store: create a secret from the `storage:`
-/// block, then `read_parquet` (or csv/json) each declared table's URL.
+/// Enumerate the tables of an attached DuckDB catalog (postgres / mysql /
+/// snowflake / duckdb / ducklake) so they appear in `pawrly schema` and MCP
+/// discovery. Best-effort: on error, return empty and rely on lazy per-table
+/// resolution at query time (the catalog still works, it just won't list).
+async fn enumerate_catalog_tables(pool: &Arc<DuckDbPool>, catalog: &str) -> Vec<TableSummary> {
+    let cat = catalog.replace('\'', "''");
+    let sql = format!(
+        "SELECT DISTINCT table_name FROM information_schema.tables \
+         WHERE table_catalog = '{cat}' ORDER BY table_name"
+    );
+    match pool.fetch_arrow(&sql).await {
+        Ok(batches) => string_column(&batches)
+            .into_iter()
+            .map(|name| TableSummary {
+                name,
+                description: None,
+                required_filters: Vec::new(),
+            })
+            .collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
+/// Remote `file` over object storage or http(s): synthesize the storage
+/// secret(s), then scan each declared table's URL with the reader inferred from
+/// its extension (or its explicit `format`).
 async fn register_object_store(
     def: &SourceDef,
     pool: &Arc<DuckDbPool>,
@@ -552,7 +586,7 @@ async fn register_object_store(
         .await
         .map_err(|e| RegisterError::Other(e.to_string()))?;
 
-    if let Some(secret) = build_secret_sql(def) {
+    for secret in build_secret_sql(def).map_err(RegisterError::Other)? {
         pool.execute(&secret)
             .await
             .map_err(|e| RegisterError::Other(e.to_string()))?;
@@ -569,17 +603,20 @@ async fn register_object_store(
                     table.name
                 ))
             })?;
+        // httpfs cannot glob plain http(s) URLs (no directory listing). Reject a
+        // glob in the path early — `?`/`&` are query syntax, not globs.
+        if StorageScheme::classify(&url) == StorageScheme::Http {
+            let path_only = url.split('?').next().unwrap_or(&url);
+            if path_only.contains('*') || path_only.contains('[') {
+                return Err(RegisterError::Other(format!(
+                    "table `{}`: http(s) paths cannot be globbed; list each file as a table",
+                    table.name
+                )));
+            }
+        }
         let url_esc = url.replace('\'', "''");
-        let format = table
-            .config
-            .get("format")
-            .and_then(|v| v.as_str())
-            .unwrap_or("parquet");
-        let relation = match format {
-            "csv" => format!("read_csv('{url_esc}')"),
-            "json" | "ndjson" => format!("read_json('{url_esc}')"),
-            _ => format!("read_parquet('{url_esc}')"),
-        };
+        let format = table.config.get("format").and_then(|v| v.as_str());
+        let relation = format!("{}('{url_esc}')", reader_for(&url, format));
         let provider = DuckDbTableProvider::try_new(pool.clone(), relation)
             .await
             .map_err(|e| RegisterError::Other(e.to_string()))?;
@@ -598,27 +635,127 @@ async fn register_object_store(
     })
 }
 
-/// Build a DuckDB `CREATE SECRET` for an object store from the source's
-/// `config.storage` block, or `None` when there's no storage block / nothing to
-/// emit. The provider is `storage.type` (`s3` | `gcs` | `azure`); `storage.region`
-/// sits at the storage level, and credentials live under a typed `storage.auth`
-/// block (`auth.type` selects the method — default `access_key`). Lenient: only
-/// emits the keys that are present.
-fn build_secret_sql(def: &SourceDef) -> Option<String> {
-    let storage = def.config.get("storage")?;
-    let provider = storage.get("type").and_then(|v| v.as_str())?;
-    if !matches!(provider, "s3" | "gcs" | "azure") {
-        return None;
+/// Escape a DuckDB single-quoted string literal (`'` → `''`).
+fn sql_quote(v: &str) -> String {
+    v.replace('\'', "''")
+}
+
+/// The storage provider for secret synthesis. Explicit `storage.type` wins;
+/// otherwise inferred from the first remote `path`/`location` across the source
+/// config and its tables. `None` when everything is local.
+fn effective_storage_type(def: &SourceDef) -> Option<String> {
+    if let Some(t) = def
+        .config
+        .get("storage")
+        .and_then(|s| s.get("type"))
+        .and_then(|v| v.as_str())
+    {
+        return Some(t.to_string());
     }
+    let from_cfg = |cfg: &JsonValue| -> Option<String> {
+        cfg.get("path")
+            .or_else(|| cfg.get("location"))
+            .and_then(|v| v.as_str())
+            .and_then(|p| StorageScheme::classify(p).default_storage_type())
+            .map(str::to_string)
+    };
+    from_cfg(&def.config).or_else(|| def.tables.iter().find_map(|t| from_cfg(&t.config)))
+}
+
+/// Distinct `scheme://authority/` origins (for `provider`) across the source's
+/// config and table paths, in first-seen order. Used as secret `SCOPE`s.
+fn secret_origins(def: &SourceDef, provider: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut push = |cfg: &JsonValue| {
+        let Some(loc) = cfg
+            .get("path")
+            .or_else(|| cfg.get("location"))
+            .and_then(|v| v.as_str())
+        else {
+            return;
+        };
+        if let Some(origin) = origin_prefix(loc) {
+            if StorageScheme::classify(&origin).default_storage_type() == Some(provider)
+                && !out.contains(&origin)
+            {
+                out.push(origin);
+            }
+        }
+    };
+    push(&def.config);
+    for t in &def.tables {
+        push(&t.config);
+    }
+    out
+}
+
+/// Sanitize a `scheme://authority/` origin into a secret-name suffix
+/// (non-alphanumeric → `_`).
+fn sanitize_authority(origin: &str) -> String {
+    let authority = origin
+        .split_once("://")
+        .map_or(origin, |(_, rest)| rest.trim_end_matches('/'));
+    authority
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect()
+}
+
+/// Wrap the inner secret params (everything inside the parens, sans `SCOPE`)
+/// into one `CREATE OR REPLACE SECRET` per distinct origin, each scoped to that
+/// origin. Falls back to a single unscoped secret when no origin can be derived
+/// (e.g. a path-less config).
+fn scoped_secrets(def: &SourceDef, provider: &str, inner: &str) -> Vec<String> {
+    let base = def.name.replace('"', "\"\"");
+    let origins = secret_origins(def, provider);
+    if origins.is_empty() {
+        return vec![format!("CREATE OR REPLACE SECRET \"{base}\" ({inner})")];
+    }
+    origins
+        .iter()
+        .map(|origin| {
+            let suffix = sanitize_authority(origin);
+            format!(
+                "CREATE OR REPLACE SECRET \"{base}__{suffix}\" ({inner}, SCOPE '{}')",
+                sql_quote(origin)
+            )
+        })
+        .collect()
+}
+
+/// Build the DuckDB `CREATE SECRET` statement(s) for a remote `file` source.
+/// Dispatches on the effective storage provider; http may emit several (one per
+/// host), object stores one per bucket. `Ok(vec![])` when no secret is needed.
+fn build_secret_sql(def: &SourceDef) -> Result<Vec<String>, String> {
+    let Some(provider) = effective_storage_type(def) else {
+        return Ok(vec![]);
+    };
+    match provider.as_str() {
+        "http" => build_http_secret_sql(def),
+        "s3" | "gcs" | "azure" => Ok(build_object_store_secret_sql(def, &provider)),
+        _ => Ok(vec![]),
+    }
+}
+
+/// Build object-store `CREATE SECRET` statements (s3 / gcs / azure) from the
+/// source's `config.storage` block — one host-scoped secret per distinct bucket
+/// origin (or a single unscoped secret when none can be derived). `storage.region`
+/// is a location, not a credential; credentials live under a typed `storage.auth`
+/// block (`auth.type` selects the method — default `access_key`). Lenient: only
+/// emits the keys present; empty when there's no storage block / nothing to emit.
+fn build_object_store_secret_sql(def: &SourceDef, provider: &str) -> Vec<String> {
+    let Some(storage) = def.config.get("storage") else {
+        // Bare remote path with no `storage:` block → no secret; DuckDB falls
+        // back to ambient credentials.
+        return vec![];
+    };
     let auth = storage.get("auth");
     let auth_type = auth
         .and_then(|a| a.get("type"))
         .and_then(|v| v.as_str())
         .unwrap_or("access_key");
-    // `region` is a location, not a credential, so it lives at the storage level.
     let region = storage.get("region").and_then(|v| v.as_str());
     let from_auth = |key: &str| auth.and_then(|a| a.get(key)).and_then(|v| v.as_str());
-    let q = |v: &str| v.replace('\'', "''");
 
     // (DuckDB secret key, value) pairs; `None` values are dropped.
     let pairs: Vec<(&str, Option<&str>)> = if matches!(auth_type, "credential_chain" | "chain") {
@@ -653,27 +790,120 @@ fn build_secret_sql(def: &SourceDef) -> Option<String> {
         }
     };
 
-    let params: Vec<String> = pairs
-        .into_iter()
-        .filter_map(|(k, v)| {
-            v.map(|v| {
-                // PROVIDER is a keyword (unquoted); everything else is a quoted literal.
-                if k == "PROVIDER" {
-                    format!("{k} {v}")
-                } else {
-                    format!("{k} '{}'", q(v))
-                }
-            })
-        })
-        .collect();
-    if params.is_empty() {
-        return None;
+    let mut params: Vec<String> = vec![format!("TYPE {provider}")];
+    for (k, v) in pairs {
+        if let Some(v) = v {
+            // PROVIDER is a keyword (unquoted); everything else is a quoted literal.
+            if k == "PROVIDER" {
+                params.push(format!("{k} {v}"));
+            } else {
+                params.push(format!("{k} '{}'", sql_quote(v)));
+            }
+        }
     }
-    let name = def.name.replace('"', "\"\"");
-    Some(format!(
-        "CREATE OR REPLACE SECRET \"{name}\" (TYPE {provider}, {})",
-        params.join(", ")
-    ))
+    // Only `TYPE …` and nothing else → no credential to emit.
+    if params.len() == 1 {
+        return vec![];
+    }
+    scoped_secrets(def, provider, &params.join(", "))
+}
+
+/// Build `CREATE OR REPLACE SECRET (TYPE http, …)` statements from
+/// `storage.auth`, reusing the HTTP-source `AuthSpec` taxonomy and emitting one
+/// host-scoped secret per distinct http host across the source's tables.
+/// `Ok(vec![])` for public files / empty auth. Rejects `custom` / `oauth2`.
+fn build_http_secret_sql(def: &SourceDef) -> Result<Vec<String>, String> {
+    let Some(auth_val) = def.config.get("storage").and_then(|s| s.get("auth")) else {
+        return Ok(vec![]); // public file
+    };
+    let auth: AuthSpec = serde_json::from_value(auth_val.clone())
+        .map_err(|e| format!("invalid http storage `auth`: {e}"))?;
+
+    // BEARER_TOKEN (an `Authorization` bearer) and/or EXTRA_HTTP_HEADERS map.
+    let mut bearer_token: Option<String> = None;
+    let mut headers: Vec<(String, String)> = Vec::new();
+
+    match auth {
+        AuthSpec::None => return Ok(vec![]),
+        AuthSpec::Header { headers: hs } => {
+            for h in hs {
+                if let Some(t) = h.bearer {
+                    if h.name.eq_ignore_ascii_case("authorization") && bearer_token.is_none() {
+                        bearer_token = Some(t);
+                    } else {
+                        headers.push((h.name, format!("Bearer {t}")));
+                    }
+                } else if let Some(v) = h.value {
+                    headers.push((h.name, v));
+                }
+            }
+        }
+        AuthSpec::Basic { username, password } => {
+            let enc =
+                base64::engine::general_purpose::STANDARD.encode(format!("{username}:{password}"));
+            headers.push(("Authorization".to_string(), format!("Basic {enc}")));
+        }
+        AuthSpec::Custom { .. } => {
+            return Err(
+                "storage auth type `custom` (query-string credentials) is not \
+                 supported for http storage; DuckDB HTTP secrets carry only \
+                 headers/bearer tokens"
+                    .to_string(),
+            );
+        }
+        AuthSpec::Oauth2 { .. } => {
+            return Err("storage auth type `oauth2` is not yet supported for http \
+                 storage; use type: header with a pre-fetched bearer token"
+                .to_string());
+        }
+    }
+
+    let mut params: Vec<String> = vec!["TYPE http".to_string()];
+    if let Some(t) = &bearer_token {
+        params.push(format!("BEARER_TOKEN '{}'", sql_quote(t)));
+    }
+    if !headers.is_empty() {
+        let entries: Vec<String> = headers
+            .iter()
+            .map(|(k, v)| format!("'{}': '{}'", sql_quote(k), sql_quote(v)))
+            .collect();
+        params.push(format!(
+            "EXTRA_HTTP_HEADERS MAP {{ {} }}",
+            entries.join(", ")
+        ));
+    }
+    // Only `TYPE http` → no credential → no secret (e.g. `headers: []`).
+    if params.len() == 1 {
+        return Ok(vec![]);
+    }
+    Ok(scoped_secrets(def, "http", &params.join(", ")))
+}
+
+/// Pick the DuckDB reader function for a URL: an explicit `format` wins;
+/// otherwise infer from the extension (query string + compression suffix
+/// stripped, lowercased); otherwise default to parquet.
+fn reader_for(url: &str, explicit_format: Option<&str>) -> &'static str {
+    if let Some(fmt) = explicit_format {
+        return match fmt.to_ascii_lowercase().as_str() {
+            "csv" => "read_csv",
+            "json" | "ndjson" | "jsonl" => "read_json",
+            _ => "read_parquet",
+        };
+    }
+    let path = url.split('?').next().unwrap_or(url);
+    let path = path
+        .strip_suffix(".gz")
+        .or_else(|| path.strip_suffix(".zst"))
+        .or_else(|| path.strip_suffix(".bz2"))
+        .unwrap_or(path);
+    let lower = path.to_ascii_lowercase();
+    if lower.ends_with(".csv") {
+        "read_csv"
+    } else if lower.ends_with(".json") || lower.ends_with(".jsonl") || lower.ends_with(".ndjson") {
+        "read_json"
+    } else {
+        "read_parquet"
+    }
 }
 
 /// Read a table location from `config.path` or `config.location`.
@@ -850,6 +1080,29 @@ mod tests {
         }
     }
 
+    fn file_def_with_tables(config: serde_json::Value, paths: &[&str]) -> SourceDef {
+        let tables = paths
+            .iter()
+            .enumerate()
+            .map(|(i, p)| pawrly_core::TableDef {
+                name: format!("t{i}"),
+                description: None,
+                config: serde_json::json!({ "path": p }),
+                cache: None,
+                safety: None,
+            })
+            .collect();
+        SourceDef {
+            tables,
+            ..file_def(config)
+        }
+    }
+
+    /// Join the emitted secret statements for assertion convenience.
+    fn secret_sql(def: &SourceDef) -> String {
+        build_secret_sql(def).unwrap().join("\n")
+    }
+
     #[test]
     fn storage_access_key_auth() {
         let def = file_def(serde_json::json!({
@@ -864,7 +1117,7 @@ mod tests {
                 }
             }
         }));
-        let sql = build_secret_sql(&def).unwrap();
+        let sql = secret_sql(&def);
         assert!(sql.contains("TYPE s3"), "{sql}");
         assert!(sql.contains("KEY_ID 'AKIA'"), "{sql}");
         assert!(sql.contains("SECRET 'shh'"), "{sql}");
@@ -877,7 +1130,7 @@ mod tests {
         let def = file_def(serde_json::json!({
             "storage": { "type": "s3", "region": "eu-west-1", "auth": { "type": "credential_chain" } }
         }));
-        let sql = build_secret_sql(&def).unwrap();
+        let sql = secret_sql(&def);
         assert!(sql.contains("PROVIDER credential_chain"), "{sql}");
         // PROVIDER is a keyword, not a quoted literal.
         assert!(
@@ -893,7 +1146,7 @@ mod tests {
         let def = file_def(serde_json::json!({
             "storage": { "type": "gcs", "auth": { "access_key_id": "k", "secret_access_key": "s" } }
         }));
-        let sql = build_secret_sql(&def).unwrap();
+        let sql = secret_sql(&def);
         assert!(sql.contains("TYPE gcs"), "{sql}");
         assert!(
             sql.contains("KEY_ID 'k'") && sql.contains("SECRET 's'"),
@@ -904,7 +1157,319 @@ mod tests {
     #[test]
     fn no_storage_block_no_secret() {
         let def = file_def(serde_json::json!({ "path": "./x/*.parquet" }));
-        assert!(build_secret_sql(&def).is_none());
+        assert!(build_secret_sql(&def).unwrap().is_empty());
+    }
+
+    #[test]
+    fn pathless_config_falls_back_to_unscoped() {
+        // No table paths → single unscoped secret named after the source.
+        let def = file_def(serde_json::json!({
+            "storage": { "type": "s3", "auth": { "access_key_id": "k", "secret_access_key": "s" } }
+        }));
+        let sql = secret_sql(&def);
+        assert!(sql.contains("SECRET \"lake\" (TYPE s3"), "{sql}");
+        assert!(!sql.contains("SCOPE"), "no scope without a path: {sql}");
+    }
+
+    #[test]
+    fn s3_secret_scoped_to_bucket() {
+        let def = file_def_with_tables(
+            serde_json::json!({
+                "storage": { "type": "s3", "auth": { "access_key_id": "k", "secret_access_key": "s" } }
+            }),
+            &["s3://bucket/data.parquet"],
+        );
+        let sql = secret_sql(&def);
+        assert!(sql.contains("SECRET \"lake__bucket\""), "{sql}");
+        assert!(sql.contains("SCOPE 's3://bucket/'"), "{sql}");
+    }
+
+    #[test]
+    fn gcs_scheme_preserved_in_scope() {
+        let def = file_def_with_tables(
+            serde_json::json!({
+                "storage": { "type": "gcs", "auth": { "access_key_id": "k", "secret_access_key": "s" } }
+            }),
+            &["gs://bkt/data.parquet"],
+        );
+        assert!(
+            secret_sql(&def).contains("SCOPE 'gs://bkt/'"),
+            "{}",
+            secret_sql(&def)
+        );
+    }
+
+    #[test]
+    fn azure_abfss_scope_keeps_container() {
+        let def = file_def_with_tables(
+            serde_json::json!({
+                "storage": { "type": "azure", "auth": { "connection_string": "cs" } }
+            }),
+            &["abfss://container@acct.dfs.core.windows.net/data.parquet"],
+        );
+        let sql = secret_sql(&def);
+        assert!(
+            sql.contains("SCOPE 'abfss://container@acct.dfs.core.windows.net/'"),
+            "{sql}"
+        );
+    }
+
+    #[test]
+    fn multi_bucket_emits_one_secret_each() {
+        let def = file_def_with_tables(
+            serde_json::json!({
+                "storage": { "type": "s3", "auth": { "access_key_id": "k", "secret_access_key": "s" } }
+            }),
+            &[
+                "s3://b1/a.parquet",
+                "s3://b2/b.parquet",
+                "s3://b1/c.parquet",
+            ],
+        );
+        let stmts = build_secret_sql(&def).unwrap();
+        assert_eq!(stmts.len(), 2, "one per distinct bucket: {stmts:?}");
+        assert!(stmts.iter().any(|s| s.contains("SCOPE 's3://b1/'")));
+        assert!(stmts.iter().any(|s| s.contains("SCOPE 's3://b2/'")));
+    }
+
+    #[test]
+    fn http_no_auth_no_secret() {
+        let def = file_def_with_tables(
+            serde_json::json!({ "storage": { "type": "http" } }),
+            &["https://h/a.parquet"],
+        );
+        assert!(build_secret_sql(&def).unwrap().is_empty());
+    }
+
+    #[test]
+    fn http_public_path_no_storage_block() {
+        // No storage block, inferred http from path → public, no secret.
+        let def = file_def_with_tables(serde_json::json!({}), &["https://h/a.parquet"]);
+        assert_eq!(effective_storage_type(&def).as_deref(), Some("http"));
+        assert!(build_secret_sql(&def).unwrap().is_empty());
+    }
+
+    #[test]
+    fn http_header_bearer_uses_bearer_token() {
+        let def = file_def_with_tables(
+            serde_json::json!({
+                "storage": { "type": "http", "auth": {
+                    "type": "header",
+                    "headers": [{ "name": "Authorization", "bearer": "tok" }]
+                } }
+            }),
+            &["https://api.example.com/d.parquet"],
+        );
+        let sql = secret_sql(&def);
+        assert!(sql.contains("TYPE http"), "{sql}");
+        assert!(sql.contains("BEARER_TOKEN 'tok'"), "{sql}");
+        assert!(
+            !sql.contains("EXTRA_HTTP_HEADERS"),
+            "lone bearer → no map: {sql}"
+        );
+        assert!(sql.contains("SCOPE 'https://api.example.com/'"), "{sql}");
+        assert!(sql.contains("SECRET \"lake__api_example_com\""), "{sql}");
+    }
+
+    #[test]
+    fn http_header_verbatim_map() {
+        let def = file_def_with_tables(
+            serde_json::json!({
+                "storage": { "type": "http", "auth": {
+                    "type": "header",
+                    "headers": [{ "name": "X-Api-Key", "value": "abc" }]
+                } }
+            }),
+            &["https://h/d.csv"],
+        );
+        let sql = secret_sql(&def);
+        assert!(
+            sql.contains("EXTRA_HTTP_HEADERS MAP { 'X-Api-Key': 'abc' }"),
+            "{sql}"
+        );
+        assert!(!sql.contains("BEARER_TOKEN"), "{sql}");
+    }
+
+    #[test]
+    fn http_basic_base64() {
+        let def = file_def_with_tables(
+            serde_json::json!({
+                "storage": { "type": "http", "auth": {
+                    "type": "basic", "username": "u", "password": "p"
+                } }
+            }),
+            &["https://h/d.parquet"],
+        );
+        // base64("u:p") == "dTpw"
+        assert!(
+            secret_sql(&def).contains("MAP { 'Authorization': 'Basic dTpw' }"),
+            "{}",
+            secret_sql(&def)
+        );
+    }
+
+    #[test]
+    fn http_custom_rejected() {
+        let def = file_def_with_tables(
+            serde_json::json!({
+                "storage": { "type": "http", "auth": {
+                    "type": "custom", "query": [{ "name": "api_key", "value": "x" }]
+                } }
+            }),
+            &["https://h/d.parquet"],
+        );
+        let err = build_secret_sql(&def).unwrap_err();
+        assert!(err.contains("custom"), "{err}");
+    }
+
+    #[test]
+    fn http_oauth2_rejected() {
+        let def = file_def_with_tables(
+            serde_json::json!({
+                "storage": { "type": "http", "auth": {
+                    "type": "oauth2", "token_url": "https://t", "client_id": "c", "client_secret": "s"
+                } }
+            }),
+            &["https://h/d.parquet"],
+        );
+        let err = build_secret_sql(&def).unwrap_err();
+        assert!(err.contains("oauth2"), "{err}");
+    }
+
+    #[test]
+    fn http_header_quote_escaping() {
+        let def = file_def_with_tables(
+            serde_json::json!({
+                "storage": { "type": "http", "auth": {
+                    "type": "header",
+                    "headers": [{ "name": "X-K", "value": "a'b" }]
+                } }
+            }),
+            &["https://h/d.parquet"],
+        );
+        assert!(
+            secret_sql(&def).contains("'X-K': 'a''b'"),
+            "{}",
+            secret_sql(&def)
+        );
+    }
+
+    #[test]
+    fn http_empty_headers_no_secret() {
+        let def = file_def_with_tables(
+            serde_json::json!({
+                "storage": { "type": "http", "auth": { "type": "header", "headers": [] } }
+            }),
+            &["https://h/d.parquet"],
+        );
+        assert!(build_secret_sql(&def).unwrap().is_empty());
+    }
+
+    #[test]
+    fn http_multi_host_emits_one_secret_each() {
+        let def = file_def_with_tables(
+            serde_json::json!({
+                "storage": { "type": "http", "auth": {
+                    "type": "header",
+                    "headers": [{ "name": "Authorization", "bearer": "t" }]
+                } }
+            }),
+            &["https://a.com/x.csv", "https://b.com/y.csv"],
+        );
+        let stmts = build_secret_sql(&def).unwrap();
+        assert_eq!(stmts.len(), 2, "{stmts:?}");
+        assert!(stmts.iter().any(|s| s.contains("SCOPE 'https://a.com/'")));
+        assert!(stmts.iter().any(|s| s.contains("SCOPE 'https://b.com/'")));
+    }
+
+    #[test]
+    fn auth_without_type_infers_http_from_path() {
+        // `auth` present, `type` omitted → inferred from the https path.
+        let def = file_def_with_tables(
+            serde_json::json!({
+                "storage": { "auth": {
+                    "type": "header",
+                    "headers": [{ "name": "Authorization", "bearer": "t" }]
+                } }
+            }),
+            &["https://api.example.com/d.csv"],
+        );
+        assert_eq!(effective_storage_type(&def).as_deref(), Some("http"));
+        assert!(
+            secret_sql(&def).contains("TYPE http"),
+            "{}",
+            secret_sql(&def)
+        );
+    }
+
+    #[test]
+    fn effective_storage_type_explicit_wins() {
+        let def = file_def_with_tables(
+            serde_json::json!({ "storage": { "type": "s3" } }),
+            &["https://h/x.parquet"],
+        );
+        assert_eq!(effective_storage_type(&def).as_deref(), Some("s3"));
+    }
+
+    #[test]
+    fn effective_storage_type_inference() {
+        let s3 = file_def_with_tables(serde_json::json!({}), &["s3://b/k.parquet"]);
+        assert_eq!(effective_storage_type(&s3).as_deref(), Some("s3"));
+        let local = file_def(serde_json::json!({ "path": "./x.parquet" }));
+        assert_eq!(effective_storage_type(&local), None);
+    }
+
+    #[test]
+    fn reader_for_inference() {
+        assert_eq!(reader_for("https://h/a.CSV", None), "read_csv");
+        assert_eq!(reader_for("https://h/a.csv.gz", None), "read_csv");
+        assert_eq!(reader_for("https://h/a.jsonl.zst", None), "read_json");
+        assert_eq!(
+            reader_for("https://h/a.parquet?sig=x", None),
+            "read_parquet"
+        );
+        assert_eq!(reader_for("https://h/a.json", None), "read_json");
+        // Extensionless → parquet default.
+        assert_eq!(
+            reader_for("https://h/export?type=parquet", None),
+            "read_parquet"
+        );
+        // Explicit format wins over extension.
+        assert_eq!(reader_for("https://h/a.parquet", Some("csv")), "read_csv");
+        assert_eq!(reader_for("https://h/a.csv", Some("json")), "read_json");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn attach_source_enumerates_tables() {
+        // A `kind: duckdb` ATTACH should populate RegisterReport.tables (so the
+        // catalog shows in `schema`/MCP), not report an empty list.
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("cat.duckdb");
+        {
+            let conn = duckdb::Connection::open(&db_path).unwrap();
+            conn.execute_batch("CREATE TABLE alpha(id INTEGER); CREATE TABLE beta(name VARCHAR);")
+                .unwrap();
+        }
+        let def = SourceDef {
+            name: "lake".into(),
+            kind: SourceKind::Duckdb,
+            description: None,
+            config: serde_json::json!({ "path": db_path.to_string_lossy() }),
+            cache: pawrly_core::CachePolicy::None,
+            safety: None,
+            tables: Vec::new(),
+            raw_table: false,
+            raw_table_safety: None,
+        };
+        let pool = Arc::new(DuckDbPool::with_offline(2, true).unwrap());
+        let catalog = MemoryCatalogProvider::new();
+        let report = register_duckdb_source(&def, &pool, &catalog, std::path::Path::new("/"))
+            .await
+            .unwrap();
+        let mut names: Vec<String> = report.tables.into_iter().map(|t| t.name).collect();
+        names.sort();
+        assert_eq!(names, vec!["alpha", "beta"]);
+        assert_eq!(report.table_count, 2);
     }
 
     #[test]

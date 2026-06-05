@@ -3181,6 +3181,7 @@ dependencies = [
  "arrow-schema",
  "async-stream",
  "async-trait",
+ "base64",
  "chrono",
  "cron",
  "datafusion",
