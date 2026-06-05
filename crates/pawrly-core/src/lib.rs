@@ -14,6 +14,7 @@ pub mod schema;
 pub mod semantic;
 pub mod service;
 pub mod source;
+pub mod storage;
 
 #[cfg(feature = "test-support")]
 pub mod test_support;
@@ -39,3 +40,4 @@ pub use source::{
     HealthReport, RefreshCatalogOutcome, ReloadReport, SourceDef, SourceInfo, SourceStatus,
     SourceTestReport, TableDef,
 };
+pub use storage::{StorageScheme, origin_prefix};
