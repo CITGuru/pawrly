@@ -23,7 +23,7 @@ version = "0.0.1"
 edition = "2024"
 rust-version = "1.85"
 license = "Apache-2.0"
-repository = "https://github.com/withpawrly/pawrly"
+repository = "https://github.com/CITGuru/pawrly"
 
 [workspace.dependencies]
 # Internal crates

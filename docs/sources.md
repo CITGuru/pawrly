@@ -311,7 +311,7 @@ sources:
 
 ```sql
 SELECT number, title FROM gh.pulls
-WHERE owner = 'withpawrly' AND repo = 'pawrly' AND state = 'open' LIMIT 20
+WHERE owner = 'CITGuru' AND repo = 'pawrly' AND state = 'open' LIMIT 20
 ```
 
 #### Authentication

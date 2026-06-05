@@ -34,7 +34,7 @@ Pawrly is built from source with Cargo. Tested on macOS (Apple Silicon and Intel
 ### Build
 
 ```bash
-git clone https://github.com/withpawrly/pawrly.git
+git clone https://github.com/CITGuru/pawrly.git
 cd pawrly
 cargo build --workspace --release
 ```
