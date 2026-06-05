@@ -30,7 +30,7 @@ Tested on macOS (Apple Silicon and Intel) and Linux (x86_64). Should take under 
 ### 2. Clone
 
 ```bash
-git clone https://github.com/withpawrly/pawrly.git
+git clone https://github.com/CITGuru/pawrly.git
 cd pawrly
 ```
 
