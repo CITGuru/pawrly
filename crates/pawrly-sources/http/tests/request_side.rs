@@ -92,6 +92,178 @@ async fn post_request_body_is_rendered() {
     assert_eq!(rows, 2);
 }
 
+/// `custom` auth `body` fields are merged into the table's JSON body: the server
+/// only matches when both the rendered template and the auth fields are present.
+#[tokio::test]
+async fn custom_auth_body_merges_into_json_table_body() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/search"))
+        .and(body_json(
+            json!({ "q": "cats", "limit": 5, "api_key": "secret" }),
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "results": [ { "id": 1 } ]
+        })))
+        .mount(&server)
+        .await;
+
+    let (ctx, catalog) = build_ctx().await;
+    let def = SourceDef {
+        name: "api".into(),
+        kind: SourceKind::Http,
+        description: None,
+        config: json!({
+            "base_url": server.uri(),
+            "auth": { "type": "custom", "body": [ { "name": "api_key", "value": "secret" } ] }
+        }),
+        cache: CachePolicy::None,
+        safety: None,
+        tables: vec![TableDef {
+            name: "search".into(),
+            description: None,
+            config: json!({
+                "endpoint": "/search",
+                "method": "POST",
+                "params": [ { "name": "q", "type": "varchar", "required": true } ],
+                "body": { "kind": "json", "template": "{\"q\": \"{q}\", \"limit\": 5}" },
+                "response": {
+                    "path": "$.results",
+                    "schema": [
+                        { "name": "id", "type": "bigint" },
+                        { "name": "q",  "type": "varchar", "source": "param" }
+                    ]
+                }
+            }),
+            cache: None,
+            safety: None,
+        }],
+        raw_table: false,
+        raw_table_safety: None,
+    };
+    register_http_source(&def, &ctx, catalog.as_ref())
+        .await
+        .expect("register");
+    let batches = ctx
+        .sql("SELECT id FROM api.search WHERE q = 'cats'")
+        .await
+        .expect("plan")
+        .collect()
+        .await
+        .expect("execute: merged body should match the server");
+    let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+    assert_eq!(rows, 1);
+}
+
+/// With no table body, `custom` auth `body` fields are sent as the whole JSON body.
+#[tokio::test]
+async fn custom_auth_body_is_the_body_when_table_has_none() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/ping"))
+        .and(body_json(json!({ "api_key": "secret", "tenant": "acme" })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([ { "id": 7 } ])))
+        .mount(&server)
+        .await;
+
+    let (ctx, catalog) = build_ctx().await;
+    let def = SourceDef {
+        name: "api".into(),
+        kind: SourceKind::Http,
+        description: None,
+        config: json!({
+            "base_url": server.uri(),
+            "auth": { "type": "custom", "body": [
+                { "name": "api_key", "value": "secret" },
+                { "name": "tenant",  "value": "acme" }
+            ] }
+        }),
+        cache: CachePolicy::None,
+        safety: None,
+        tables: vec![TableDef {
+            name: "ping".into(),
+            description: None,
+            config: json!({
+                "endpoint": "/ping",
+                "method": "POST",
+                "response": { "path": "$", "schema": [ { "name": "id", "type": "bigint" } ] }
+            }),
+            cache: None,
+            safety: None,
+        }],
+        raw_table: false,
+        raw_table_safety: None,
+    };
+    register_http_source(&def, &ctx, catalog.as_ref())
+        .await
+        .expect("register");
+    let batches = ctx
+        .sql("SELECT id FROM api.ping")
+        .await
+        .expect("plan")
+        .collect()
+        .await
+        .expect("execute: auth body should be the request body");
+    let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+    assert_eq!(rows, 1);
+}
+
+/// A non-JSON (form) table body cannot merge with `custom` auth `body` — the
+/// query fails with a clear error rather than sending a malformed request.
+#[tokio::test]
+async fn custom_auth_body_rejects_non_json_table_body() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+        .mount(&server)
+        .await;
+
+    let (ctx, catalog) = build_ctx().await;
+    let def = SourceDef {
+        name: "api".into(),
+        kind: SourceKind::Http,
+        description: None,
+        config: json!({
+            "base_url": server.uri(),
+            "auth": { "type": "custom", "body": [ { "name": "api_key", "value": "secret" } ] }
+        }),
+        cache: CachePolicy::None,
+        safety: None,
+        tables: vec![TableDef {
+            name: "form".into(),
+            description: None,
+            config: json!({
+                "endpoint": "/form",
+                "method": "POST",
+                "params": [ { "name": "q", "type": "varchar", "required": true } ],
+                "body": { "kind": "form", "template": "q={q}" },
+                "response": { "path": "$", "schema": [
+                    { "name": "id", "type": "bigint" },
+                    { "name": "q",  "type": "varchar", "source": "param" }
+                ] }
+            }),
+            cache: None,
+            safety: None,
+        }],
+        raw_table: false,
+        raw_table_safety: None,
+    };
+    register_http_source(&def, &ctx, catalog.as_ref())
+        .await
+        .expect("register");
+    let err = ctx
+        .sql("SELECT id FROM api.form WHERE q = 'x'")
+        .await
+        .expect("plan")
+        .collect()
+        .await
+        .expect_err("form body + custom auth body should error");
+    assert!(
+        err.to_string().contains("JSON table body"),
+        "unexpected error: {err}"
+    );
+}
+
 /// Comparison filters push down via a param's `accepts`/`emit` mapping: the
 /// server only matches when both `since` and `until` query params are present.
 #[tokio::test]
