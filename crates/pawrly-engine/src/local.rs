@@ -4,12 +4,12 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use arrow_schema::SchemaRef;
 use async_trait::async_trait;
 use chrono::Utc;
 use datafusion::catalog::{CatalogProvider, MemoryCatalogProvider};
 use datafusion::execution::context::SessionContext;
 use parking_lot::{Mutex, RwLock};
-use arrow_schema::SchemaRef;
 use pawrly_core::semantic::{SemanticModelDescription, SemanticModelInfo, SemanticQuery};
 use pawrly_core::{
     CacheEntryInfo, CachePolicy, CatalogSnapshot, ColumnSpec, EngineError, EngineService,
@@ -139,7 +139,9 @@ impl LocalEngine {
         // per-workspace namespace string that segments the on-disk cache.
         ctx.register_catalog(
             &namespace,
-            Arc::new(crate::namespace::NamespaceCatalogProvider::new(cache.clone())),
+            Arc::new(crate::namespace::NamespaceCatalogProvider::new(
+                cache.clone(),
+            )),
         );
         // Also expose `materialized.<name>` in the default catalog so materialized
         // tables resolve without the namespace prefix.
@@ -251,8 +253,14 @@ impl LocalEngine {
     async fn produce_materialize(
         &self,
         spec: &MaterializeSpec,
-    ) -> Result<(SchemaRef, Vec<arrow_array::RecordBatch>, Option<tempfile::NamedTempFile>), EngineError>
-    {
+    ) -> Result<
+        (
+            SchemaRef,
+            Vec<arrow_array::RecordBatch>,
+            Option<tempfile::NamedTempFile>,
+        ),
+        EngineError,
+    > {
         match spec {
             MaterializeSpec::Query { sql, params } => {
                 let sql = substitute_params(sql, params);
@@ -584,7 +592,10 @@ impl EngineService for LocalEngine {
             )
             .await?;
             tracing::info!(materialized_as = %format!("materialized.{name}"), "inline materialize");
-            let read_sql = format!("SELECT * FROM {}.\"{name}\"", pawrly_core::MATERIALIZED_SCHEMA);
+            let read_sql = format!(
+                "SELECT * FROM {}.\"{name}\"",
+                pawrly_core::MATERIALIZED_SCHEMA
+            );
             let df = inner
                 .ctx
                 .sql(&read_sql)
@@ -1052,8 +1063,7 @@ fn batches_schema(batches: &[arrow_array::RecordBatch]) -> SchemaRef {
 fn validate_materialized_name(name: &str) -> Result<(), EngineError> {
     let bad = name.is_empty()
         || name.trim() != name
-        || name
-            .contains(|c: char| c == '.' || c == '/' || c == '\\' || c.is_whitespace());
+        || name.contains(|c: char| c == '.' || c == '/' || c == '\\' || c.is_whitespace());
     if bad {
         return Err(EngineError::Internal(format!(
             "invalid materialized table name `{name}`: use a plain identifier (no dots, slashes, or spaces)"

@@ -105,12 +105,17 @@ async fn materialize_query_persists_and_is_addressable() {
         .unwrap();
 
     // The outcome carries the artifact: fq-name, a real file, the row count.
-    assert_eq!(outcome.name, TableName::new("materialized", "rev_by_customer"));
+    assert_eq!(
+        outcome.name,
+        TableName::new("materialized", "rev_by_customer")
+    );
     assert_eq!(outcome.row_count, 4);
     assert!(outcome.size_bytes > 0);
     assert!(outcome.file_path.exists(), "parquet artifact must exist");
     assert!(
-        outcome.file_path.starts_with(storage_root(workspace.path())),
+        outcome
+            .file_path
+            .starts_with(storage_root(workspace.path())),
         "artifact must live under the cache root"
     );
 
@@ -123,9 +128,7 @@ async fn materialize_query_persists_and_is_addressable() {
 
     // Real data, not just a row count: ben = 2500 + 4200 = 6700.
     let ben = svc
-        .query_collect(
-            "SELECT total FROM test.materialized.rev_by_customer WHERE customer = 'ben'",
-        )
+        .query_collect("SELECT total FROM test.materialized.rev_by_customer WHERE customer = 'ben'")
         .await
         .unwrap();
     assert_eq!(count_of(&ben), 6700);
