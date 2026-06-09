@@ -35,7 +35,10 @@ pub use semantic::{
     SemanticModel, SemanticModelDescription, SemanticModelInfo, SemanticOrder, SemanticQuery,
     TimeGrain,
 };
-pub use service::{EngineService, EngineServiceExt, QueryId, QueryRequest, QueryStream};
+pub use service::{
+    EngineService, EngineServiceExt, MATERIALIZED_SCHEMA, MaterializeFormat, MaterializeOutcome,
+    MaterializeSpec, QueryId, QueryRequest, QueryStream,
+};
 pub use source::{
     HealthReport, RefreshCatalogOutcome, ReloadReport, SourceDef, SourceInfo, SourceStatus,
     SourceTestReport, TableDef,

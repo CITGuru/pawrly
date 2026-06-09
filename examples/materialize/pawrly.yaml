@@ -1,0 +1,55 @@
+# Materialized tables — persist a query, file, or URL as a named table.
+# yaml-language-server: $schema=../../schemas/pawrly.schema.json
+#
+# `materialize` writes a self-backed Parquet table addressable as
+# `materialized.<name>`. Unlike a cached source, it is pinned: it never expires
+# and is removed only when you drop it. See docs/materialize.md.
+#
+# A stable namespace gives clean, unquoted addressing (`mz.materialized.<name>`).
+#
+# Try it:
+#   # 1. Materialize a query result, then read it back:
+#   pawrly --config examples/materialize/pawrly.yaml materialize region_totals \
+#     'SELECT region, SUM(amount) AS total FROM sales.rows GROUP BY 1 ORDER BY 2 DESC'
+#   pawrly --config examples/materialize/pawrly.yaml sql \
+#     'SELECT * FROM materialized.region_totals'
+#
+#   # 2. Materialize a local file directly (no source needed):
+#   pawrly --config examples/materialize/pawrly.yaml materialize raw_sales \
+#     --file examples/materialize/sales.csv
+#
+#   # 3. The inline directive persists a result through a plain query (see
+#   #    defaults.materialize.allow_inline below). Pipe via stdin so the leading
+#   #    `--` isn't read as a CLI flag:
+#   printf '%s\n' '-- pawrly: materialize big_sales' \
+#     'SELECT * FROM sales.rows WHERE amount > 1000' \
+#     | pawrly --config examples/materialize/pawrly.yaml sql -
+#
+#   # 4. List, refresh (re-runs the origin), and drop:
+#   pawrly --config examples/materialize/pawrly.yaml cache list
+#   pawrly --config examples/materialize/pawrly.yaml cache refresh materialized.raw_sales
+#   pawrly --config examples/materialize/pawrly.yaml materialize region_totals --drop
+
+version: 1
+name: materialize-example
+
+defaults:
+  # A stable namespace, so materialized tables address cleanly as
+  # `mz.materialized.<name>` in addition to the unqualified `materialized.<name>`.
+  cache:
+    namespace: mz
+  # Allow the inline `-- pawrly: materialize <name>` directive on plain queries.
+  materialize:
+    allow_inline: true
+
+sources:
+  # Paths are relative to this config file's directory.
+  - name: sales
+    kind: file
+    description: Local sales rows used as a query origin.
+    config:
+      path: sales.csv
+    tables:
+      - name: rows
+        path: sales.csv
+        format: csv

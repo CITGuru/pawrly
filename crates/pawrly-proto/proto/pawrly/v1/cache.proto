@@ -10,6 +10,9 @@ service CacheService {
   rpc Refresh(RefreshRequest) returns (RefreshResponse);
   rpc Invalidate(InvalidateRequest) returns (InvalidateResponse);
   rpc Vacuum(VacuumRequest) returns (VacuumResponse);
+  // Persist a query result as a named, self-backed materialized table.
+  rpc Materialize(MaterializeRequest) returns (MaterializeResponse);
+  rpc DropMaterialized(DropMaterializedRequest) returns (DropMaterializedResponse);
 }
 
 message CacheEntryInfo {
@@ -42,3 +45,56 @@ message VacuumResponse {
   uint64 files_removed = 2;
   uint64 bytes_reclaimed = 3;
 }
+
+// How a materialized table is produced.
+message MaterializeSpec {
+  oneof spec {
+    QuerySpec query = 1;
+    FileSpec file = 2;
+    UrlSpec url = 3;
+    InlineSpec inline = 4;
+  }
+}
+
+// Tabular format for File/Url/Inline origins. UNSPECIFIED = infer from the
+// path/URL extension (not valid for Inline, which has no extension).
+enum MaterializeFormat {
+  MATERIALIZE_FORMAT_UNSPECIFIED = 0;
+  MATERIALIZE_FORMAT_PARQUET = 1;
+  MATERIALIZE_FORMAT_CSV = 2;
+  MATERIALIZE_FORMAT_JSON = 3;
+}
+
+message QuerySpec {
+  string sql = 1;
+  map<string, string> params = 2;
+}
+
+message FileSpec {
+  string path = 1;
+  MaterializeFormat format = 2;
+}
+
+message UrlSpec {
+  string url = 1;
+  MaterializeFormat format = 2;
+}
+
+message InlineSpec {
+  bytes bytes = 1;
+  MaterializeFormat format = 2;
+}
+
+message MaterializeRequest {
+  string name = 1;
+  MaterializeSpec spec = 2;
+}
+message MaterializeResponse {
+  TableName name = 1;
+  string file_path = 2;
+  uint64 row_count = 3;
+  uint64 size_bytes = 4;
+}
+
+message DropMaterializedRequest { string name = 1; }
+message DropMaterializedResponse { bool dropped = 1; }

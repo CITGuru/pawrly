@@ -96,6 +96,46 @@ pub fn list_tools() -> Vec<Value> {
                 }
             }
         }),
+        json!({
+            "name": "materialize",
+            "description": "Persist data as a named, self-backed table queryable as \
+                            `<namespace>.materialized.<name>`. Provide exactly one origin: \
+                            `sql` (a query), `file` (a local CSV/Parquet/JSON path), or `url` \
+                            (an http(s) file). Returns { name, file_path, row_count, size_bytes }. \
+                            Create-or-replace by name; the table is pinned (never auto-evicted).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "description": "Table name (a plain identifier)" },
+                    "sql": { "type": "string", "description": "Origin: a SQL query" },
+                    "file": { "type": "string", "description": "Origin: a local file path" },
+                    "url": { "type": "string", "description": "Origin: an http(s) file URL" },
+                    "format": {
+                        "type": "string",
+                        "enum": ["parquet", "csv", "json"],
+                        "description": "Format for file/url; inferred from the extension if omitted"
+                    },
+                    "params": {
+                        "type": "object",
+                        "additionalProperties": { "type": "string" },
+                        "description": "Values bound to ${param:NAME} placeholders in `sql`"
+                    }
+                },
+                "required": ["name"]
+            }
+        }),
+        json!({
+            "name": "drop_materialized",
+            "description": "Drop a materialized table by name. Returns { dropped } \
+                            (false if no such table existed).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string" }
+                },
+                "required": ["name"]
+            }
+        }),
     ]
 }
 
@@ -206,7 +246,70 @@ pub async fn call_tool(
                 "truncated": truncated,
             }))
         }
+        "materialize" => {
+            let name = args
+                .get("name")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| ToolError::BadArgs("`name` is required".into()))?;
+            let format = match args.get("format").and_then(|v| v.as_str()) {
+                Some(f) => Some(parse_format(f)?),
+                None => None,
+            };
+            let spec = if let Some(sql) = args.get("sql").and_then(|v| v.as_str()) {
+                let params = match args.get("params") {
+                    Some(p) => serde_json::from_value(p.clone())
+                        .map_err(|e| ToolError::BadArgs(format!("invalid `params`: {e}")))?,
+                    None => std::collections::HashMap::new(),
+                };
+                pawrly_core::MaterializeSpec::Query {
+                    sql: sql.to_string(),
+                    params,
+                }
+            } else if let Some(file) = args.get("file").and_then(|v| v.as_str()) {
+                pawrly_core::MaterializeSpec::File {
+                    path: file.into(),
+                    format,
+                }
+            } else if let Some(url) = args.get("url").and_then(|v| v.as_str()) {
+                pawrly_core::MaterializeSpec::Url {
+                    url: url.to_string(),
+                    format,
+                }
+            } else {
+                return Err(ToolError::BadArgs(
+                    "one of `sql`, `file`, or `url` is required".into(),
+                ));
+            };
+            let outcome = engine
+                .materialize(name, spec)
+                .await
+                .map_err(|e| ToolError::Engine(e.to_string()))?;
+            serde_json::to_value(&outcome).map_err(|e| ToolError::Engine(e.to_string()))
+        }
+        "drop_materialized" => {
+            let name = args
+                .get("name")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| ToolError::BadArgs("`name` is required".into()))?;
+            let dropped = engine
+                .drop_materialized(name)
+                .await
+                .map_err(|e| ToolError::Engine(e.to_string()))?;
+            Ok(json!({ "dropped": dropped }))
+        }
         other => Err(ToolError::Unknown(other.to_string())),
+    }
+}
+
+/// Parse a `materialize` format string into a `MaterializeFormat`.
+fn parse_format(s: &str) -> Result<pawrly_core::MaterializeFormat, ToolError> {
+    match s.to_ascii_lowercase().as_str() {
+        "parquet" => Ok(pawrly_core::MaterializeFormat::Parquet),
+        "csv" => Ok(pawrly_core::MaterializeFormat::Csv),
+        "json" | "ndjson" | "jsonl" => Ok(pawrly_core::MaterializeFormat::Json),
+        other => Err(ToolError::BadArgs(format!(
+            "unknown format `{other}` (expected parquet, csv, or json)"
+        ))),
     }
 }
 
@@ -340,6 +443,65 @@ mod tests {
         .unwrap();
         assert_eq!(out["row_count"], 0); // MockEngine yields no rows
         assert!(out["columns"].is_array());
+    }
+
+    #[test]
+    fn materialize_tools_are_listed() {
+        let names: Vec<String> = list_tools()
+            .iter()
+            .filter_map(|t| t["name"].as_str().map(str::to_string))
+            .collect();
+        for want in ["materialize", "drop_materialized"] {
+            assert!(names.contains(&want.to_string()), "missing tool `{want}`");
+        }
+    }
+
+    #[tokio::test]
+    async fn materialize_query_returns_outcome() {
+        // MockEngine echoes the name back in the outcome.
+        let out = call_tool(
+            &engine(),
+            "materialize",
+            &json!({ "name": "rev", "sql": "SELECT 1" }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(out["name"]["schema"], "materialized");
+        assert_eq!(out["name"]["table"], "rev");
+    }
+
+    #[tokio::test]
+    async fn materialize_requires_name_and_origin() {
+        // Missing name.
+        let err = call_tool(&engine(), "materialize", &json!({ "sql": "SELECT 1" }))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ToolError::BadArgs(_)));
+        // Name but no origin.
+        let err = call_tool(&engine(), "materialize", &json!({ "name": "x" }))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ToolError::BadArgs(_)));
+    }
+
+    #[tokio::test]
+    async fn materialize_rejects_bad_format() {
+        let err = call_tool(
+            &engine(),
+            "materialize",
+            &json!({ "name": "x", "file": "a.dat", "format": "avro" }),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, ToolError::BadArgs(_)));
+    }
+
+    #[tokio::test]
+    async fn drop_materialized_returns_envelope() {
+        let out = call_tool(&engine(), "drop_materialized", &json!({ "name": "rev" }))
+            .await
+            .unwrap();
+        assert_eq!(out["dropped"], false); // MockEngine reports nothing to drop
     }
 
     #[tokio::test]

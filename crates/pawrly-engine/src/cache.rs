@@ -28,7 +28,8 @@ use fs2::FileExt as _;
 use parking_lot::Mutex;
 use parquet::arrow::{ArrowWriter, arrow_reader::ParquetRecordBatchReaderBuilder};
 use pawrly_core::{
-    CacheEntryInfo, CacheMode, CachePolicy, EngineError, RefreshOutcome, TableName, VacuumReport,
+    CacheEntryInfo, CacheMode, CachePolicy, EngineError, MATERIALIZED_SCHEMA, MaterializeSpec,
+    RefreshOutcome, TableName, VacuumReport,
 };
 use serde::{Deserialize, Serialize};
 
@@ -36,6 +37,27 @@ pub(crate) mod refresher;
 
 /// Abandoned `tmp/` files older than this are reclaimed at startup and vacuum.
 const TMP_MAX_AGE: Duration = Duration::from_secs(3600);
+
+/// What produced a manifest entry. Governs reclamation: a `CacheCopy` has a live
+/// upstream and is TTL/vacuum-eligible; a `Materialized` table is self-backed
+/// (no upstream to refetch) and must never be auto-reclaimed.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Origin {
+    /// A cache copy of a live source table. Today's behavior; TTL/vacuum-eligible.
+    #[default]
+    CacheCopy,
+    /// A self-backed table written by `materialize`. Pinned; never auto-reclaimed.
+    /// `spec` records how to reproduce it.
+    Materialized { spec: MaterializeSpec },
+}
+
+impl Origin {
+    /// True for self-backed materialized tables (no live upstream).
+    fn is_materialized(&self) -> bool {
+        matches!(self, Origin::Materialized { .. })
+    }
+}
 
 /// One cache entry serialized to disk.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -47,6 +69,10 @@ pub struct ManifestEntry {
     pub row_count: u64,
     pub size_bytes: u64,
     pub file_path: PathBuf,
+    /// How this entry was produced. Defaults to `CacheCopy` so manifests written
+    /// before this field existed deserialize unchanged.
+    #[serde(default)]
+    pub origin: Origin,
 }
 
 /// JSON manifest listing every cache entry.
@@ -233,9 +259,12 @@ impl CacheManager {
         //    their files.
         let expired: Vec<ManifestEntry> = self
             .with_locked_manifest(|m| {
-                let (keep, drop): (Vec<_>, Vec<_>) = std::mem::take(&mut m.entries)
-                    .into_iter()
-                    .partition(|e| e.expires_at.is_none_or(|exp| now < exp));
+                // Data-loss guard: a `Materialized` entry has no upstream to
+                // refetch, so it is never expired regardless of `expires_at`.
+                let (keep, drop): (Vec<_>, Vec<_>) =
+                    std::mem::take(&mut m.entries).into_iter().partition(|e| {
+                        e.origin.is_materialized() || e.expires_at.is_none_or(|exp| now < exp)
+                    });
                 m.entries = keep;
                 drop
             })
@@ -307,9 +336,85 @@ impl CacheManager {
             row_count: batches.iter().map(|b| b.num_rows() as u64).sum(),
             size_bytes,
             file_path: final_path,
+            origin: Origin::CacheCopy,
         };
         self.upsert(entry.clone())?;
         Ok(entry)
+    }
+
+    /// Write `batches` as a self-backed, **pinned** materialized table under the
+    /// reserved [`MATERIALIZED_SCHEMA`] schema. Create-or-replace by `name`
+    /// (upsert semantics). The namespace catalog surfaces the result as
+    /// `<namespace>.materialized.<name>` with no separate registration.
+    ///
+    /// Unlike [`Self::write_through`], the entry has `expires_at = None` and an
+    /// [`Origin::Materialized`] tag, so neither TTL nor `vacuum` ever reclaims it.
+    pub fn materialize(
+        &self,
+        name: &str,
+        schema: SchemaRef,
+        batches: &[RecordBatch],
+        spec: MaterializeSpec,
+    ) -> std::io::Result<ManifestEntry> {
+        let final_path = self
+            .root
+            .join("data")
+            .join(MATERIALIZED_SCHEMA)
+            .join(name)
+            .join("part-000000.parquet");
+        let size_bytes = atomic_write_parquet(&self.root, &final_path, schema, batches)?;
+        let entry = ManifestEntry {
+            source: MATERIALIZED_SCHEMA.to_string(),
+            table: name.to_string(),
+            written_at: Utc::now(),
+            expires_at: None, // pinned: no upstream to refetch
+            row_count: batches.iter().map(|b| b.num_rows() as u64).sum(),
+            size_bytes,
+            file_path: final_path,
+            origin: Origin::Materialized { spec },
+        };
+        self.upsert(entry.clone())?;
+        Ok(entry)
+    }
+
+    /// The stored [`MaterializeSpec`] for a materialized table, if one exists.
+    /// Lets `refresh_table` re-run a self-backed table's origin (it has no live
+    /// inner provider to re-scan).
+    #[must_use]
+    pub fn materialized_spec(&self, name: &str) -> Option<MaterializeSpec> {
+        self.manifest.lock().entries.iter().find_map(|e| {
+            if e.source == MATERIALIZED_SCHEMA && e.table == name {
+                match &e.origin {
+                    Origin::Materialized { spec } => Some(spec.clone()),
+                    Origin::CacheCopy => None,
+                }
+            } else {
+                None
+            }
+        })
+    }
+
+    /// Drop a materialized table (manifest entry + file). Returns `false` if no
+    /// materialized table named `name` exists. Refuses to touch `CacheCopy`
+    /// entries even if a name collides — materialized drops are explicit only.
+    pub fn drop_materialized(&self, name: &str) -> Result<bool, EngineError> {
+        let key = TableName::new(MATERIALIZED_SCHEMA, name);
+        let removed: Option<ManifestEntry> = self
+            .with_locked_manifest(|m| {
+                let idx = m.entries.iter().position(|e| {
+                    e.source == key.schema && e.table == key.table && e.origin.is_materialized()
+                });
+                idx.map(|i| m.entries.remove(i))
+            })
+            .map_err(|e| EngineError::Internal(format!("cache manifest flush: {e}")))?;
+        let Some(entry) = removed else {
+            return Ok(false);
+        };
+        let _ = std::fs::remove_file(&entry.file_path);
+        if let Some(parent) = entry.file_path.parent() {
+            let _ = std::fs::remove_dir(parent);
+        }
+        Ok(true)
     }
 
     /// Replace any existing entry for this name with a new one and persist.
@@ -380,6 +485,57 @@ impl CacheManager {
     }
 
     /// List every entry, for `EngineService::cache_entries`.
+    /// Distinct `source` values present in the manifest whose backing file still
+    /// exists on disk. Drives the read-only namespace catalog's schema list.
+    ///
+    /// **Expiry-agnostic:** a `source` appears as long as at least one of its
+    /// entries has a file present, regardless of `expires_at`. Direct cache
+    /// reads see exactly what is materialized on disk; only *live* reads honor
+    /// TTL freshness.
+    #[must_use]
+    pub fn namespace_sources(&self) -> Vec<String> {
+        let mut out: Vec<String> = self
+            .manifest
+            .lock()
+            .entries
+            .iter()
+            .filter(|e| e.file_path.exists())
+            .map(|e| e.source.clone())
+            .collect();
+        out.sort();
+        out.dedup();
+        out
+    }
+
+    /// Tables under `source` whose backing file exists. Expiry-agnostic; see
+    /// [`Self::namespace_sources`].
+    #[must_use]
+    pub fn namespace_tables(&self, source: &str) -> Vec<String> {
+        let mut out: Vec<String> = self
+            .manifest
+            .lock()
+            .entries
+            .iter()
+            .filter(|e| e.source == source && e.file_path.exists())
+            .map(|e| e.table.clone())
+            .collect();
+        out.sort();
+        out.dedup();
+        out
+    }
+
+    /// Resolve the Parquet file backing `(source, table)`, if an entry exists and
+    /// its file is present. Expiry-agnostic; see [`Self::namespace_sources`].
+    #[must_use]
+    pub fn namespace_path(&self, source: &str, table: &str) -> Option<PathBuf> {
+        self.manifest
+            .lock()
+            .entries
+            .iter()
+            .find(|e| e.source == source && e.table == table && e.file_path.exists())
+            .map(|e| e.file_path.clone())
+    }
+
     pub fn list(&self) -> Vec<CacheEntryInfo> {
         let entries = self.manifest.lock().entries.clone();
         let inner = self.inner.lock();
@@ -604,6 +760,54 @@ fn read_parquet_as_exec(
     Ok(exec as Arc<dyn ExecutionPlan>)
 }
 
+/// A read-only [`TableProvider`] over a single cached Parquet file, with no live
+/// upstream. Backs the namespace catalog's direct reads (`<ns>.<source>.<table>`)
+/// and, later, materialized tables — both of which are just "a Parquet file on
+/// disk addressable by name." The schema is read once from the file footer at
+/// construction; scans reuse [`read_parquet_as_exec`].
+#[derive(Debug)]
+pub struct ParquetSnapshotProvider {
+    path: PathBuf,
+    schema: SchemaRef,
+}
+
+impl ParquetSnapshotProvider {
+    /// Open `path` and read its Arrow schema from the Parquet footer.
+    pub fn open(path: PathBuf) -> std::io::Result<Self> {
+        let file = std::fs::File::open(&path)?;
+        let builder =
+            ParquetRecordBatchReaderBuilder::try_new(file).map_err(std::io::Error::other)?;
+        let schema = builder.schema().clone();
+        Ok(Self { path, schema })
+    }
+}
+
+#[async_trait]
+impl TableProvider for ParquetSnapshotProvider {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn schema(&self) -> SchemaRef {
+        self.schema.clone()
+    }
+
+    fn table_type(&self) -> TableType {
+        TableType::Base
+    }
+
+    async fn scan(
+        &self,
+        _state: &dyn Session,
+        projection: Option<&Vec<usize>>,
+        _filters: &[Expr],
+        _limit: Option<usize>,
+    ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
+        read_parquet_as_exec(&self.path, projection)
+            .map_err(|e| DataFusionError::External(Box::new(e)))
+    }
+}
+
 /// Recursively collect every file under `dir`.
 fn collect_files(dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(rd) = std::fs::read_dir(dir) else {
@@ -668,6 +872,7 @@ mod tests {
                 .join(source)
                 .join(table)
                 .join("part-000000.parquet"),
+            origin: Origin::CacheCopy,
         }
     }
 

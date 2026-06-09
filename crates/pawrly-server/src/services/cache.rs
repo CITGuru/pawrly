@@ -4,7 +4,8 @@ use std::sync::Arc;
 
 use pawrly_core::EngineService;
 use pawrly_proto::v1::{
-    self, InvalidateRequest, InvalidateResponse, ListEntriesRequest, ListEntriesResponse,
+    self, DropMaterializedRequest, DropMaterializedResponse, InvalidateRequest, InvalidateResponse,
+    ListEntriesRequest, ListEntriesResponse, MaterializeRequest, MaterializeResponse,
     RefreshRequest, RefreshResponse, VacuumRequest, VacuumResponse,
     cache_service_server::CacheService,
 };
@@ -105,6 +106,36 @@ impl CacheService for CacheSvc {
             files_removed: r.files_removed,
             bytes_reclaimed: r.bytes_reclaimed,
         }))
+    }
+
+    async fn materialize(
+        &self,
+        req: Request<MaterializeRequest>,
+    ) -> Result<Response<MaterializeResponse>, Status> {
+        let req = req.into_inner();
+        let spec = req
+            .spec
+            .ok_or_else(|| Status::invalid_argument("spec is required"))?;
+        let core_spec = pawrly_core::MaterializeSpec::try_from(spec)?;
+        let outcome = self
+            .engine
+            .materialize(&req.name, core_spec)
+            .await
+            .map_err(|e| engine_error_to_status(&e))?;
+        Ok(Response::new(outcome.into()))
+    }
+
+    async fn drop_materialized(
+        &self,
+        req: Request<DropMaterializedRequest>,
+    ) -> Result<Response<DropMaterializedResponse>, Status> {
+        let name = req.into_inner().name;
+        let dropped = self
+            .engine
+            .drop_materialized(&name)
+            .await
+            .map_err(|e| engine_error_to_status(&e))?;
+        Ok(Response::new(DropMaterializedResponse { dropped }))
     }
 }
 

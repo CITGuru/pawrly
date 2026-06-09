@@ -19,7 +19,9 @@ use crate::schema::{
     TableName, TableSummary,
 };
 use crate::semantic::{SemanticModelDescription, SemanticModelInfo, SemanticQuery};
-use crate::service::{EngineService, QueryRequest, QueryStream};
+use crate::service::{
+    EngineService, MaterializeOutcome, MaterializeSpec, QueryRequest, QueryStream,
+};
 use crate::source::{
     HealthReport, RefreshCatalogOutcome, ReloadReport, SourceDef, SourceInfo, SourceStatus,
     SourceTestReport,
@@ -248,6 +250,23 @@ impl EngineService for MockEngine {
 
     async fn vacuum_cache(&self) -> Result<VacuumReport, EngineError> {
         Ok(VacuumReport::default())
+    }
+
+    async fn materialize(
+        &self,
+        name: &str,
+        _spec: MaterializeSpec,
+    ) -> Result<MaterializeOutcome, EngineError> {
+        Ok(MaterializeOutcome {
+            name: TableName::new(crate::MATERIALIZED_SCHEMA, name),
+            file_path: std::path::PathBuf::new(),
+            row_count: 0,
+            size_bytes: 0,
+        })
+    }
+
+    async fn drop_materialized(&self, _name: &str) -> Result<bool, EngineError> {
+        Ok(false)
     }
 
     async fn add_source(&self, def: SourceDef) -> Result<SourceInfo, EngineError> {

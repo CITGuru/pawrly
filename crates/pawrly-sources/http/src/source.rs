@@ -25,11 +25,17 @@ pub enum AuthSpec {
         username: String,
         password: String,
     },
-    /// Credentials carried outside headers. Currently query parameters appended
-    /// to every request (`?api_key=…`); reserved for request signers later.
+    /// Credentials carried outside headers: query parameters appended to every
+    /// request (`?api_key=…`) and/or name/value fields injected into the request
+    /// body as a JSON object.
     Custom {
         #[serde(default)]
         query: Vec<QueryCredential>,
+        /// Fields merged into the request body as a JSON object. When the table
+        /// also declares a JSON body they are merged on top of it; with no table
+        /// body they are sent as the whole JSON body.
+        #[serde(default)]
+        body: Vec<QueryCredential>,
     },
     /// OAuth2 client-credentials grant. A token is fetched on first use and
     /// re-fetched on expiry, then sent as `Authorization: Bearer <token>`.
@@ -55,11 +61,23 @@ pub struct AuthHeader {
     pub value: Option<String>,
 }
 
-/// One query-string credential in a `type: custom` auth block.
+/// One credential in a `type: custom` auth block — a name/value pair used as a
+/// query parameter (`query`) or a request-body field (`body`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QueryCredential {
     pub name: String,
     pub value: String,
+}
+
+/// Build a JSON object from `custom` auth body credential fields.
+#[must_use]
+pub fn custom_body_object(
+    fields: &[QueryCredential],
+) -> serde_json::Map<String, serde_json::Value> {
+    fields
+        .iter()
+        .map(|c| (c.name.clone(), serde_json::Value::String(c.value.clone())))
+        .collect()
 }
 
 impl AuthSpec {
@@ -440,7 +458,9 @@ impl HttpSource {
                 req
             }
             AuthSpec::Basic { username, password } => req.basic_auth(username, Some(password)),
-            AuthSpec::Custom { query } => {
+            AuthSpec::Custom { query, .. } => {
+                // Body fields are attached at request-build time (typed/raw), where
+                // they can merge with a table's own body; here we only do query.
                 let pairs: Vec<(&str, &str)> = query
                     .iter()
                     .map(|q| (q.name.as_str(), q.value.as_str()))
@@ -449,6 +469,16 @@ impl HttpSource {
             }
             AuthSpec::Oauth2 { .. } => req.bearer_auth(self.oauth_bearer().await?),
         })
+    }
+
+    /// The `custom` auth body fields (name/value), empty for any other auth type.
+    /// Callers merge these into the request body as a JSON object.
+    #[must_use]
+    pub fn custom_body_fields(&self) -> &[QueryCredential] {
+        match &self.auth {
+            AuthSpec::Custom { body, .. } => body,
+            _ => &[],
+        }
     }
 
     /// Return a valid OAuth2 access token, reusing the cached one until it is

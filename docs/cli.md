@@ -121,6 +121,32 @@ pawrly cache vacuum                      # reclaim expired entries, orphaned fil
 
 ---
 
+### `pawrly materialize`
+
+Persist data as a named, self-backed table queryable as `materialized.<NAME>` (see [Materialized tables](./materialize.md)). The source can be a SQL query, a local file, or an `http(s)` URL.
+
+```
+pawrly materialize <NAME> "<SQL>"          # persist a query result
+pawrly materialize <NAME> --file <PATH>    # persist a local CSV/Parquet/JSON file
+pawrly materialize <NAME> --url <URL>      # persist a remote http(s) file
+pawrly materialize <NAME> --drop           # drop a materialized table
+```
+
+```bash
+pawrly materialize top_customers \
+  "SELECT customer, SUM(amount) AS total FROM stripe.charges GROUP BY 1 ORDER BY 2 DESC LIMIT 10"
+
+pawrly materialize sales --file ./data/sales.csv --format csv
+pawrly sql "SELECT * FROM materialized.top_customers"
+
+# re-run a materialized table's origin (re-query / re-read the file or URL):
+pawrly cache refresh materialized.top_customers
+```
+
+Options: `--format parquet|csv|json` (inferred from the extension for `--file`/`--url`), `--param KEY=VALUE` (repeatable, substitutes `${param:KEY}` in the SQL), `--json`.
+
+---
+
 ### `pawrly config`
 
 Inspect the assembled configuration (after `include:`/`from:` resolution and secret masking).

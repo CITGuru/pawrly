@@ -87,6 +87,47 @@ async fn full_round_trip_against_mock_engine() {
 }
 
 #[tokio::test]
+async fn materialize_round_trip() {
+    use std::collections::HashMap;
+
+    use pawrly_core::MaterializeSpec;
+
+    let mock: Arc<dyn EngineService> = Arc::new(MockEngine::new());
+    let channel = ServerBuilder::new(mock)
+        .serve_in_process()
+        .await
+        .expect("server should start");
+    let client: Arc<dyn EngineService> = Arc::new(
+        RemoteEngineClient::connect(Endpoint::InProcess(channel))
+            .await
+            .expect("client should connect"),
+    );
+
+    // The MaterializeSpec (oneof + params map) encodes on the client, crosses the
+    // wire, and the name round-trips back in the MaterializeOutcome.
+    let mut params = HashMap::new();
+    params.insert("min".to_string(), "1000".to_string());
+    let outcome = client
+        .materialize(
+            "rev",
+            MaterializeSpec::Query {
+                sql: "SELECT * FROM data.orders WHERE amount_cents > ${param:min}".into(),
+                params,
+            },
+        )
+        .await
+        .expect("materialize over gRPC");
+    assert_eq!(outcome.name, TableName::new("materialized", "rev"));
+
+    // drop_materialized round-trips its bool.
+    let dropped = client
+        .drop_materialized("rev")
+        .await
+        .expect("drop_materialized over gRPC");
+    assert!(!dropped, "mock reports nothing to drop");
+}
+
+#[tokio::test]
 async fn add_source_round_trip() {
     let mock_typed = Arc::new(MockEngine::new());
     let mock: Arc<dyn EngineService> = mock_typed.clone();

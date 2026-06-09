@@ -42,6 +42,8 @@ Every entry under `sources:` is one source. These are the top-level fields:
 
 The config-layer source block also accepts `from:` (load the body from another file) — see [Configuration → Multi-file configs](./config.md#multi-file-configs).
 
+> **Strict keys.** The source block rejects unknown top-level fields: a typo'd or misplaced key (e.g. `safty:`, or a kind-specific key written outside `config:`/`tables:`) fails the config load with an error rather than being silently ignored. The full machine-readable shape lives in the generated JSON Schema at [`schemas/pawrly.schema.json`](../schemas/pawrly.schema.json), which editors can use for completion and validation.
+
 ### `name`
 
 A valid SQL identifier (letter or `_`, then alphanumerics/`_`). It's the schema under which the source's tables are registered, so `SELECT … FROM <name>.<table>`. Names must be unique across the merged config.
@@ -90,6 +92,21 @@ tables:
 ```
 
 Only `name`, `description`, `cache`, and `safety` are common; everything else is kind-specific. Some kinds **auto-discover** tables when `tables:` is omitted (`file` globs, `sqlite`/`postgres`/`mysql`/`duckdb`/`snowflake`/`ducklake` enumerate). Others **require** `tables:` (`iceberg`, `delta`, and object-store `file`).
+
+Whether a kind needs `tables:`, and whether it reads per-table fields at all:
+
+
+| Kind                         | `tables:`                          | Per-table fields read                                  |
+| ---------------------------- | ---------------------------------- | ------------------------------------------------------ |
+| `file` (local)               | optional (globs auto-discover)     | `path`, `format`, `csv`, `json`, `schema`, `partition_cols` |
+| `file` (object store)        | **required**                       | `path`/`location`, `format`                            |
+| `http`                       | required for typed tables          | full request/response spec (see the Http backend section below) |
+| `sqlite`                     | optional (auto-enumerates)         | `query` (reshape/restrict)                             |
+| `postgres`, `mysql`, `duckdb`, `snowflake`, `ducklake` | optional (lazy catalog enumeration) | none — entries are ignored; the live catalog is exposed as-is |
+| `iceberg`, `delta`           | **required**                       | `path`/`location`                                      |
+
+
+> For the attach-style catalog kinds (`postgres`/`mysql`/`duckdb`/`snowflake`/`ducklake`), tables are surfaced lazily straight from the remote catalog, so adding `tables:` entries does **not** restrict or rename them. Use the [semantic layer](./semantic.md) if you need curated views over an attached database.
 
 ### The `cache` block
 
@@ -151,6 +168,8 @@ WHERE request_path = '/rate_limit'
 ```
 
 `raw_table_safety` overrides the default policy, which requires a filter on `request_path` (so a bare `SELECT *` can't fan out arbitrarily).
+
+> Unlike typed tables, the raw table is registered **unqualified** (in the default schema) under the source's own name, so it is queried as `FROM <source>` — *not* `FROM <source>.<table>`. This means a source with `raw_table: true` reserves its bare name for the raw escape hatch; its typed tables still live at `<source>.<table>`.
 
 ---
 
@@ -269,17 +288,22 @@ sources:
 `auth.type` selects the method (default `access_key`); each provider supports more than one:
 
 
-| `type`  | `auth.type`        | Fields                                                                                                                      |
-| ------- | ------------------ | --------------------------------------------------------------------------------------------------------------------------- |
-| `s3`    | `access_key`       | `access_key_id`, `secret_access_key`, `session_token`, `endpoint`, `url_style`                                              |
-| `gcs`   | `access_key`       | `access_key_id`, `secret_access_key` (HMAC keys)                                                                            |
-| `azure` | `access_key`       | `connection_string`, `account_name`                                                                                         |
-| any     | `credential_chain` | none — resolve from the ambient chain (env / instance profile / `gcloud` / `az login`); optional `endpoint`, `account_name` |
+| `type`  | `auth.type`                | Fields                                                                                                                      |
+| ------- | -------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `s3`    | `access_key`               | `access_key_id`, `secret_access_key`, `session_token`, `endpoint`, `url_style`                                              |
+| `gcs`   | `access_key`               | `access_key_id`, `secret_access_key` (HMAC keys)                                                                            |
+| `azure` | `access_key`               | `connection_string`, `account_name`                                                                                         |
+| `http`  | `header` / `basic`         | header/basic auth attached to HTTPS file reads                                                                              |
+| any     | `credential_chain` (alias `chain`) | none — resolve from the ambient chain (env / instance profile / `gcloud` / `az login`); optional `endpoint`, `account_name` |
 
 
-With no `auth` block, the ambient credential chain is used.
+With no `auth` block, the ambient credential chain is used. `auth.type: chain` is accepted as a shorthand alias for `credential_chain`.
 
-> Remote files are read by DuckDB's `read_parquet`/`read_csv`/`read_json`, so the local-file `csv`/`json`/`partition_cols`/`schema` options do **not** apply to object-store tables — DuckDB infers the schema and reader from the URL and `format`.
+In addition to `s3`/`gcs`/`azure`, `storage.type: http` covers **authenticated** HTTPS file URLs — combine it with a `header` or `basic` `auth` block to attach credentials to plain-HTTP reads (the `custom`/`oauth2` HTTP-source auth styles do not apply here).
+
+**Scheme auto-routing.** A `file` source is routed through DuckDB automatically whenever it sees a `storage:` block **or** a remote scheme on any `path`/`location` — `s3://`, `gs://`/`gcs://`, `az://`/`azure://`/`abfss://`, or `http(s)://`. A **public** bucket or HTTPS file therefore works with no `storage:` block at all; you only need one to supply credentials, a region, or a custom endpoint.
+
+> Remote files are read by DuckDB's `read_parquet`/`read_csv`/`read_json`, so the local-file `csv`/`json`/`partition_cols`/`schema` options do **not** apply to object-store tables — DuckDB infers the schema and reader from the URL and `format`. Remote `http(s)://` paths also **cannot be globbed**; point each table at a single concrete URL (bucket globs like `s3://…/*.parquet` are fine).
 
 ### Http Backend (`http)` — REST & GraphQL APIs
 
@@ -339,13 +363,15 @@ Set source-level auth with the `config.token` shorthand or a full `auth:` block 
         password: "${secret:API_PASSWORD}"
 ```
 
-`custom` — credentials carried in the query string (the many `?api_key=…` APIs). `query` is a list of `{ name, value }` appended to every request.
+`custom` — credentials carried outside headers. `query` is a list of `{ name, value }` appended to every request as query-string params (the many `?api_key=…` APIs); `body` is a list of `{ name, value }` injected into the request body as a JSON object. When a table also declares its own JSON body, the `body` fields are merged on top of it; with no table body, they are sent as the whole JSON body. (Merging requires a JSON table body — a `form` body errors.)
 
 ```yaml
       auth:
         type: custom
         query:
           - { name: api_key, value: "${secret:API_KEY}" }
+        body:
+          - { name: tenant, value: acme }
 ```
 
 `oauth2` — client-credentials grant: a token is fetched on first use, cached, re-fetched before expiry, then sent as `Authorization: Bearer <token>`. Fields: `token_url`, `client_id`, `client_secret`, optional `scope`, `audience`.
@@ -366,6 +392,8 @@ Set source-level auth with the `config.token` shorthand or a full `auth:` block 
       base_url: https://api.github.com
       token: ${secret:GITHUB_TOKEN}
 ```
+
+> **Gotcha.** A malformed `auth:` block (wrong `type`, a missing required field) does **not** raise a config error — it falls back to *no authentication*, and requests go out unauthenticated. If an API starts returning `401`/`403`, double-check the `auth` block's shape first.
 
 #### Request
 
@@ -483,7 +511,7 @@ A runnable cache-over-API walkthrough lives at [examples/cache-http/](../example
 
 ### `sqlite` — local SQLite databases
 
-Attaches a SQLite file read-only and exposes its tables; equality filters push down. When `tables:` is omitted, every user table is auto-registered.
+Attaches a SQLite file read-only and exposes its tables; equality filters push down. When `tables:` is omitted, every user table is auto-registered. `sqlite` is the one attach-style kind whose `tables:` entries are honored — supply a `query` to restrict or reshape a table.
 
 ```yaml
 sources:
@@ -496,17 +524,29 @@ sources:
     #     query: SELECT id, email FROM users WHERE active = 1
 ```
 
+
+| `config` key | Required | Notes                                                    |
+| ------------ | -------- | -------------------------------------------------------- |
+| `path`       | **yes**  | Path to the `.db` file (`:memory:` allowed).             |
+
+
+| Per-table key | Notes                                                                |
+| ------------- | ------------------------------------------------------------------- |
+| `query`       | Optional SQL backing the table; defaults to `SELECT * FROM "<name>"`. |
+
+
 ### `postgres`, `mysql` — foreign databases
 
 DuckDB `ATTACH`es the database **read-only** and exposes its tables lazily (`<source>.<table>`); equality predicates, projection, and limits push down. No `tables:` needed.
 
 
-| Key                        | Notes                                           |
-| -------------------------- | ----------------------------------------------- |
-| `dsn`                      | Full connection string. If present, used as-is. |
-| `host`                     | Required if no `dsn`.                           |
-| `database` / `dbname`      | Database name.                                  |
-| `port`, `user`, `password` | Optional.                                       |
+| Key                        | Notes                                                     |
+| -------------------------- | --------------------------------------------------------- |
+| `dsn`                      | Full connection string. If present, used as-is.           |
+| `host`                     | Required if no `dsn`.                                      |
+| `database` / `dbname`      | Database name (either spelling).                          |
+| `port`                     | Optional; accepts an integer or a string.                 |
+| `user`, `password`         | Optional.                                                 |
 
 
 ```yaml
@@ -532,9 +572,15 @@ sources:
       path: ./analytics.duckdb
 ```
 
+
+| `config` key | Required | Notes                                                       |
+| ------------ | -------- | ----------------------------------------------------------- |
+| `path`       | **yes**  | Path to the `.duckdb` file; resolved against the config dir. |
+
 ### `snowflake`
 
 DuckDB `ATTACH` via the Snowflake community extension (installed on first use). Requires `account`, `user`, `password`; optional `database`, `schema`, `warehouse`, `role`.
+
 
 ```yaml
 sources:
@@ -563,6 +609,11 @@ sources:
 
 For tables on an object store, provide credentials with a `storage:` block (same keys as object-store `file`); the `httpfs` extension loads automatically.
 
+
+| Per-table key      | Required | Notes                                          |
+| ------------------ | -------- | ---------------------------------------------- |
+| `path` / `location` | **yes**  | Table location passed to the DuckDB scan function. |
+
 ### `ducklake` — DuckLake lakehouse catalog
 
 Attaches a [DuckLake](https://ducklake.select) catalog (a metadata database plus a data path) and exposes its tables lazily.
@@ -575,6 +626,36 @@ sources:
       catalog: ./metadata.ducklake     # sqlite/duckdb/postgres catalog
       data_path: ./lake_data            # local or s3://… (+ optional storage block)
 ```
+
+
+| `config` key | Required | Notes                                                                       |
+| ------------ | -------- | --------------------------------------------------------------------------- |
+| `catalog`    | **yes**  | The metadata catalog (sqlite/duckdb/postgres).                              |
+| `data_path`  | no       | Where data files live; local or remote (`s3://…`). Resolved vs the config dir. |
+| `storage`    | no       | Object-store credentials for a remote `data_path` (loads `httpfs`).         |
+
+---
+
+## Column type reference
+
+Several places take a column `type` — the `file` backend's `schema:` and `partition_cols`, and the `http` backend's `response.schema`. The accepted spellings (case-insensitive) and the contexts that support them:
+
+
+| Canonical type | Accepted spellings                | `file` schema / partitions | `http` response |
+| -------------- | --------------------------------- | -------------------------- | --------------- |
+| boolean        | `bool`, `boolean`                 | ✓                          | ✓               |
+| int32          | `int`, `int32`                    | ✓                          | ✓               |
+| int64          | `bigint`, `int64`, `long`         | ✓                          | ✓               |
+| float32        | `float`, `float32`                | ✓                          | ✓               |
+| float64        | `double`, `float64`               | ✓                          | ✓               |
+| date           | `date`                            | ✓                          | ✓               |
+| timestamp      | `timestamp`                       | —                          | ✓               |
+| timestamptz    | `timestamptz`                     | —                          | ✓ (RFC 3339)    |
+| varchar        | `varchar`, `string`, `text`       | ✓ (default)                | ✓               |
+| json           | `json`                            | —                          | ✓ (raw JSON text) |
+
+
+Any unrecognized type spelling falls back to `varchar`. For `http`, `timestamp`/`timestamptz` parse ISO-8601 / RFC 3339 strings, and `json` keeps a nested object/array as raw JSON text (pair it with `source: $` to capture a whole row element).
 
 ---
 

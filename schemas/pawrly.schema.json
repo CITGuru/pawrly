@@ -26,6 +26,9 @@
           "timeout": "30s",
           "user_agent": "pawrly/0.0.1"
         },
+        "materialize": {
+          "allow_inline": false
+        },
         "optimizer": {
           "coalesce_batches": true,
           "dynamic_filter_pushdown": false,
@@ -255,6 +258,16 @@
             }
           ]
         },
+        "materialize": {
+          "default": {
+            "allow_inline": false
+          },
+          "allOf": [
+            {
+              "$ref": "#/definitions/MaterializeDefaults"
+            }
+          ]
+        },
         "optimizer": {
           "default": {
             "coalesce_batches": true,
@@ -398,6 +411,17 @@
         "user_agent": {
           "default": "pawrly/0.0.1",
           "type": "string"
+        }
+      }
+    },
+    "MaterializeDefaults": {
+      "description": "Materialize section under `defaults:`.",
+      "type": "object",
+      "properties": {
+        "allow_inline": {
+          "description": "Recognize the inline `-- pawrly: materialize <name>` directive on plain queries. Off by default; a `SELECT` that writes to disk is a footgun on a shared daemon, so enable it deliberately per workspace.",
+          "default": false,
+          "type": "boolean"
         }
       }
     },

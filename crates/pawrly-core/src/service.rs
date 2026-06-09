@@ -3,6 +3,7 @@
 //! this trait, never against a concrete implementation.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::pin::Pin;
 use std::time::Duration;
 
@@ -69,6 +70,105 @@ impl QueryRequest {
 /// (or a per-batch error). The schema can be obtained from the first batch.
 pub type QueryStream = Pin<Box<dyn Stream<Item = Result<RecordBatch, EngineError>> + Send>>;
 
+/// The reserved schema/`source` name that materialized tables live under. No
+/// data source may use this name (enforced in the config validator and
+/// `add_source`), so `{source names} ∪ {materialized}` is always disjoint and a
+/// materialized table is addressable as `<namespace>.materialized.<name>`.
+pub const MATERIALIZED_SCHEMA: &str = "materialized";
+
+/// Tabular format of a `File` / `Url` / `Inline` materialize origin.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MaterializeFormat {
+    Parquet,
+    Csv,
+    Json,
+}
+
+impl MaterializeFormat {
+    /// Infer the format from a path/URL extension (`.parquet`/`.csv`/`.json`/
+    /// `.ndjson`/`.jsonl`). Returns `None` for an unknown or missing extension.
+    #[must_use]
+    pub fn from_path(path: &str) -> Option<Self> {
+        let ext = path.rsplit('.').next()?.to_ascii_lowercase();
+        match ext.as_str() {
+            "parquet" => Some(Self::Parquet),
+            "csv" => Some(Self::Csv),
+            "json" | "ndjson" | "jsonl" => Some(Self::Json),
+            _ => None,
+        }
+    }
+}
+
+/// How a materialized table is produced. The single write verb
+/// ([`EngineService::materialize`]) unifies every origin under "produce Arrow
+/// batches, write a self-backed Parquet table."
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum MaterializeSpec {
+    /// Run a SQL query and persist the result.
+    Query {
+        sql: String,
+        /// Substitutions for `${param:KEY}` in the SQL, baked into the stored
+        /// spec at materialization time (v1: values are substituted, not
+        /// re-bound on a future refresh).
+        #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+        params: HashMap<String, String>,
+    },
+    /// Read a local file (CSV/Parquet/JSON). `format` is inferred from the
+    /// extension when `None`.
+    File {
+        path: PathBuf,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        format: Option<MaterializeFormat>,
+    },
+    /// Read a remote `http(s)://` file via DuckDB httpfs. `format` is inferred
+    /// from the URL extension when `None`.
+    Url {
+        url: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        format: Option<MaterializeFormat>,
+    },
+    /// Persist inline bytes of a known `format` (no extension to infer from).
+    Inline {
+        #[serde(with = "inline_bytes")]
+        bytes: Vec<u8>,
+        format: MaterializeFormat,
+    },
+}
+
+/// Base64 (de)serialization for inline bytes so a `MaterializeSpec` stays
+/// JSON/YAML-friendly when stored in the manifest origin.
+mod inline_bytes {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(bytes: &[u8], s: S) -> Result<S::Ok, S::Error> {
+        use base64::Engine as _;
+        s.serialize_str(&base64::engine::general_purpose::STANDARD.encode(bytes))
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<u8>, D::Error> {
+        use base64::Engine as _;
+        let s = String::deserialize(d)?;
+        base64::engine::general_purpose::STANDARD
+            .decode(s.as_bytes())
+            .map_err(serde::de::Error::custom)
+    }
+}
+
+/// The artifact returned by [`EngineService::materialize`]: a self-backed table
+/// queryable by name. `name` is `("materialized", <name>)`, addressable in SQL
+/// as `<namespace>.materialized.<name>`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MaterializeOutcome {
+    /// The manifest key — `materialized.<name>`.
+    pub name: TableName,
+    /// The on-disk Parquet file backing the table.
+    pub file_path: PathBuf,
+    pub row_count: u64,
+    pub size_bytes: u64,
+}
+
 /// The single contract every Pawrly engine implementation satisfies.
 ///
 /// Implementations:
@@ -123,6 +223,21 @@ pub trait EngineService: Send + Sync + 'static {
     async fn invalidate_cache(&self, name: &TableName) -> Result<bool, EngineError>;
 
     async fn vacuum_cache(&self) -> Result<VacuumReport, EngineError>;
+
+    // -------- materialized tables --------
+
+    /// Run `spec` and persist its result as a self-backed Parquet table named
+    /// `name`, queryable as `<namespace>.materialized.<name>`. Pinned (never
+    /// auto-reclaimed by TTL/vacuum); create-or-replace by name.
+    async fn materialize(
+        &self,
+        name: &str,
+        spec: MaterializeSpec,
+    ) -> Result<MaterializeOutcome, EngineError>;
+
+    /// Drop a materialized table (entry + file). Returns `false` if no such
+    /// table existed. Only acts on `materialized.<name>`.
+    async fn drop_materialized(&self, name: &str) -> Result<bool, EngineError>;
 
     // -------- source mgmt --------
 

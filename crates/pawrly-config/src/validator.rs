@@ -18,6 +18,12 @@ pub fn validate(cfg: &Config) -> ConfigErrors {
 
     let mut seen = std::collections::HashSet::new();
     for src in &cfg.sources {
+        if src.name == pawrly_core::MATERIALIZED_SCHEMA {
+            errors.push(ConfigError::Source(
+                src.name.clone(),
+                "`materialized` is reserved for materialized tables".to_string(),
+            ));
+        }
         if !seen.insert(src.name.clone()) {
             errors.push(ConfigError::Source(
                 src.name.clone(),
@@ -528,6 +534,22 @@ mod tests {
             errs.0
                 .iter()
                 .any(|e| matches!(e, ConfigError::Source(_, msg) if msg.contains("duplicate")))
+        );
+    }
+
+    #[test]
+    fn materialized_source_name_is_reserved() {
+        let c = cfg(vec![src(
+            "materialized",
+            SourceKind::File,
+            serde_json::json!({"path": "./data/*.parquet"}),
+        )]);
+        let errs = validate(&c);
+        assert!(
+            errs.0
+                .iter()
+                .any(|e| matches!(e, ConfigError::Source(_, msg) if msg.contains("reserved"))),
+            "a source named `materialized` must be rejected"
         );
     }
 

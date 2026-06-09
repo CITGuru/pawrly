@@ -8,22 +8,22 @@ use chrono::Utc;
 use futures_util::StreamExt as _;
 use pawrly_core::semantic::{SemanticModelDescription, SemanticModelInfo, SemanticQuery};
 use pawrly_core::{
-    CacheEntryInfo, CacheMode, CatalogSnapshot, EngineError, EngineService, HealthReport, QueryId,
-    QueryRequest, QueryStream, RefreshCatalogOutcome, RefreshOutcome, ReloadReport, SourceDef,
-    SourceInfo, SourceTestReport, TableDescription, TableFilter, TableInfo, TableName,
-    VacuumReport,
+    CacheEntryInfo, CacheMode, CatalogSnapshot, EngineError, EngineService, HealthReport,
+    MaterializeOutcome, MaterializeSpec, QueryId, QueryRequest, QueryStream, RefreshCatalogOutcome,
+    RefreshOutcome, ReloadReport, SourceDef, SourceInfo, SourceTestReport, TableDescription,
+    TableFilter, TableInfo, TableName, VacuumReport,
 };
 use pawrly_proto::arrow_helpers::decode_frame;
 use pawrly_proto::conv::{engine_error_to_status, status_to_engine_error};
 use pawrly_proto::v1::{
-    self, AddSourceRequest, CancelRequest, DescribeModelRequest, ExplainRequest, HealthRequest,
-    InvalidateRequest, ListEntriesRequest, ListModelsRequest, ListSourcesRequest,
-    ListTablesRequest, RefreshCatalogRequest, RefreshRequest, ReloadConfigRequest,
-    RemoveSourceRequest, SchemaSnapshotRequest, TestSourceRequest, VacuumRequest,
-    admin_service_client::AdminServiceClient, cache_service_client::CacheServiceClient,
-    catalog_service_client::CatalogServiceClient, query_response::Payload as QueryPayload,
-    query_service_client::QueryServiceClient, semantic_service_client::SemanticServiceClient,
-    sources_service_client::SourcesServiceClient,
+    self, AddSourceRequest, CancelRequest, DescribeModelRequest, DropMaterializedRequest,
+    ExplainRequest, HealthRequest, InvalidateRequest, ListEntriesRequest, ListModelsRequest,
+    ListSourcesRequest, ListTablesRequest, MaterializeRequest, RefreshCatalogRequest,
+    RefreshRequest, ReloadConfigRequest, RemoveSourceRequest, SchemaSnapshotRequest,
+    TestSourceRequest, VacuumRequest, admin_service_client::AdminServiceClient,
+    cache_service_client::CacheServiceClient, catalog_service_client::CatalogServiceClient,
+    query_response::Payload as QueryPayload, query_service_client::QueryServiceClient,
+    semantic_service_client::SemanticServiceClient, sources_service_client::SourcesServiceClient,
 };
 use tonic::service::interceptor::InterceptedService;
 use tonic::transport::Channel;
@@ -344,6 +344,35 @@ impl EngineService for RemoteEngineClient {
             files_removed: resp.files_removed,
             bytes_reclaimed: resp.bytes_reclaimed,
         })
+    }
+
+    async fn materialize(
+        &self,
+        name: &str,
+        spec: MaterializeSpec,
+    ) -> Result<MaterializeOutcome, EngineError> {
+        let mut client = self.cache.clone();
+        let resp = client
+            .materialize(MaterializeRequest {
+                name: name.to_string(),
+                spec: Some(spec.into()),
+            })
+            .await
+            .map_err(status_to_engine_error)?
+            .into_inner();
+        Ok(resp.into())
+    }
+
+    async fn drop_materialized(&self, name: &str) -> Result<bool, EngineError> {
+        let mut client = self.cache.clone();
+        let resp = client
+            .drop_materialized(DropMaterializedRequest {
+                name: name.to_string(),
+            })
+            .await
+            .map_err(status_to_engine_error)?
+            .into_inner();
+        Ok(resp.dropped)
     }
 
     async fn add_source(&self, def: SourceDef) -> Result<SourceInfo, EngineError> {

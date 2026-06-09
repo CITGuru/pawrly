@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use arrow_schema::SchemaRef;
 use async_trait::async_trait;
 use chrono::Utc;
 use datafusion::catalog::{CatalogProvider, MemoryCatalogProvider};
@@ -12,9 +13,10 @@ use parking_lot::{Mutex, RwLock};
 use pawrly_core::semantic::{SemanticModelDescription, SemanticModelInfo, SemanticQuery};
 use pawrly_core::{
     CacheEntryInfo, CachePolicy, CatalogSnapshot, ColumnSpec, EngineError, EngineService,
-    HealthReport, QueryId, QueryRequest, QueryStream, RefreshCatalogOutcome, RefreshOutcome,
-    ReloadReport, SchemaSummary, SourceDef, SourceInfo, SourceStatus, SourceTestReport,
-    TableDescription, TableFilter, TableInfo, TableName, TableSummary, VacuumReport,
+    HealthReport, MaterializeOutcome, MaterializeSpec, QueryId, QueryRequest, QueryStream,
+    RefreshCatalogOutcome, RefreshOutcome, ReloadReport, SchemaSummary, SourceDef, SourceInfo,
+    SourceStatus, SourceTestReport, TableDescription, TableFilter, TableInfo, TableName,
+    TableSummary, VacuumReport,
 };
 use pawrly_semantic::SemanticCatalog;
 use tokio::task::JoinHandle;
@@ -75,6 +77,8 @@ pub(crate) struct LocalEngineInner {
     /// Path the config was loaded from, when known. `reload_config` re-reads it.
     config_path: Option<PathBuf>,
     duckdb: Arc<DuckDbPool>,
+    /// Recognize the inline `-- pawrly: materialize <name>` directive.
+    allow_inline_materialize: bool,
 }
 
 #[derive(Clone)]
@@ -123,10 +127,27 @@ impl LocalEngine {
             cfg.config.defaults.cache.namespace.as_deref(),
             &cfg.workspace_dir,
         );
-        let cache_root = storage.join(namespace);
+        let cache_root = storage.join(&namespace);
         let cache = Arc::new(
             CacheManager::new(cache_root)
                 .map_err(|e| EngineError::Internal(format!("cache init: {e}")))?,
+        );
+
+        // The read-only namespace catalog gives cached snapshots a second,
+        // SQL-addressable face at `<namespace>.<source>.<table>`, without
+        // touching the transparent read-through path. Registered under the same
+        // per-workspace namespace string that segments the on-disk cache.
+        ctx.register_catalog(
+            &namespace,
+            Arc::new(crate::namespace::NamespaceCatalogProvider::new(
+                cache.clone(),
+            )),
+        );
+        // Also expose `materialized.<name>` in the default catalog so materialized
+        // tables resolve without the namespace prefix.
+        let _ = catalog.register_schema(
+            pawrly_core::MATERIALIZED_SCHEMA,
+            crate::namespace::schema_provider_for(cache.clone(), pawrly_core::MATERIALIZED_SCHEMA),
         );
 
         let duckdb = Arc::new(DuckDbPool::new(cfg.resolved_pool_size())?);
@@ -151,6 +172,7 @@ impl LocalEngine {
             refreshers: Mutex::new(HashMap::new()),
             config_path,
             duckdb,
+            allow_inline_materialize: cfg.config.defaults.materialize.allow_inline,
         });
 
         // Move config into engine-side SourceDefs.
@@ -223,6 +245,95 @@ impl LocalEngine {
             }
         }
         Ok(self.inner.semantic.compile_sql(q)?)
+    }
+
+    /// Produce `(schema, batches)` for a materialize spec. The optional
+    /// [`tempfile::NamedTempFile`] (for `Inline`) must outlive the read, so it is
+    /// returned to the caller to hold.
+    async fn produce_materialize(
+        &self,
+        spec: &MaterializeSpec,
+    ) -> Result<
+        (
+            SchemaRef,
+            Vec<arrow_array::RecordBatch>,
+            Option<tempfile::NamedTempFile>,
+        ),
+        EngineError,
+    > {
+        match spec {
+            MaterializeSpec::Query { sql, params } => {
+                let sql = substitute_params(sql, params);
+                let df = self
+                    .inner
+                    .ctx
+                    .sql(&sql)
+                    .await
+                    .map_err(|e| EngineError::InvalidSql(e.to_string()))?;
+                // Plan before collect so the schema is known even for 0 rows.
+                let schema: SchemaRef = Arc::new(df.schema().as_arrow().clone());
+                let batches = df
+                    .collect()
+                    .await
+                    .map_err(|e| EngineError::Internal(format!("materialize collect: {e}")))?;
+                Ok((schema, batches, None))
+            }
+            MaterializeSpec::File { path, format } => {
+                // Relative paths resolve against the process cwd (DuckDB's
+                // behavior), matching how a shell file argument is read.
+                let loc = path.to_string_lossy();
+                let fmt = format
+                    .or_else(|| pawrly_core::MaterializeFormat::from_path(&loc))
+                    .ok_or_else(|| {
+                        EngineError::Internal(format!(
+                            "could not infer format from `{loc}`; pass an explicit format"
+                        ))
+                    })?;
+                let batches = self.duckdb_scan(&loc, fmt).await?;
+                Ok((batches_schema(&batches), batches, None))
+            }
+            MaterializeSpec::Url { url, format } => {
+                // Remote reads go through DuckDB httpfs.
+                self.inner.duckdb.ensure_extension("httpfs").await?;
+                let fmt = format
+                    .or_else(|| pawrly_core::MaterializeFormat::from_path(url))
+                    .ok_or_else(|| {
+                        EngineError::Internal(format!(
+                            "could not infer format from `{url}`; pass an explicit format"
+                        ))
+                    })?;
+                let batches = self.duckdb_scan(url, fmt).await?;
+                Ok((batches_schema(&batches), batches, None))
+            }
+            MaterializeSpec::Inline { bytes, format } => {
+                // Stage the bytes in a temp file so the same DuckDB reader path
+                // serves them. The handle is returned so it outlives the read.
+                let tmp = tempfile::NamedTempFile::new()
+                    .map_err(|e| EngineError::Internal(format!("materialize inline tmp: {e}")))?;
+                std::fs::write(tmp.path(), bytes)
+                    .map_err(|e| EngineError::Internal(format!("materialize inline write: {e}")))?;
+                let loc = tmp.path().to_string_lossy().into_owned();
+                let batches = self.duckdb_scan(&loc, *format).await?;
+                Ok((batches_schema(&batches), batches, Some(tmp)))
+            }
+        }
+    }
+
+    /// Read a file/URL through DuckDB's `read_parquet`/`read_csv`/`read_json`
+    /// and return the result as Arrow batches.
+    async fn duckdb_scan(
+        &self,
+        location: &str,
+        format: pawrly_core::MaterializeFormat,
+    ) -> Result<Vec<arrow_array::RecordBatch>, EngineError> {
+        let reader = match format {
+            pawrly_core::MaterializeFormat::Parquet => "read_parquet",
+            pawrly_core::MaterializeFormat::Csv => "read_csv",
+            pawrly_core::MaterializeFormat::Json => "read_json",
+        };
+        let escaped = location.replace('\'', "''");
+        let sql = format!("SELECT * FROM {reader}('{escaped}')");
+        self.inner.duckdb.fetch_arrow(&sql).await
     }
 }
 
@@ -351,6 +462,15 @@ async fn register_source(inner: &Arc<LocalEngineInner>, def: SourceDef) -> Resul
     let kind = def.kind;
     let name = def.name.clone();
 
+    // `materialized` is reserved for self-backed materialized tables (the
+    // namespace catalog's write schema). A source claiming it would collide, so
+    // reject it here (the config validator catches the static case too).
+    if name == pawrly_core::MATERIALIZED_SCHEMA {
+        return Err(EngineError::Internal(format!(
+            "source name `{name}` is reserved for materialized tables"
+        )));
+    }
+
     // Re-registration path: drop any prior refreshers and tables for this source
     // so a re-scan reflects the current state (new files appear, vanished files
     // disappear) instead of layering on top of stale registrations.
@@ -454,9 +574,39 @@ fn remove_source_inner(inner: &Arc<LocalEngineInner>, name: &str) -> bool {
 impl EngineService for LocalEngine {
     async fn query(&self, req: QueryRequest) -> Result<QueryStream, EngineError> {
         let inner = self.inner.clone();
-        let sql = req.sql.clone();
         // Substitute simple `${param:KEY}` occurrences.
-        let sql = substitute_params(&sql, &req.params);
+        let sql = substitute_params(&req.sql, &req.params);
+
+        // Inline `-- pawrly: materialize <name>` directive: persist the result,
+        // then stream it back. Gated so a `SELECT` can't write to disk unless the
+        // workspace opts in.
+        if inner.allow_inline_materialize
+            && let Some((name, body)) = parse_inline_materialize(&sql)
+        {
+            self.materialize(
+                &name,
+                MaterializeSpec::Query {
+                    sql: body,
+                    params: req.params.clone(),
+                },
+            )
+            .await?;
+            tracing::info!(materialized_as = %format!("materialized.{name}"), "inline materialize");
+            let read_sql = format!(
+                "SELECT * FROM {}.\"{name}\"",
+                pawrly_core::MATERIALIZED_SCHEMA
+            );
+            let df = inner
+                .ctx
+                .sql(&read_sql)
+                .await
+                .map_err(|e| EngineError::Internal(format!("datafusion: {e}")))?;
+            let stream = df
+                .execute_stream()
+                .await
+                .map_err(|e| EngineError::Internal(format!("datafusion: {e}")))?;
+            return Ok(crate::stream::adapt(stream));
+        }
 
         let df = inner
             .ctx
@@ -647,6 +797,30 @@ impl EngineService for LocalEngine {
     }
 
     async fn refresh_table(&self, name: &TableName) -> Result<RefreshOutcome, EngineError> {
+        // A materialized table has no live inner provider to re-scan — re-run its
+        // stored origin spec (re-execute the query / re-read the file or URL) and
+        // overwrite the pinned Parquet.
+        if name.schema == pawrly_core::MATERIALIZED_SCHEMA {
+            let spec = self
+                .inner
+                .cache
+                .materialized_spec(&name.table)
+                .ok_or_else(|| EngineError::UnknownTable(name.to_string()))?;
+            let started = std::time::Instant::now();
+            let (schema, batches, _tmp) = self.produce_materialize(&spec).await?;
+            let entry = self
+                .inner
+                .cache
+                .materialize(&name.table, schema, &batches, spec)
+                .map_err(|e| EngineError::Internal(format!("materialize refresh: {e}")))?;
+            return Ok(RefreshOutcome {
+                table: name.clone(),
+                rows_written: entry.row_count,
+                size_bytes: entry.size_bytes,
+                elapsed: started.elapsed(),
+                expires_at: None,
+            });
+        }
         self.inner.cache.refresh(name, &self.inner.ctx).await
     }
 
@@ -656,6 +830,35 @@ impl EngineService for LocalEngine {
 
     async fn vacuum_cache(&self) -> Result<VacuumReport, EngineError> {
         self.inner.cache.vacuum()
+    }
+
+    async fn materialize(
+        &self,
+        name: &str,
+        spec: MaterializeSpec,
+    ) -> Result<MaterializeOutcome, EngineError> {
+        validate_materialized_name(name)?;
+
+        // Every origin reduces to "produce Arrow batches + a schema". `_tmp`
+        // keeps an Inline spec's backing file alive until the read completes.
+        let (schema, batches, _tmp) = self.produce_materialize(&spec).await?;
+
+        let entry = self
+            .inner
+            .cache
+            .materialize(name, schema, &batches, spec)
+            .map_err(|e| EngineError::Internal(format!("materialize write: {e}")))?;
+
+        Ok(MaterializeOutcome {
+            name: TableName::new(pawrly_core::MATERIALIZED_SCHEMA, name),
+            file_path: entry.file_path,
+            row_count: entry.row_count,
+            size_bytes: entry.size_bytes,
+        })
+    }
+
+    async fn drop_materialized(&self, name: &str) -> Result<bool, EngineError> {
+        self.inner.cache.drop_materialized(name)
     }
 
     async fn add_source(&self, def: SourceDef) -> Result<SourceInfo, EngineError> {
@@ -810,6 +1013,63 @@ fn substitute_params(sql: &str, params: &HashMap<String, String>) -> String {
         out = out.replace(&needle, v);
     }
     out
+}
+
+/// Parse a leading `-- pawrly: materialize <name>` directive, returning the
+/// target name and the query body with that line removed. Recognized only in the
+/// leading comment block (before the first non-comment token), so it can never
+/// fire from a comment inside a string literal or further down the query.
+fn parse_inline_materialize(sql: &str) -> Option<(String, String)> {
+    for (i, raw) in sql.lines().enumerate() {
+        let line = raw.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Some(comment) = line.strip_prefix("--") else {
+            // First real token reached with no directive.
+            return None;
+        };
+        if let Some(rest) = comment.trim().strip_prefix("pawrly:")
+            && let Some(args) = rest.trim().strip_prefix("materialize")
+        {
+            let name = args.split_whitespace().next()?.to_string();
+            let body: String = sql
+                .lines()
+                .enumerate()
+                .filter(|(j, _)| *j != i)
+                .map(|(_, l)| l)
+                .collect::<Vec<_>>()
+                .join("\n");
+            return Some((name, body));
+        }
+        // A different leading comment — keep scanning.
+    }
+    None
+}
+
+/// Schema of the first batch, or an empty schema when there are no batches
+/// (e.g. materializing an empty file) — enough to write a valid empty Parquet.
+fn batches_schema(batches: &[arrow_array::RecordBatch]) -> SchemaRef {
+    batches
+        .first()
+        .map(arrow_array::RecordBatch::schema)
+        .unwrap_or_else(|| Arc::new(arrow_schema::Schema::empty()))
+}
+
+/// A materialized table name becomes a single SQL identifier under the
+/// `materialized` schema and a single path segment on disk, so it must be a
+/// plain identifier — no dots (would imply qualification), path separators, or
+/// surrounding whitespace.
+fn validate_materialized_name(name: &str) -> Result<(), EngineError> {
+    let bad = name.is_empty()
+        || name.trim() != name
+        || name.contains(|c: char| c == '.' || c == '/' || c == '\\' || c.is_whitespace());
+    if bad {
+        return Err(EngineError::Internal(format!(
+            "invalid materialized table name `{name}`: use a plain identifier (no dots, slashes, or spaces)"
+        )));
+    }
+    Ok(())
 }
 
 #[cfg(test)]

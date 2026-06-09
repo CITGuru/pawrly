@@ -33,7 +33,8 @@ use serde_json::Value;
 
 use crate::paginate::{self, NextPage};
 use crate::source::{
-    BodyKind, HttpSource, HttpTableSpec, RateLimitPolicy, RequestBody, ResponseColumn, schema_for,
+    BodyKind, HttpSource, HttpTableSpec, RateLimitPolicy, RequestBody, ResponseColumn,
+    custom_body_object, schema_for,
 };
 
 #[derive(Debug)]
@@ -250,17 +251,53 @@ impl TableProvider for HttpTableProvider {
                 .await
                 .map_err(|e| DataFusionError::External(Box::new(std::io::Error::other(e))))?;
 
-            // Render and attach a request body for POST/PUT/GraphQL tables.
-            if let Some(body) = body {
-                let rendered = render_template(&body.template, &next_params);
-                if !self.has_content_type() {
-                    let content_type = match body.kind {
-                        BodyKind::Json => "application/json",
-                        BodyKind::Form => "application/x-www-form-urlencoded",
-                    };
-                    req = req.header(reqwest::header::CONTENT_TYPE, content_type);
+            // Render and attach a request body, merging in any `custom` auth body
+            // fields (a JSON object): merged on top of a JSON table body, or sent
+            // as the whole body when the table declares none.
+            let auth_body = self.source.custom_body_fields();
+            match (body, auth_body.is_empty()) {
+                // Table body only — render and attach as declared.
+                (Some(tbody), true) => {
+                    let rendered = render_template(&tbody.template, &next_params);
+                    if !self.has_content_type() {
+                        let content_type = match tbody.kind {
+                            BodyKind::Json => "application/json",
+                            BodyKind::Form => "application/x-www-form-urlencoded",
+                        };
+                        req = req.header(reqwest::header::CONTENT_TYPE, content_type);
+                    }
+                    req = req.body(rendered);
                 }
-                req = req.body(rendered);
+                // Table body + auth body — merge the auth fields into the JSON body.
+                (Some(tbody), false) => {
+                    if tbody.kind != BodyKind::Json {
+                        return Err(DataFusionError::Plan(
+                            "custom auth `body` requires a JSON table body to merge into".into(),
+                        ));
+                    }
+                    let rendered = render_template(&tbody.template, &next_params);
+                    let mut value: Value = serde_json::from_str(&rendered).map_err(|e| {
+                        DataFusionError::Plan(format!("table body is not valid JSON: {e}"))
+                    })?;
+                    let obj = value.as_object_mut().ok_or_else(|| {
+                        DataFusionError::Plan(
+                            "table body must be a JSON object to merge custom auth body".into(),
+                        )
+                    })?;
+                    obj.extend(custom_body_object(auth_body));
+                    if !self.has_content_type() {
+                        req = req.header(reqwest::header::CONTENT_TYPE, "application/json");
+                    }
+                    req = req.body(value.to_string());
+                }
+                // Auth body only — send it as the whole JSON body.
+                (None, false) => {
+                    if !self.has_content_type() {
+                        req = req.header(reqwest::header::CONTENT_TYPE, "application/json");
+                    }
+                    req = req.body(Value::Object(custom_body_object(auth_body)).to_string());
+                }
+                (None, true) => {}
             }
 
             let resp = send_with_retry(req, &self.source.retry, &self.source.rate_limit).await?;

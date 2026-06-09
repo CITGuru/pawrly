@@ -21,7 +21,7 @@ use datafusion::datasource::{TableProvider, TableType};
 use datafusion::logical_expr::{Expr, TableProviderFilterPushDown};
 use datafusion::physical_plan::ExecutionPlan;
 
-use crate::source::HttpSource;
+use crate::source::{HttpSource, custom_body_object};
 
 #[derive(Debug)]
 pub struct RawHttpTableProvider {
@@ -131,6 +131,12 @@ impl TableProvider for RawHttpTableProvider {
                 .apply_auth(req)
                 .await
                 .map_err(|e| DataFusionError::External(Box::new(std::io::Error::other(e))))?;
+            // `custom` auth body fields ride as a JSON body (the raw table has no
+            // body of its own to merge with).
+            let body_fields = self.source.custom_body_fields();
+            if !body_fields.is_empty() {
+                req = req.json(&serde_json::Value::Object(custom_body_object(body_fields)));
+            }
             let resp = req.send().await.map_err(|e| {
                 DataFusionError::External(Box::new(std::io::Error::other(format!("http: {e}"))))
             })?;
