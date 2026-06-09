@@ -101,10 +101,3 @@ The intended flow for an assistant:
 3. `semantic_query` (or `query` for ad-hoc SQL) to get results.
 
 Because `describe_semantic_model` advertises required filters and RLS params up front, an agent can satisfy them in the very next call.
-
-## Notes
-
-- Two transports ship: **stdio** (`mcp-stdio`) and **HTTP** (`mcp-http`).
-- `describe_table` and `refresh_table` take a fully-qualified `<schema>.<table>` name.
-- To cancel a query, pass your own `query_id` to `query`/`semantic_query`, then `cancel_query` with the same id from another request. Cancellation needs concurrent requests, so it is effective over HTTP — stdio serializes requests.
-- MCP resources and prompts are planned.
