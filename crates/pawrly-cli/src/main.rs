@@ -1,9 +1,4 @@
 //! Pawrly CLI entry point.
-//!
-//! Only `serve`, `stop`, `status`, and the global `--remote` /
-//! `--no-remote` plumbing are wired against `MockEngine`. Real subcommands
-//! that need a `LocalEngine` (`sql`, `schema`, `source`, `cache`, `mcp-*`)
-//! are not yet wired.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -76,6 +71,8 @@ enum Command {
     Status(commands::status::Args),
     /// Run the MCP server over stdio.
     McpStdio(commands::mcp_stdio::Args),
+    /// Run the MCP server over HTTP.
+    McpHttp(commands::mcp_http::Args),
     /// Print the engine version + health.
     Version,
 }
@@ -130,6 +127,9 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Status(args) => commands::status::run(cli.home, args).await,
         Command::McpStdio(args) => {
             commands::mcp_stdio::run(cli.home, cli.config, cli.remote, cli.no_remote, args).await
+        }
+        Command::McpHttp(args) => {
+            commands::mcp_http::run(cli.home, cli.config, cli.remote, cli.no_remote, args).await
         }
         Command::Version => print_version(cli.remote, cli.no_remote, cli.home, cli.config).await,
     }

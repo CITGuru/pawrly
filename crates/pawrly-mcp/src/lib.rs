@@ -1,17 +1,29 @@
 //! MCP (Model Context Protocol) server for Pawrly.
 //!
-//! A minimal stdio JSON-RPC server with two tools:
-//! - `list_tables` — proxies `EngineService::list_tables`
-//! - `query` — proxies `EngineService::query`, returns rows as a compact
-//!   JSON object `{ columns, rows, row_count }`.
+//! A minimal stdio JSON-RPC server. Each tool proxies one or two
+//! [`EngineService`](pawrly_core::EngineService) calls:
 //!
-//! HTTP+SSE transport, OAuth2, audit logs, and the full six-tool surface
-//! are not yet implemented.
+//! - catalog — `list_sources`, `list_tables`, `describe_table`, `get_schema`
+//! - query — `query` (raw SQL, returns `{ columns, rows, row_count }`)
+//! - cache — `refresh_table`
+//! - materialized tables — `materialize`, `drop_materialized`
+//! - semantic layer — `list_semantic_models`, `describe_semantic_model`,
+//!   `semantic_query`
+//!
+//! Tools are exposed over a stdio transport ([`serve_stdio`]) and an HTTP
+//! transport ([`serve_http`]), both driven by a shared JSON-RPC dispatcher.
+//!
+//! `cancel_query`, MCP resources/prompts, OAuth2, audit logs, and Prometheus
+//! metrics are not yet implemented.
 
 #![doc(html_root_url = "https://docs.rs/pawrly-mcp")]
 
+mod dispatch;
+mod http;
 mod stdio;
 mod tools;
 
+pub use dispatch::handle_message;
+pub use http::{HttpOpts, serve_http};
 pub use stdio::serve_stdio;
 pub use tools::{call_tool, list_tools};

@@ -63,6 +63,7 @@ arrow-cast = "58"
 
 # HTTP
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "gzip"] }
+axum = "0.7"
 url = "2"
 jsonpath-rust = "0.7"
 governor = "0.6"

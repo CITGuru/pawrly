@@ -113,8 +113,10 @@ fn mcp_stdio_query_round_trip() {
 
     assert_eq!(r3["id"], json!(3));
     let result = &r3["result"];
-    assert_eq!(result["columns"], json!(["n"]));
-    let rows = result["rows"].as_array().unwrap();
+    assert_eq!(result["isError"], json!(false));
+    let payload = &result["structuredContent"];
+    assert_eq!(payload["columns"], json!(["n"]));
+    let rows = payload["rows"].as_array().unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0][0], json!("5"));
 }
