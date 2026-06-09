@@ -17,7 +17,7 @@ use datafusion::execution::context::SessionContext;
 use pawrly_core::{CachePolicy, SourceDef, SourceKind, TableDef};
 use pawrly_sources_http::register_http_source;
 use serde_json::json;
-use wiremock::matchers::{body_json, method, path, query_param};
+use wiremock::matchers::{body_json, header, method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 async fn build_ctx() -> (SessionContext, Arc<MemoryCatalogProvider>) {
@@ -326,6 +326,113 @@ async fn range_filters_push_down() {
         .collect()
         .await
         .expect("execute: range filters should emit since/until");
+    let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+    assert_eq!(rows, 1);
+}
+
+/// Source-level `config.headers` are attached to every table's request: the
+/// server only matches when both constant headers are present.
+#[tokio::test]
+async fn source_headers_apply_to_every_table() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/items"))
+        .and(header("Accept", "application/vnd.github+json"))
+        .and(header("X-GitHub-Api-Version", "2022-11-28"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([ { "id": 1 } ])))
+        .mount(&server)
+        .await;
+
+    let (ctx, catalog) = build_ctx().await;
+    let def = SourceDef {
+        name: "api".into(),
+        kind: SourceKind::Http,
+        description: None,
+        config: json!({
+            "base_url": server.uri(),
+            "headers": {
+                "Accept": "application/vnd.github+json",
+                "X-GitHub-Api-Version": "2022-11-28"
+            }
+        }),
+        cache: CachePolicy::None,
+        safety: None,
+        tables: vec![TableDef {
+            name: "items".into(),
+            description: None,
+            config: json!({
+                "endpoint": "/items",
+                "response": { "path": "$", "schema": [ { "name": "id", "type": "bigint" } ] }
+            }),
+            cache: None,
+            safety: None,
+        }],
+        raw_table: false,
+        raw_table_safety: None,
+    };
+    register_http_source(&def, &ctx, catalog.as_ref())
+        .await
+        .expect("register");
+
+    let batches = ctx
+        .sql("SELECT id FROM api.items")
+        .await
+        .expect("plan")
+        .collect()
+        .await
+        .expect("execute: source headers should be sent on every request");
+    let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+    assert_eq!(rows, 1);
+}
+
+/// A per-table `headers` entry overrides a source-level one on a key collision:
+/// the server requires the table's `Accept`, not the source default.
+#[tokio::test]
+async fn table_headers_override_source_headers() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/items"))
+        .and(header("Accept", "application/json"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([ { "id": 1 } ])))
+        .mount(&server)
+        .await;
+
+    let (ctx, catalog) = build_ctx().await;
+    let def = SourceDef {
+        name: "api".into(),
+        kind: SourceKind::Http,
+        description: None,
+        config: json!({
+            "base_url": server.uri(),
+            "headers": { "Accept": "application/vnd.github+json" }
+        }),
+        cache: CachePolicy::None,
+        safety: None,
+        tables: vec![TableDef {
+            name: "items".into(),
+            description: None,
+            config: json!({
+                "endpoint": "/items",
+                "headers": { "Accept": "application/json" },
+                "response": { "path": "$", "schema": [ { "name": "id", "type": "bigint" } ] }
+            }),
+            cache: None,
+            safety: None,
+        }],
+        raw_table: false,
+        raw_table_safety: None,
+    };
+    register_http_source(&def, &ctx, catalog.as_ref())
+        .await
+        .expect("register");
+
+    let batches = ctx
+        .sql("SELECT id FROM api.items")
+        .await
+        .expect("plan")
+        .collect()
+        .await
+        .expect("execute: per-table header should override the source default");
     let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
     assert_eq!(rows, 1);
 }

@@ -68,7 +68,7 @@ pub async fn register_http_source(
 
     let auth = parse_auth(def);
 
-    let headers = reqwest::header::HeaderMap::new();
+    let headers = parse_headers(def);
 
     let retry = parse_retry(def);
     let rate_limit = parse_rate_limit(def);
@@ -194,6 +194,41 @@ fn parse_auth(def: &SourceDef) -> AuthSpec {
         Some(auth) => serde_json::from_value::<AuthSpec>(auth.clone()).unwrap_or(AuthSpec::None),
         None => AuthSpec::None,
     }
+}
+
+/// Parse static source-level request headers from `config.headers` (a
+/// string→string map). These are attached to every request the source issues —
+/// both typed and raw tables — *before* any per-table `headers`, so a table can
+/// still override a source-level value. Entries with an invalid header name or
+/// value are skipped (a malformed header should not fail the whole source).
+fn parse_headers(def: &SourceDef) -> reqwest::header::HeaderMap {
+    use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
+
+    let mut headers = HeaderMap::new();
+    let Some(map) = def.config.get("headers").and_then(|v| v.as_object()) else {
+        return headers;
+    };
+    for (k, v) in map {
+        let Some(val) = v.as_str() else {
+            tracing::warn!(
+                source = %def.name,
+                header = %k,
+                "config.headers value is not a string; skipping"
+            );
+            continue;
+        };
+        match (HeaderName::try_from(k.as_str()), HeaderValue::try_from(val)) {
+            (Ok(name), Ok(value)) => {
+                headers.insert(name, value);
+            }
+            _ => tracing::warn!(
+                source = %def.name,
+                header = %k,
+                "invalid config.headers entry; skipping"
+            ),
+        }
+    }
+    headers
 }
 
 /// Parse the retry policy from `config.retry.{max_retries,base_backoff_ms,

@@ -307,7 +307,7 @@ In addition to `s3`/`gcs`/`azure`, `storage.type: http` covers **authenticated**
 
 ### Http Backend (`http)` — REST & GraphQL APIs
 
-Turns an HTTP API into SQL tables: you declare each table's request and how to shape its JSON response into rows. Source-level `config` carries `base_url` (**required**), auth, retries, and rate limiting; each `tables:` entry maps one request shape to rows.
+Turns an HTTP API into SQL tables: you declare each table's request and how to shape its JSON response into rows. Source-level `config` carries `base_url` (**required**), auth, static request `headers`, retries, and rate limiting; each `tables:` entry maps one request shape to rows.
 
 ```yaml
 sources:
@@ -395,13 +395,28 @@ Set source-level auth with the `config.token` shorthand or a full `auth:` block 
 
 > **Gotcha.** A malformed `auth:` block (wrong `type`, a missing required field) does **not** raise a config error — it falls back to *no authentication*, and requests go out unauthenticated. If an API starts returning `401`/`403`, double-check the `auth` block's shape first.
 
+#### Request headers
+
+`config.headers` is a source-level string→string map applied to **every** request the source issues — typed tables and the raw table alike. Use it for the constant headers an API expects on all calls (a media type, an API-version pin) instead of repeating them in each table's `headers`:
+
+```yaml
+    config:
+      base_url: https://api.github.com
+      token: ${secret:GITHUB_TOKEN}
+      headers:
+        Accept: application/vnd.github+json
+        X-GitHub-Api-Version: '2022-11-28'
+```
+
+Source headers go on first; a table's own `headers` are merged on top and override on a key collision. An entry with an invalid header name or non-string value is skipped with a warning rather than failing the source. (Auth headers come from the `auth` block, not here.)
+
 #### Request
 
 Each table's request is built from these flat fields:
 
 - **endpoint** (required) — path appended to `base_url`. May carry a query string and `{param}` placeholders; a param whose name matches a `{placeholder}` fills the URL **path**, the rest become query parameters.
 - **method** — defaults to `GET`.
-- **headers** — a per-table map of extra request headers.
+- **headers** — a per-table map of extra request headers. Constant headers shared by every table (e.g. `Accept`, an API-version header) are better set once at the source level via `config.headers` (see below); per-table `headers` are merged *on top* and win on a key collision.
 - **body** — for POST/PUT/GraphQL: `kind` (`json`, the default, sets `Content-Type: application/json`; or `form` for `application/x-www-form-urlencoded`) and `template` (body text with `{param}` placeholders; other braces — JSON/GraphQL syntax — are left untouched).
 - **requests** — conditional request shapes tried in order; the first whose `when_filters` are **all** bound replaces the default `endpoint`/`method`/`body`. Each entry is `{ when_filters: [...], endpoint, method?, body? }`. The classic use is a get-by-id endpoint when an id filter is present, falling back to a list endpoint otherwise.
 
