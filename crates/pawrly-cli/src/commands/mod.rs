@@ -4,6 +4,7 @@ pub mod cache;
 pub mod config;
 pub mod format;
 pub mod init;
+pub mod materialize;
 pub mod mcp_stdio;
 pub mod schema;
 pub mod semantic;

@@ -1,0 +1,7 @@
+region,product,amount
+north,widget,1200
+north,gadget,800
+south,widget,1500
+south,gadget,300
+east,widget,950
+west,gadget,2100

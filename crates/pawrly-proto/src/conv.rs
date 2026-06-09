@@ -93,6 +93,113 @@ impl From<v1::TableName> for core::TableName {
     }
 }
 
+// ---- MaterializeSpec / MaterializeOutcome ----
+
+/// Map a core format to the proto enum's i32 discriminant.
+fn format_to_proto(f: core::MaterializeFormat) -> i32 {
+    match f {
+        core::MaterializeFormat::Parquet => v1::MaterializeFormat::Parquet as i32,
+        core::MaterializeFormat::Csv => v1::MaterializeFormat::Csv as i32,
+        core::MaterializeFormat::Json => v1::MaterializeFormat::Json as i32,
+    }
+}
+
+/// Map a proto format i32 back to a core format. `UNSPECIFIED`/unknown → `None`
+/// (infer from the extension).
+fn format_from_proto(v: i32) -> Option<core::MaterializeFormat> {
+    match v1::MaterializeFormat::try_from(v).ok()? {
+        v1::MaterializeFormat::Parquet => Some(core::MaterializeFormat::Parquet),
+        v1::MaterializeFormat::Csv => Some(core::MaterializeFormat::Csv),
+        v1::MaterializeFormat::Json => Some(core::MaterializeFormat::Json),
+        v1::MaterializeFormat::Unspecified => None,
+    }
+}
+
+/// An optional format encodes as `UNSPECIFIED` when absent.
+fn opt_format_to_proto(f: Option<core::MaterializeFormat>) -> i32 {
+    f.map_or(v1::MaterializeFormat::Unspecified as i32, format_to_proto)
+}
+
+impl From<core::MaterializeSpec> for v1::MaterializeSpec {
+    fn from(s: core::MaterializeSpec) -> Self {
+        use core::MaterializeSpec as S;
+        let spec = match s {
+            S::Query { sql, params } => {
+                v1::materialize_spec::Spec::Query(v1::QuerySpec { sql, params })
+            }
+            S::File { path, format } => v1::materialize_spec::Spec::File(v1::FileSpec {
+                path: path.to_string_lossy().into_owned(),
+                format: opt_format_to_proto(format),
+            }),
+            S::Url { url, format } => v1::materialize_spec::Spec::Url(v1::UrlSpec {
+                url,
+                format: opt_format_to_proto(format),
+            }),
+            S::Inline { bytes, format } => v1::materialize_spec::Spec::Inline(v1::InlineSpec {
+                bytes,
+                format: format_to_proto(format),
+            }),
+        };
+        Self { spec: Some(spec) }
+    }
+}
+
+impl TryFrom<v1::MaterializeSpec> for core::MaterializeSpec {
+    type Error = tonic::Status;
+
+    fn try_from(s: v1::MaterializeSpec) -> Result<Self, Self::Error> {
+        use v1::materialize_spec::Spec;
+        match s.spec {
+            Some(Spec::Query(q)) => Ok(core::MaterializeSpec::Query {
+                sql: q.sql,
+                params: q.params,
+            }),
+            Some(Spec::File(f)) => Ok(core::MaterializeSpec::File {
+                path: f.path.into(),
+                format: format_from_proto(f.format),
+            }),
+            Some(Spec::Url(u)) => Ok(core::MaterializeSpec::Url {
+                url: u.url,
+                format: format_from_proto(u.format),
+            }),
+            Some(Spec::Inline(i)) => Ok(core::MaterializeSpec::Inline {
+                bytes: i.bytes,
+                format: format_from_proto(i.format).ok_or_else(|| {
+                    tonic::Status::invalid_argument("inline materialize requires a format")
+                })?,
+            }),
+            None => Err(tonic::Status::invalid_argument(
+                "materialize spec is required",
+            )),
+        }
+    }
+}
+
+impl From<core::MaterializeOutcome> for v1::MaterializeResponse {
+    fn from(o: core::MaterializeOutcome) -> Self {
+        Self {
+            name: Some(o.name.into()),
+            file_path: o.file_path.to_string_lossy().into_owned(),
+            row_count: o.row_count,
+            size_bytes: o.size_bytes,
+        }
+    }
+}
+
+impl From<v1::MaterializeResponse> for core::MaterializeOutcome {
+    fn from(r: v1::MaterializeResponse) -> Self {
+        Self {
+            name: r
+                .name
+                .map(Into::into)
+                .unwrap_or_else(|| core::TableName::new(core::MATERIALIZED_SCHEMA, String::new())),
+            file_path: std::path::PathBuf::from(r.file_path),
+            row_count: r.row_count,
+            size_bytes: r.size_bytes,
+        }
+    }
+}
+
 // ---- ColumnSpec ----
 
 impl From<core::ColumnSpec> for v1::ColumnSpec {

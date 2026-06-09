@@ -17,6 +17,17 @@ pub struct Defaults {
     pub safety: SafetyDefaults,
     pub engine: EngineDefaults,
     pub optimizer: OptimizerDefaults,
+    pub materialize: MaterializeDefaults,
+}
+
+/// Materialize section under `defaults:`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
+pub struct MaterializeDefaults {
+    /// Recognize the inline `-- pawrly: materialize <name>` directive on plain
+    /// queries. Off by default; a `SELECT` that writes to disk is a footgun on a
+    /// shared daemon, so enable it deliberately per workspace.
+    pub allow_inline: bool,
 }
 
 /// Cache section under `defaults:`.

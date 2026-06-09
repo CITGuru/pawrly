@@ -62,6 +62,8 @@ enum Command {
     Schema(commands::schema::Args),
     /// Manage the cache (list, show, refresh, invalidate, vacuum).
     Cache(commands::cache::Args),
+    /// Materialize a query result as a named, self-backed table (or --drop one).
+    Materialize(commands::materialize::Args),
     /// Manage workspace sources (add, list, remove, refresh, test).
     Source(commands::source::Args),
     /// Browse and query the semantic layer (list, describe, query).
@@ -113,6 +115,9 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         }
         Command::Cache(args) => {
             commands::cache::run(cli.home, cli.config, cli.remote, cli.no_remote, args).await
+        }
+        Command::Materialize(args) => {
+            commands::materialize::run(cli.home, cli.config, cli.remote, cli.no_remote, args).await
         }
         Command::Source(args) => {
             commands::source::run(cli.home, cli.config, cli.remote, cli.no_remote, args).await
