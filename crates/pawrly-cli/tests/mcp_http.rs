@@ -128,6 +128,26 @@ fn mcp_http_initialize_round_trip() {
         json!("5")
     );
 
+    // `cancel_query` is reachable; nothing is in-flight, so it reports false.
+    let cancel = post_mcp(
+        port,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/call",
+            "params": {
+                "name": "cancel_query",
+                "arguments": { "query_id": "absent" }
+            }
+        }),
+        deadline,
+    );
+    assert_eq!(cancel["id"], json!(3));
+    assert_eq!(
+        cancel["result"]["structuredContent"]["cancelled"],
+        json!(false)
+    );
+
     child.kill().ok();
     child.wait().ok();
 }

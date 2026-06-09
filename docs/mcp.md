@@ -55,7 +55,8 @@ The server exposes these tools:
 
 | Tool | Input | Returns |
 |---|---|---|
-| `query` | `{ sql, max_rows? }` | `{ columns, rows, row_count, truncated }` |
+| `query` | `{ sql, max_rows?, query_id? }` | `{ columns, rows, row_count, truncated }` |
+| `cancel_query` | `{ query_id }` | `{ cancelled }` — aborts an in-flight query with that id |
 | `list_sources` | `{}` | the configured sources, their kinds, status, and table counts |
 | `list_tables` | `{ source? }` | the tables across configured sources |
 | `describe_table` | `{ table }` | one table's columns, descriptions, pushdown affordances, and examples |
@@ -100,9 +101,3 @@ The intended flow for an assistant:
 3. `semantic_query` (or `query` for ad-hoc SQL) to get results.
 
 Because `describe_semantic_model` advertises required filters and RLS params up front, an agent can satisfy them in the very next call.
-
-## Notes
-
-- Two transports ship: **stdio** (`mcp-stdio`) and **HTTP** (`mcp-http`).
-- `describe_table` and `refresh_table` take a fully-qualified `<schema>.<table>` name.
-- `cancel_query`, MCP resources, and MCP prompts are planned.
