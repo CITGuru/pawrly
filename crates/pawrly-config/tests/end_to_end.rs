@@ -76,6 +76,11 @@ fn loads_kitchen_sink_example() {
 
     // raw_table flag is preserved.
     assert!(gh.raw_table, "gh should have raw_table: true");
+
+    // Agent-facing metadata parses: source + table wiki, and examples.
+    assert!(gh.wiki.is_some(), "gh should have a wiki");
+    assert!(gh.tables[0].wiki.is_some(), "gh.pulls should have a wiki");
+    assert_eq!(gh.examples.len(), 1);
 }
 
 #[tokio::test]
@@ -164,4 +169,36 @@ sources:
 fn engine_request_round_trips() {
     let req = QueryRequest::sql("SELECT 1");
     assert_eq!(req.sql, "SELECT 1");
+}
+
+#[test]
+fn wiki_maps_through_to_engine_defs() {
+    let yaml = r#"version: 1
+sources:
+  - name: gh
+    kind: http
+    wiki: "All endpoints need owner/repo filters."
+    examples:
+      - SELECT * FROM gh.pulls LIMIT 1
+    config:
+      base_url: https://api.github.com
+    tables:
+      - name: pulls
+        wiki: "state defaults to open."
+        endpoint: /repos/{owner}/{repo}/pulls
+        response:
+          array: true
+"#;
+    let secrets = StaticStore::new();
+    let cfg = pawrly_config::load_str(yaml, &secrets).expect("parse");
+    let defs = cfg.into_engine_sources();
+    assert_eq!(
+        defs[0].wiki.as_deref(),
+        Some("All endpoints need owner/repo filters.")
+    );
+    assert_eq!(
+        defs[0].tables[0].wiki.as_deref(),
+        Some("state defaults to open.")
+    );
+    assert_eq!(defs[0].examples, vec!["SELECT * FROM gh.pulls LIMIT 1"]);
 }

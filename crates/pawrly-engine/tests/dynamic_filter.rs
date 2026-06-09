@@ -39,12 +39,15 @@ async fn http_typed_provider_implements_dynamic_filter() {
         name: "gh".into(),
         kind: SourceKind::Http,
         description: None,
+        wiki: None,
+        examples: Vec::new(),
         config: json!({"base_url": "https://api.github.com", "token": "x"}),
         cache: CachePolicy::None,
         safety: None,
         tables: vec![pawrly_core::TableDef {
             name: "pulls".into(),
             description: None,
+            wiki: None,
             config: json!({
                 "endpoint": "/repos/{owner}/{repo}/pulls",
                 "params": [

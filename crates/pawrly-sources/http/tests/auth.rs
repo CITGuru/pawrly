@@ -46,12 +46,15 @@ async fn rows_with_auth(server: &MockServer, auth: serde_json::Value) -> usize {
         name: "api".into(),
         kind: SourceKind::Http,
         description: None,
+        wiki: None,
+        examples: Vec::new(),
         config,
         cache: CachePolicy::None,
         safety: None,
         tables: vec![TableDef {
             name: "items".into(),
             description: None,
+            wiki: None,
             config: json!({
                 "endpoint": "/items",
                 "response": { "path": "$", "schema": [ { "name": "id", "type": "bigint" } ] }
@@ -191,12 +194,15 @@ async fn token_shorthand_is_bearer() {
         name: "api".into(),
         kind: SourceKind::Http,
         description: None,
+        wiki: None,
+        examples: Vec::new(),
         config: json!({ "base_url": server.uri(), "token": "short-tok" }),
         cache: CachePolicy::None,
         safety: None,
         tables: vec![TableDef {
             name: "items".into(),
             description: None,
+            wiki: None,
             config: json!({
                 "endpoint": "/items",
                 "response": { "path": "$", "schema": [ { "name": "id", "type": "bigint" } ] }

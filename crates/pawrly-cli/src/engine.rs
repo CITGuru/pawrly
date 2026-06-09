@@ -81,7 +81,7 @@ pub async fn local_engine_placeholder() -> anyhow::Result<Arc<dyn EngineService>
     Ok(Arc::new(engine))
 }
 
-fn default_config_path() -> Option<PathBuf> {
+pub(crate) fn default_config_path() -> Option<PathBuf> {
     if let Ok(p) = std::env::var("PAWRLY_CONFIG") {
         return Some(PathBuf::from(p));
     }

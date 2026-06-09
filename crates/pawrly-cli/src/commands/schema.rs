@@ -37,6 +37,9 @@ pub async fn run(
                 let null = if c.nullable { "" } else { " NOT NULL" };
                 println!("  {} {}{null}", c.name, c.data_type);
             }
+            if let Some(wiki) = &desc.wiki {
+                println!("\nnotes:\n{wiki}");
+            }
         }
         return Ok(());
     }

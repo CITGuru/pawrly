@@ -701,26 +701,50 @@ impl EngineService for LocalEngine {
             })
             .collect();
 
-        let kind = self
-            .inner
-            .sources
-            .read()
-            .get(&name.schema)
-            .map(|s| s.info.kind);
-        let kind = kind.ok_or_else(|| EngineError::UnknownTable(name.to_string()))?;
+        let (kind, description, required_filters, wiki, examples) = {
+            let sources = self.inner.sources.read();
+            let src = sources
+                .get(&name.schema)
+                .ok_or_else(|| EngineError::UnknownTable(name.to_string()))?;
+            let summary = src.tables.iter().find(|t| t.name == name.table);
+            // Source-level notes apply to every table; prepend them to the
+            // table's own wiki when both exist.
+            let wiki = match (src.def.wiki.clone(), summary.and_then(|t| t.wiki.clone())) {
+                (Some(s), Some(t)) => Some(format!("{s}\n\n{t}")),
+                (s, t) => s.or(t),
+            };
+            let qualified = name.to_string();
+            let examples: Vec<String> = src
+                .def
+                .examples
+                .iter()
+                .filter(|sql| sql.contains(&qualified))
+                .cloned()
+                .collect();
+            (
+                src.info.kind,
+                summary.and_then(|t| t.description.clone()),
+                summary
+                    .map(|t| t.required_filters.clone())
+                    .unwrap_or_default(),
+                wiki,
+                examples,
+            )
+        };
 
         Ok(TableDescription {
             table: TableInfo {
                 name: name.clone(),
                 kind,
-                description: None,
+                description,
                 row_count_estimate: None,
                 cached: false,
-                required_filters: Vec::new(),
+                required_filters,
             },
             columns,
             pushable_filter_columns: Vec::new(),
-            examples: Vec::new(),
+            examples,
+            wiki,
         })
     }
 

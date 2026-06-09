@@ -483,6 +483,7 @@ async fn register_scan(
         summaries.push(TableSummary {
             name: table.name.clone(),
             description: table.description.clone(),
+            wiki: None,
             required_filters: Vec::new(),
         });
     }
@@ -566,6 +567,7 @@ async fn enumerate_catalog_tables(pool: &Arc<DuckDbPool>, catalog: &str) -> Vec<
             .map(|name| TableSummary {
                 name,
                 description: None,
+                wiki: None,
                 required_filters: Vec::new(),
             })
             .collect(),
@@ -626,6 +628,7 @@ async fn register_object_store(
         summaries.push(TableSummary {
             name: table.name.clone(),
             description: table.description.clone(),
+            wiki: None,
             required_filters: Vec::new(),
         });
     }
@@ -1071,6 +1074,8 @@ mod tests {
             name: "lake".into(),
             kind: SourceKind::File,
             description: None,
+            wiki: None,
+            examples: Vec::new(),
             config,
             cache: pawrly_core::CachePolicy::None,
             safety: None,
@@ -1087,6 +1092,7 @@ mod tests {
             .map(|(i, p)| pawrly_core::TableDef {
                 name: format!("t{i}"),
                 description: None,
+                wiki: None,
                 config: serde_json::json!({ "path": p }),
                 cache: None,
                 safety: None,
@@ -1454,6 +1460,8 @@ mod tests {
             name: "lake".into(),
             kind: SourceKind::Duckdb,
             description: None,
+            wiki: None,
+            examples: Vec::new(),
             config: serde_json::json!({ "path": db_path.to_string_lossy() }),
             cache: pawrly_core::CachePolicy::None,
             safety: None,

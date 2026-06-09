@@ -229,6 +229,7 @@ impl EngineService for RemoteEngineClient {
             columns: resp.columns.into_iter().map(Into::into).collect(),
             pushable_filter_columns: resp.pushable_filter_columns,
             examples: resp.examples,
+            wiki: resp.wiki,
         })
     }
 

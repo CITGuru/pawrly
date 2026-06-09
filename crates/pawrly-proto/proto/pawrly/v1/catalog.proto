@@ -26,6 +26,8 @@ message DescribeTableResponse {
   repeated ColumnSpec columns = 2;
   repeated string pushable_filter_columns = 3;
   repeated string examples = 4;
+  // Agent-facing usage notes from the manifest (source + table `wiki`).
+  optional string wiki = 5;
 }
 
 message SchemaSnapshotRequest {

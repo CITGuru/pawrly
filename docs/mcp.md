@@ -59,7 +59,7 @@ The server exposes these tools:
 | `cancel_query` | `{ query_id }` | `{ cancelled }` — aborts an in-flight query with that id |
 | `list_sources` | `{}` | the configured sources, their kinds, status, and table counts |
 | `list_tables` | `{ source? }` | the tables across configured sources |
-| `describe_table` | `{ table }` | one table's columns, descriptions, pushdown affordances, and examples |
+| `describe_table` | `{ table }` | one table's columns, descriptions, pushdown affordances, examples, and agent-facing `wiki` notes |
 | `get_schema` | `{ sources?, compact? }` | a compact catalog overview for grounding an LLM |
 | `refresh_table` | `{ table }` | forces a cache refresh; returns rows written, size, and expiry |
 | `list_semantic_models` | `{}` | the semantic models with dimension/measure counts |

@@ -57,8 +57,9 @@ pub fn list_tools() -> Vec<Value> {
         }),
         json!({
             "name": "describe_table",
-            "description": "Column schema, descriptions, pushdown affordances, and example \
-                            queries for one table. `table` is fully qualified `<schema>.<table>`.",
+            "description": "Column schema, descriptions, pushdown affordances, example \
+                            queries, and usage notes (`wiki`) for one table. `table` is \
+                            fully qualified `<schema>.<table>`.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

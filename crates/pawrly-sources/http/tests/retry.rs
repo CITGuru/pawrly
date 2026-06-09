@@ -38,6 +38,8 @@ fn facts_def(base_url: String) -> SourceDef {
         name: "cats".into(),
         kind: SourceKind::Http,
         description: None,
+        wiki: None,
+        examples: Vec::new(),
         config: json!({
             "base_url": base_url,
             "retry": { "max_retries": 3, "base_backoff_ms": 1, "max_backoff_ms": 5 }
@@ -47,6 +49,7 @@ fn facts_def(base_url: String) -> SourceDef {
         tables: vec![TableDef {
             name: "facts".into(),
             description: None,
+            wiki: None,
             config: json!({
                 "endpoint": "/facts",
                 "response": {

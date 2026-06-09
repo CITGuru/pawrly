@@ -1,6 +1,7 @@
 //! Subcommand implementations.
 
 pub mod cache;
+pub mod check;
 pub mod config;
 pub mod format;
 pub mod init;

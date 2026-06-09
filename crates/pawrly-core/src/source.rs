@@ -18,6 +18,14 @@ pub struct SourceDef {
     pub kind: SourceKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// Agent-facing usage notes for the whole source, surfaced through
+    /// `describe_table` alongside any per-table `wiki`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wiki: Option<String>,
+    /// SQL statements that must run successfully against this source; run by
+    /// `pawrly check` and surfaced through `describe_table`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub examples: Vec<String>,
     /// Raw per-kind config tree. Validated by the source builder.
     pub config: serde_json::Value,
     #[serde(default)]
@@ -42,6 +50,9 @@ pub struct TableDef {
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// Agent-facing usage notes, surfaced through `describe_table`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wiki: Option<String>,
     /// Per-kind opaque config (endpoint, params, schema, query, path, …).
     #[serde(default = "default_value", skip_serializing_if = "is_null")]
     pub config: serde_json::Value,

@@ -49,6 +49,8 @@ enum Command {
     Init(commands::init::Args),
     /// Validate a pawrly.yaml.
     Validate(commands::validate::Args),
+    /// Run each source's `examples:` statements as live probes.
+    Check(commands::check::Args),
     /// Inspect the workspace config (show, with --raw / --tree).
     Config(commands::config::Args),
     /// Run a SQL query.
@@ -103,6 +105,9 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
         Command::Init(args) => commands::init::run(args).await,
         Command::Validate(args) => commands::validate::run(args).await,
+        Command::Check(args) => {
+            commands::check::run(cli.home, cli.config, cli.remote, cli.no_remote, args).await
+        }
         Command::Config(args) => commands::config::run(cli.config, args).await,
         Command::Sql(args) => {
             commands::sql::run(cli.home, cli.config, cli.remote, cli.no_remote, args).await

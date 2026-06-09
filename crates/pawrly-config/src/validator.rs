@@ -497,6 +497,8 @@ mod tests {
             name: name.into(),
             kind,
             description: None,
+            wiki: None,
+            examples: Vec::new(),
             from: None,
             config,
             cache: Default::default(),

@@ -72,6 +72,8 @@ async fn oauth2_fetches_caches_and_authorizes() {
         name: "api".into(),
         kind: SourceKind::Http,
         description: None,
+        wiki: None,
+        examples: Vec::new(),
         config: json!({
             "base_url": server.uri(),
             "auth": {
@@ -86,6 +88,7 @@ async fn oauth2_fetches_caches_and_authorizes() {
         tables: vec![TableDef {
             name: "items".into(),
             description: None,
+            wiki: None,
             config: json!({
                 "endpoint": "/items",
                 "response": { "path": "$", "schema": [ { "name": "id", "type": "bigint" } ] }
@@ -128,12 +131,15 @@ async fn conditional_request_selects_by_bound_filter() {
         name: "api".into(),
         kind: SourceKind::Http,
         description: None,
+        wiki: None,
+        examples: Vec::new(),
         config: json!({ "base_url": server.uri() }),
         cache: CachePolicy::None,
         safety: None,
         tables: vec![TableDef {
             name: "issues".into(),
             description: None,
+            wiki: None,
             config: json!({
                 "endpoint": "/issues",
                 "params": [ { "name": "number", "type": "bigint" } ],

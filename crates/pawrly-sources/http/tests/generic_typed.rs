@@ -56,12 +56,15 @@ async fn generic_http_user_table_registers_and_queries() {
         name: "cats".into(),
         kind: SourceKind::Http,
         description: None,
+        wiki: None,
+        examples: Vec::new(),
         config: json!({ "base_url": server.uri() }),
         cache: CachePolicy::None,
         safety: None,
         tables: vec![TableDef {
             name: "facts".into(),
             description: None,
+            wiki: None,
             config: json!({
                 "endpoint": "/facts",
                 "response": {
@@ -105,12 +108,15 @@ async fn generic_http_invalid_table_errors() {
         name: "cats".into(),
         kind: SourceKind::Http,
         description: None,
+        wiki: None,
+        examples: Vec::new(),
         config: json!({ "base_url": "https://example.invalid" }),
         cache: CachePolicy::None,
         safety: None,
         tables: vec![TableDef {
             name: "facts".into(),
             description: None,
+            wiki: None,
             // No `endpoint` / `response` → cannot build an HttpTableSpec.
             config: json!({ "oops": true }),
             cache: None,

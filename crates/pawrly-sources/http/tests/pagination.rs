@@ -44,6 +44,8 @@ fn facts_def(
         name: "cats".into(),
         kind: SourceKind::Http,
         description: None,
+        wiki: None,
+        examples: Vec::new(),
         config: json!({ "base_url": base_url }),
         cache: CachePolicy::None,
         safety: max_pages.map(|m| SafetyPolicy {
@@ -53,6 +55,7 @@ fn facts_def(
         tables: vec![TableDef {
             name: "facts".into(),
             description: None,
+            wiki: None,
             config: table_config,
             cache: None,
             safety: None,
