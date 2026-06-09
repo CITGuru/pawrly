@@ -239,8 +239,19 @@ impl TableProvider for HttpTableProvider {
             };
 
             let mut req = self.source.client.request(method.clone(), url);
+            // Source-level headers first, then per-table headers. A per-table
+            // header overrides a source-level one on a (case-insensitive) key
+            // collision — so skip any source header the table also sets, since
+            // reqwest's `header()` *appends* rather than replaces.
             for (k, v) in &self.source.headers {
-                req = req.header(k, v);
+                let overridden = self
+                    .spec
+                    .headers
+                    .keys()
+                    .any(|tk| tk.eq_ignore_ascii_case(k.as_str()));
+                if !overridden {
+                    req = req.header(k, v);
+                }
             }
             for (k, v) in &self.spec.headers {
                 req = req.header(k, v);
