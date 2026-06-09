@@ -34,6 +34,58 @@ pub fn list_tools() -> Vec<Value> {
             }
         }),
         json!({
+            "name": "list_sources",
+            "description": "List all configured data sources, their kinds, status, and table counts.",
+            "inputSchema": { "type": "object", "properties": {} }
+        }),
+        json!({
+            "name": "describe_table",
+            "description": "Column schema, descriptions, pushdown affordances, and example \
+                            queries for one table. `table` is fully qualified `<schema>.<table>`.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "table": {
+                        "type": "string",
+                        "description": "Fully qualified `<schema>.<table>`"
+                    }
+                },
+                "required": ["table"]
+            }
+        }),
+        json!({
+            "name": "get_schema",
+            "description": "Compact catalog overview for grounding an LLM: every schema, its \
+                            tables, and a one-line column list per table. Optionally limit to \
+                            named sources.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "sources": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Limit to these source names (default: all)"
+                    },
+                    "compact": { "type": "boolean", "default": true }
+                }
+            }
+        }),
+        json!({
+            "name": "refresh_table",
+            "description": "Force a refresh of a cached table now. `table` is fully qualified \
+                            `<schema>.<table>`. Only valid for tables with caching enabled.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "table": {
+                        "type": "string",
+                        "description": "Fully qualified `<schema>.<table>`"
+                    }
+                },
+                "required": ["table"]
+            }
+        }),
+        json!({
             "name": "list_semantic_models",
             "description": "List the semantic-layer models (business vocabulary) with their \
                             dimension and measure counts.",
@@ -195,6 +247,49 @@ pub async fn call_tool(
                 "truncated": truncated,
             }))
         }
+        "list_sources" => {
+            let sources = engine
+                .list_sources()
+                .await
+                .map_err(|e| ToolError::Engine(e.to_string()))?;
+            let rows =
+                serde_json::to_value(&sources).map_err(|e| ToolError::Engine(e.to_string()))?;
+            Ok(json!({ "sources": rows }))
+        }
+        "describe_table" => {
+            let table = table_name_arg(args)?;
+            let desc = engine
+                .describe_table(&table)
+                .await
+                .map_err(|e| ToolError::Engine(e.to_string()))?;
+            serde_json::to_value(&desc).map_err(|e| ToolError::Engine(e.to_string()))
+        }
+        "get_schema" => {
+            let sources = match args.get("sources") {
+                Some(v) if !v.is_null() => Some(
+                    serde_json::from_value::<Vec<String>>(v.clone())
+                        .map_err(|e| ToolError::BadArgs(format!("invalid `sources`: {e}")))?,
+                ),
+                _ => None,
+            };
+            let compact = args
+                .get("compact")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(true);
+            let snapshot = engine
+                .schema_snapshot(sources, compact)
+                .await
+                .map_err(|e| ToolError::Engine(e.to_string()))?;
+            serde_json::to_value(&snapshot).map_err(|e| ToolError::Engine(e.to_string()))
+        }
+        "refresh_table" => {
+            let table = table_name_arg(args)?;
+            let outcome = engine
+                .refresh_table(&table)
+                .await
+                .map_err(|e| ToolError::Engine(e.to_string()))?;
+            serde_json::to_value(&outcome).map_err(|e| ToolError::Engine(e.to_string()))
+        }
         "list_semantic_models" => {
             let models = engine
                 .list_semantic_models()
@@ -299,6 +394,17 @@ pub async fn call_tool(
         }
         other => Err(ToolError::Unknown(other.to_string())),
     }
+}
+
+/// Parse the required `table` argument as a fully-qualified `<schema>.<table>`.
+fn table_name_arg(args: &Value) -> Result<pawrly_core::TableName, ToolError> {
+    let raw = args
+        .get("table")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| ToolError::BadArgs("`table` is required".into()))?;
+    pawrly_core::TableName::parse(raw).ok_or_else(|| {
+        ToolError::BadArgs(format!("`table` must be `<schema>.<table>`, got `{raw}`"))
+    })
 }
 
 /// Parse a `materialize` format string into a `MaterializeFormat`.
@@ -502,6 +608,112 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(out["dropped"], false); // MockEngine reports nothing to drop
+    }
+
+    #[test]
+    fn catalog_tools_are_listed() {
+        let names: Vec<String> = list_tools()
+            .iter()
+            .filter_map(|t| t["name"].as_str().map(str::to_string))
+            .collect();
+        for want in [
+            "list_sources",
+            "describe_table",
+            "get_schema",
+            "refresh_table",
+        ] {
+            assert!(names.contains(&want.to_string()), "missing tool `{want}`");
+        }
+    }
+
+    /// A `MockEngine` with one source and one table registered under it.
+    fn populated() -> Arc<dyn EngineService> {
+        use pawrly_core::{ColumnSpec, SourceKind, TableName};
+        let mock = MockEngine::new();
+        mock.add_source("gh", SourceKind::File);
+        mock.add_table(
+            TableName::new("gh", "pulls"),
+            SourceKind::File,
+            vec![ColumnSpec {
+                name: "number".into(),
+                data_type: "Int64".into(),
+                nullable: false,
+                description: None,
+                is_filter_pushable: false,
+                is_required_filter: false,
+            }],
+        );
+        Arc::new(mock)
+    }
+
+    #[tokio::test]
+    async fn list_sources_shapes_output() {
+        let out = call_tool(&populated(), "list_sources", &json!({}))
+            .await
+            .unwrap();
+        let sources = out["sources"].as_array().unwrap();
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0]["name"], "gh");
+    }
+
+    #[tokio::test]
+    async fn describe_table_returns_columns() {
+        let out = call_tool(
+            &populated(),
+            "describe_table",
+            &json!({ "table": "gh.pulls" }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(out["table"]["name"]["table"], "pulls");
+        assert_eq!(out["columns"][0]["name"], "number");
+    }
+
+    #[tokio::test]
+    async fn describe_table_rejects_unqualified_name() {
+        let err = call_tool(&populated(), "describe_table", &json!({ "table": "pulls" }))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ToolError::BadArgs(_)));
+    }
+
+    #[tokio::test]
+    async fn describe_table_requires_table() {
+        let err = call_tool(&populated(), "describe_table", &json!({}))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ToolError::BadArgs(_)));
+    }
+
+    #[tokio::test]
+    async fn get_schema_returns_snapshot() {
+        let out = call_tool(&populated(), "get_schema", &json!({}))
+            .await
+            .unwrap();
+        let schemas = out["schemas"].as_array().unwrap();
+        assert_eq!(schemas.len(), 1);
+        assert_eq!(schemas[0]["name"], "gh");
+    }
+
+    #[tokio::test]
+    async fn get_schema_rejects_bad_sources_arg() {
+        let err = call_tool(&populated(), "get_schema", &json!({ "sources": "gh" }))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ToolError::BadArgs(_)));
+    }
+
+    #[tokio::test]
+    async fn refresh_table_returns_outcome() {
+        let out = call_tool(
+            &populated(),
+            "refresh_table",
+            &json!({ "table": "gh.pulls" }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(out["table"]["table"], "pulls");
+        assert_eq!(out["rows_written"], 0); // MockEngine writes nothing
     }
 
     #[tokio::test]

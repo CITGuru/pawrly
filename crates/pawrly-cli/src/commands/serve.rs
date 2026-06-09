@@ -134,7 +134,10 @@ fn default_socket_path(home: Option<&std::path::Path>) -> anyhow::Result<PathBuf
 /// secret backend (when a config is given — covers env / keyring / file), then
 /// a plain environment variable of the same name. Errors if neither yields one,
 /// since auth can't be enforced without the token.
-fn resolve_bearer_token(name: &str, config: Option<&std::path::Path>) -> anyhow::Result<String> {
+pub(crate) fn resolve_bearer_token(
+    name: &str,
+    config: Option<&std::path::Path>,
+) -> anyhow::Result<String> {
     if let Some(cfg) = config
         && let Some(token) = pawrly_config::resolve_secret(cfg, name)?
     {
