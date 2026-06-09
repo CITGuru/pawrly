@@ -28,9 +28,26 @@ pub fn list_tools() -> Vec<Value> {
                 "type": "object",
                 "properties": {
                     "sql": { "type": "string" },
-                    "max_rows": { "type": "integer", "default": 1000 }
+                    "max_rows": { "type": "integer", "default": 1000 },
+                    "query_id": {
+                        "type": "string",
+                        "description": "Client-chosen id so a concurrent `cancel_query` can abort \
+                                        this query (effective over HTTP)."
+                    }
                 },
                 "required": ["sql"]
+            }
+        }),
+        json!({
+            "name": "cancel_query",
+            "description": "Cancel an in-flight query previously started with a matching \
+                            `query_id`. Returns { cancelled } (false if no such query was running).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query_id": { "type": "string" }
+                },
+                "required": ["query_id"]
             }
         }),
         json!({
@@ -144,7 +161,12 @@ pub fn list_tools() -> Vec<Value> {
                         "additionalProperties": { "type": "string" },
                         "description": "Values bound to ${param:NAME} placeholders (e.g. RLS)."
                     },
-                    "max_rows": { "type": "integer", "default": 1000 }
+                    "max_rows": { "type": "integer", "default": 1000 },
+                    "query_id": {
+                        "type": "string",
+                        "description": "Client-chosen id so a concurrent `cancel_query` can abort \
+                                        this query (effective over HTTP)."
+                    }
                 }
             }
         }),
@@ -478,6 +500,8 @@ pub enum ToolError {
     Unknown(String),
     #[error("bad arguments: {0}")]
     BadArgs(String),
+    #[error("query `{0}` cancelled")]
+    Cancelled(String),
 }
 
 #[cfg(test)]

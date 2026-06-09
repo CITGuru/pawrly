@@ -55,7 +55,8 @@ The server exposes these tools:
 
 | Tool | Input | Returns |
 |---|---|---|
-| `query` | `{ sql, max_rows? }` | `{ columns, rows, row_count, truncated }` |
+| `query` | `{ sql, max_rows?, query_id? }` | `{ columns, rows, row_count, truncated }` |
+| `cancel_query` | `{ query_id }` | `{ cancelled }` — aborts an in-flight query with that id |
 | `list_sources` | `{}` | the configured sources, their kinds, status, and table counts |
 | `list_tables` | `{ source? }` | the tables across configured sources |
 | `describe_table` | `{ table }` | one table's columns, descriptions, pushdown affordances, and examples |
@@ -105,4 +106,5 @@ Because `describe_semantic_model` advertises required filters and RLS params up 
 
 - Two transports ship: **stdio** (`mcp-stdio`) and **HTTP** (`mcp-http`).
 - `describe_table` and `refresh_table` take a fully-qualified `<schema>.<table>` name.
-- `cancel_query`, MCP resources, and MCP prompts are planned.
+- To cancel a query, pass your own `query_id` to `query`/`semantic_query`, then `cancel_query` with the same id from another request. Cancellation needs concurrent requests, so it is effective over HTTP — stdio serializes requests.
+- MCP resources and prompts are planned.

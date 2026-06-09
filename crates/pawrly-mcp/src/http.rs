@@ -16,6 +16,7 @@ use axum::{
 use pawrly_core::EngineService;
 use serde_json::Value;
 
+use crate::cancel::CancelRegistry;
 use crate::dispatch::{error_response, handle_message};
 
 /// Options for the HTTP transport.
@@ -29,6 +30,7 @@ pub struct HttpOpts {
 struct AppState {
     engine: Arc<dyn EngineService>,
     bearer_token: Option<String>,
+    cancel: CancelRegistry,
 }
 
 /// Serve MCP over HTTP until the process is terminated.
@@ -42,6 +44,7 @@ pub async fn serve_http(engine: Arc<dyn EngineService>, opts: HttpOpts) -> std::
     let state = Arc::new(AppState {
         engine,
         bearer_token: opts.bearer_token,
+        cancel: CancelRegistry::new(),
     });
     let listener = tokio::net::TcpListener::bind(opts.addr).await?;
     tracing::info!(addr = %opts.addr, "starting pawrly MCP server (HTTP)");
@@ -81,7 +84,7 @@ async fn mcp_post(State(state): State<Arc<AppState>>, headers: HeaderMap, body: 
             .into_response();
         }
     };
-    match handle_message(&state.engine, &req).await {
+    match handle_message(&state.engine, &state.cancel, &req).await {
         Some(resp) => Json(resp).into_response(),
         None => StatusCode::ACCEPTED.into_response(),
     }
@@ -111,6 +114,7 @@ mod tests {
         Arc::new(AppState {
             engine: Arc::new(MockEngine::new()),
             bearer_token,
+            cancel: CancelRegistry::new(),
         })
     }
 

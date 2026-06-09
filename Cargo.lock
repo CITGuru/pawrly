@@ -3251,6 +3251,7 @@ dependencies = [
  "serde_json",
  "thiserror 1.0.69",
  "tokio",
+ "tokio-util",
  "tower 0.5.3",
  "tracing",
 ]
