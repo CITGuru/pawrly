@@ -306,3 +306,65 @@ async fn reload_config_diffs_sources() {
     assert_eq!(sources.len(), 1);
     assert_eq!(sources[0].name, "two");
 }
+
+#[tokio::test]
+async fn describe_table_surfaces_wiki_and_description() {
+    let dir = fixtures_dir();
+    let yaml = format!(
+        r#"version: 1
+sources:
+  - name: data
+    kind: file
+    description: fixture data
+    wiki: "All timestamps are UTC."
+    examples:
+      - SELECT * FROM data.orders LIMIT 1
+      - SELECT id FROM data.customers LIMIT 1
+    config:
+      path: "{}"
+    tables:
+      - name: orders
+        description: order rows
+        wiki: "Amounts are integer cents; divide by 100."
+        path: "{}"
+        format: parquet
+      - name: customers
+        path: "{}"
+        format: csv
+"#,
+        dir.display(),
+        dir.join("orders.parquet").display(),
+        dir.join("customers.csv").display(),
+    );
+
+    let cfg = cfg_yaml(&yaml);
+    let engine = LocalEngine::new(LocalEngineConfig {
+        config: cfg,
+        workspace_dir: dir.clone(),
+        duckdb_pool_size: None,
+    })
+    .await
+    .expect("engine");
+    let svc: Arc<dyn EngineService> = Arc::new(engine);
+
+    // Table with its own wiki: source notes first, then table notes.
+    let desc = svc
+        .describe_table(&pawrly_core::TableName::new("data", "orders"))
+        .await
+        .expect("describe orders");
+    assert_eq!(
+        desc.wiki.as_deref(),
+        Some("All timestamps are UTC.\n\nAmounts are integer cents; divide by 100.")
+    );
+    assert_eq!(desc.table.description.as_deref(), Some("order rows"));
+    // Only the examples mentioning this table are surfaced.
+    assert_eq!(desc.examples, vec!["SELECT * FROM data.orders LIMIT 1"]);
+
+    // Table without its own wiki falls back to the source-level notes.
+    let desc = svc
+        .describe_table(&pawrly_core::TableName::new("data", "customers"))
+        .await
+        .expect("describe customers");
+    assert_eq!(desc.wiki.as_deref(), Some("All timestamps are UTC."));
+    assert_eq!(desc.examples, vec!["SELECT id FROM data.customers LIMIT 1"]);
+}

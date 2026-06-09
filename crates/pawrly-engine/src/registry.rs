@@ -20,6 +20,8 @@ pub struct RegisterReport {
 pub struct TableSummary {
     pub name: String,
     pub description: Option<String>,
+    /// Agent-facing usage notes from the table declaration (see `TableDef::wiki`).
+    pub wiki: Option<String>,
     pub required_filters: Vec<String>,
 }
 
@@ -40,7 +42,7 @@ pub async fn register_source(
     workspace_dir: &std::path::Path,
     pool: &std::sync::Arc<crate::duckdb_pool::DuckDbPool>,
 ) -> Result<RegisterReport, RegisterError> {
-    match def.kind {
+    let mut report = match def.kind {
         // Local files use DataFusion's native readers. A `file` source with a
         // `config.storage` block (or a remote-scheme path) reads from an object
         // store and is routed to the DuckDB object-store path instead.
@@ -59,6 +61,7 @@ pub async fn register_source(
                     .map(|t| TableSummary {
                         name: t.name,
                         description: t.description,
+                        wiki: None,
                         required_filters: Vec::new(),
                     })
                     .collect(),
@@ -74,6 +77,7 @@ pub async fn register_source(
                 .map(|t| TableSummary {
                     name: t.name,
                     description: t.description,
+                    wiki: None,
                     required_filters: t.required_filters,
                 })
                 .collect();
@@ -81,6 +85,7 @@ pub async fn register_source(
                 tables.push(TableSummary {
                     name: def.name.clone(),
                     description: Some("raw HTTP escape hatch".into()),
+                    wiki: None,
                     required_filters: vec!["request_path".into()],
                 });
             }
@@ -101,6 +106,7 @@ pub async fn register_source(
                     .map(|t| TableSummary {
                         name: t.name,
                         description: t.description,
+                        wiki: None,
                         required_filters: Vec::new(),
                     })
                     .collect(),
@@ -119,7 +125,18 @@ pub async fn register_source(
         | SourceKind::Delta => {
             crate::duckdb_source::register_duckdb_source(def, pool, catalog, workspace_dir).await
         }
+    }?;
+
+    // Per-kind registration doesn't carry the agent-facing wiki; backfill it
+    // from the table declarations.
+    for t in &mut report.tables {
+        t.wiki = def
+            .tables
+            .iter()
+            .find(|d| d.name == t.name)
+            .and_then(|d| d.wiki.clone());
     }
+    Ok(report)
 }
 
 /// A `file` source reads from an object store / http (vs the local filesystem)
@@ -148,6 +165,8 @@ mod tests {
             name: "f".into(),
             kind: SourceKind::File,
             description: None,
+            wiki: None,
+            examples: Vec::new(),
             config,
             cache: pawrly_core::CachePolicy::None,
             safety: None,
@@ -161,6 +180,7 @@ mod tests {
         TableDef {
             name: "t".into(),
             description: None,
+            wiki: None,
             config: serde_json::json!({ "path": path }),
             cache: None,
             safety: None,

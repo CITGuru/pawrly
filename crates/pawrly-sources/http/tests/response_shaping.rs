@@ -40,6 +40,8 @@ fn source(name: &str, base_url: String, table: TableDef) -> SourceDef {
         name: name.into(),
         kind: SourceKind::Http,
         description: None,
+        wiki: None,
+        examples: Vec::new(),
         config: json!({ "base_url": base_url }),
         cache: CachePolicy::None,
         safety: None,
@@ -71,6 +73,7 @@ async fn temporal_and_json_types() {
     let table = TableDef {
         name: "events".into(),
         description: None,
+        wiki: None,
         config: json!({
             "endpoint": "/events",
             "response": {
@@ -170,6 +173,7 @@ async fn limit_stops_pagination_early() {
     let table = TableDef {
         name: "items".into(),
         description: None,
+        wiki: None,
         config: json!({
             "endpoint": "/items",
             "pagination": { "type": "page", "param": "page", "start": 1 },
@@ -210,6 +214,7 @@ async fn allow_404_empty_yields_no_rows() {
     let table = TableDef {
         name: "missing".into(),
         description: None,
+        wiki: None,
         config: json!({
             "endpoint": "/missing",
             "response": {
@@ -253,6 +258,7 @@ async fn error_envelope_fails_scan() {
     let table = TableDef {
         name: "things".into(),
         description: None,
+        wiki: None,
         config: json!({
             "endpoint": "/things",
             "response": {

@@ -85,6 +85,7 @@ impl MockEngine {
             columns,
             pushable_filter_columns: Vec::new(),
             examples: Vec::new(),
+            wiki: None,
         };
         self.inner.lock().tables.insert(name, (info, desc));
         self

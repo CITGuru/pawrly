@@ -1,8 +1,7 @@
-//! Acceptance for the `materialize` write verb (Phase 2 of
-//! docs/internal/18-materialize.md): a query result is persisted as a pinned,
-//! self-backed table addressable as `<namespace>.materialized.<name>`, surfaced
-//! through the Phase-1 namespace catalog, immune to vacuum, and replaceable /
-//! droppable by name.
+//! Acceptance for the `materialize` write verb: a query result (or file / url /
+//! inline) is persisted as a pinned, self-backed table addressable as
+//! `<namespace>.materialized.<name>`, surfaced through the namespace catalog,
+//! immune to vacuum, and replaceable / droppable by name.
 
 #![allow(
     clippy::unwrap_used,

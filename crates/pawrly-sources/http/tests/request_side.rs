@@ -52,12 +52,15 @@ async fn post_request_body_is_rendered() {
         name: "api".into(),
         kind: SourceKind::Http,
         description: None,
+        wiki: None,
+        examples: Vec::new(),
         config: json!({ "base_url": server.uri() }),
         cache: CachePolicy::None,
         safety: None,
         tables: vec![TableDef {
             name: "search".into(),
             description: None,
+            wiki: None,
             config: json!({
                 "endpoint": "/search",
                 "method": "POST",
@@ -113,6 +116,8 @@ async fn custom_auth_body_merges_into_json_table_body() {
         name: "api".into(),
         kind: SourceKind::Http,
         description: None,
+        wiki: None,
+        examples: Vec::new(),
         config: json!({
             "base_url": server.uri(),
             "auth": { "type": "custom", "body": [ { "name": "api_key", "value": "secret" } ] }
@@ -122,6 +127,7 @@ async fn custom_auth_body_merges_into_json_table_body() {
         tables: vec![TableDef {
             name: "search".into(),
             description: None,
+            wiki: None,
             config: json!({
                 "endpoint": "/search",
                 "method": "POST",
@@ -171,6 +177,8 @@ async fn custom_auth_body_is_the_body_when_table_has_none() {
         name: "api".into(),
         kind: SourceKind::Http,
         description: None,
+        wiki: None,
+        examples: Vec::new(),
         config: json!({
             "base_url": server.uri(),
             "auth": { "type": "custom", "body": [
@@ -183,6 +191,7 @@ async fn custom_auth_body_is_the_body_when_table_has_none() {
         tables: vec![TableDef {
             name: "ping".into(),
             description: None,
+            wiki: None,
             config: json!({
                 "endpoint": "/ping",
                 "method": "POST",
@@ -223,6 +232,8 @@ async fn custom_auth_body_rejects_non_json_table_body() {
         name: "api".into(),
         kind: SourceKind::Http,
         description: None,
+        wiki: None,
+        examples: Vec::new(),
         config: json!({
             "base_url": server.uri(),
             "auth": { "type": "custom", "body": [ { "name": "api_key", "value": "secret" } ] }
@@ -232,6 +243,7 @@ async fn custom_auth_body_rejects_non_json_table_body() {
         tables: vec![TableDef {
             name: "form".into(),
             description: None,
+            wiki: None,
             config: json!({
                 "endpoint": "/form",
                 "method": "POST",
@@ -282,12 +294,15 @@ async fn range_filters_push_down() {
         name: "api".into(),
         kind: SourceKind::Http,
         description: None,
+        wiki: None,
+        examples: Vec::new(),
         config: json!({ "base_url": server.uri() }),
         cache: CachePolicy::None,
         safety: None,
         tables: vec![TableDef {
             name: "events".into(),
             description: None,
+            wiki: None,
             config: json!({
                 "endpoint": "/events",
                 "params": [
@@ -348,6 +363,8 @@ async fn source_headers_apply_to_every_table() {
         name: "api".into(),
         kind: SourceKind::Http,
         description: None,
+        wiki: None,
+        examples: Vec::new(),
         config: json!({
             "base_url": server.uri(),
             "headers": {
@@ -360,6 +377,7 @@ async fn source_headers_apply_to_every_table() {
         tables: vec![TableDef {
             name: "items".into(),
             description: None,
+            wiki: None,
             config: json!({
                 "endpoint": "/items",
                 "response": { "path": "$", "schema": [ { "name": "id", "type": "bigint" } ] }
@@ -402,6 +420,8 @@ async fn table_headers_override_source_headers() {
         name: "api".into(),
         kind: SourceKind::Http,
         description: None,
+        wiki: None,
+        examples: Vec::new(),
         config: json!({
             "base_url": server.uri(),
             "headers": { "Accept": "application/vnd.github+json" }
@@ -411,6 +431,7 @@ async fn table_headers_override_source_headers() {
         tables: vec![TableDef {
             name: "items".into(),
             description: None,
+            wiki: None,
             config: json!({
                 "endpoint": "/items",
                 "headers": { "Accept": "application/json" },
@@ -461,6 +482,8 @@ async fn extra_status_403_is_retried() {
         name: "api".into(),
         kind: SourceKind::Http,
         description: None,
+        wiki: None,
+        examples: Vec::new(),
         config: json!({
             "base_url": server.uri(),
             "retry": { "max_retries": 3, "base_backoff_ms": 1, "max_backoff_ms": 5 },
@@ -471,6 +494,7 @@ async fn extra_status_403_is_retried() {
         tables: vec![TableDef {
             name: "items".into(),
             description: None,
+            wiki: None,
             config: json!({
                 "endpoint": "/items",
                 "response": {

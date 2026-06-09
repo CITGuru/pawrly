@@ -29,6 +29,7 @@ pawrly [OPTIONS] <COMMAND>
 | [`cache`](#pawrly-cache) | Inspect and manage the cache. |
 | [`config`](#pawrly-config) | Inspect the assembled config. |
 | [`init`](#pawrly-init) / [`validate`](#pawrly-validate) | Create / check a `pawrly.yaml`. |
+| [`check`](#pawrly-check) | Run each source's `examples:` as live probes. |
 | [`serve`](#pawrly-serve) / `stop` / `status` | Run and manage the daemon. |
 | [`mcp-stdio`](#pawrly-mcp-stdio) | Run the MCP server over stdio. |
 | `version` | Print the engine version and health. |
@@ -177,6 +178,21 @@ Validate a config without running anything. Reports every problem at once.
 ```bash
 pawrly validate
 pawrly validate path/to/pawrly.yaml
+```
+
+---
+
+### `pawrly check`
+
+Run every source's [`examples:`](./sources.md#examples) statements as live probes, so a broken endpoint or credential is caught now rather than at first query. Exits non-zero if any example fails.
+
+```
+pawrly check [--source <NAME>]
+```
+
+```bash
+pawrly check
+pawrly check --source gh
 ```
 
 ---

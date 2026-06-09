@@ -31,6 +31,9 @@ sources:
   # ----- Local files (parquet/csv/json) --------------------------------------
   - name: data
     kind: file
+    # `examples:` are SQL probes run by `pawrly check`.
+    examples:
+      - SELECT COUNT(*) FROM data.orders
     config:
       path: ./data/*.parquet
 
@@ -54,12 +57,20 @@ sources:
   # ----- HTTP (define your own typed tables; raw escape hatch optional) ------
   - name: gh
     kind: http
+    # `wiki:` is agent-facing usage notes surfaced by `describe_table`;
+    # a table's own `wiki:` is appended after the source's.
+    wiki: |
+      Every endpoint needs `owner` and `repo` filters. Timestamps are ISO-8601 UTC.
+    examples:
+      - SELECT * FROM gh.pulls WHERE owner = 'pawrly' AND repo = 'pawrly' LIMIT 1
     config:
       base_url: https://api.github.com
       token: ${secret:GITHUB_TOKEN}
     raw_table: true
     tables:
       - name: pulls
+        wiki: |
+          `state` defaults to `open`; set `state = 'all'` to include closed/merged PRs.
         endpoint: /repos/{owner}/{repo}/pulls
         params:
           - { name: owner, required: true }

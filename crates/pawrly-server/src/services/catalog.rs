@@ -66,6 +66,7 @@ impl CatalogService for CatalogSvc {
             columns: desc.columns.into_iter().map(v1::ColumnSpec::from).collect(),
             pushable_filter_columns: desc.pushable_filter_columns,
             examples: desc.examples,
+            wiki: desc.wiki,
         }))
     }
 

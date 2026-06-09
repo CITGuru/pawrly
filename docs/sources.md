@@ -30,6 +30,8 @@ Every entry under `sources:` is one source. These are the top-level fields:
 | `name`             | string  | **yes**  | —               | SQL identifier; becomes the schema prefix (`name.table`). Must be unique.                            |
 | `kind`             | enum    | **yes**  | —               | The source kind — see [Source kinds](#source-kinds). Case-insensitive; some kinds have aliases.      |
 | `description`      | string  | no       | —               | Free text; surfaced in `pawrly source list`.                                                         |
+| `wiki`             | string  | no       | —               | Agent-facing usage notes for the whole source; surfaced by `describe_table`. See [`wiki`](#wiki).    |
+| `examples`         | list    | no       | `[]`            | SQL statements that must run against this source; probed by `pawrly check`. See [`examples`](#examples). |
 | `config`           | mapping | no¹      | `{}`            | Per-kind settings (connection, auth, paths, storage, …). Shape depends on `kind`.                    |
 | `tables`           | list    | no¹      | `[]`            | Explicit per-table declarations. Required for some kinds, optional for others (which auto-discover). |
 | `cache`            | mapping | no       | `mode: none`    | Per-source caching. See [the cache block](#the-cache-block).                                          |
@@ -73,6 +75,36 @@ The kind selects the backend and the shape of `config`/`tables`. The list is clo
 
 Optional human-readable text. No effect on behavior; shown by `pawrly source list`.
 
+### `wiki`
+
+Optional free-text usage notes aimed at the MCP/agent surface rather than execution: which filters to set, identifier quirks, how to decode a column. Declared on a source (applies to all its tables) and/or on individual table entries; `describe_table` returns both joined (source notes first). Richer than `description`, which stays a one-liner for listings.
+
+```yaml
+sources:
+  - name: gh
+    kind: http
+    wiki: |
+      All endpoints need `owner` and `repo` filters. Timestamps are ISO-8601 UTC.
+    tables:
+      - name: pulls
+        wiki: |
+          `state` defaults to `open`; pass `state = 'all'` to include merged PRs.
+        # …
+```
+
+### `examples`
+
+Optional list of SQL statements that must run successfully against this source. `pawrly check` executes them as live probes, so a broken endpoint or credential is caught at check time rather than first query. `describe_table` also returns the examples that mention the described table, giving agents known-good starting queries.
+
+```yaml
+sources:
+  - name: gh
+    kind: http
+    examples:
+      - SELECT * FROM gh.pulls WHERE owner = 'pawrly' AND repo = 'pawrly' LIMIT 1
+    # …
+```
+
 ### `config`
 
 A per-kind mapping, opaque to the config layer and interpreted by the kind's builder (so each kind documents its own keys below). Strings here may use `${secret:NAME}`, `${env:NAME}`, and `${file:PATH}` interpolation (see [Configuration → Secrets](./config.md#secrets)).
@@ -91,7 +123,7 @@ tables:
     safety: { max_rows: 100000 }    # optional; overrides the source-level safety
 ```
 
-Only `name`, `description`, `cache`, and `safety` are common; everything else is kind-specific. Some kinds **auto-discover** tables when `tables:` is omitted (`file` globs, `sqlite`/`postgres`/`mysql`/`duckdb`/`snowflake`/`ducklake` enumerate). Others **require** `tables:` (`iceberg`, `delta`, and object-store `file`).
+Only `name`, `description`, `wiki`, `cache`, and `safety` are common; everything else is kind-specific. Some kinds **auto-discover** tables when `tables:` is omitted (`file` globs, `sqlite`/`postgres`/`mysql`/`duckdb`/`snowflake`/`ducklake` enumerate). Others **require** `tables:` (`iceberg`, `delta`, and object-store `file`).
 
 Whether a kind needs `tables:`, and whether it reads per-table fields at all:
 

@@ -146,6 +146,8 @@ async fn add_source_round_trip() {
         name: "newsrc".into(),
         kind: SourceKind::File,
         description: Some("added at runtime".into()),
+        wiki: None,
+        examples: Vec::new(),
         config: serde_json::json!({ "path": "./data/*.parquet" }),
         cache: Default::default(),
         safety: None,

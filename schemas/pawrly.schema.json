@@ -946,6 +946,13 @@
             "null"
           ]
         },
+        "examples": {
+          "description": "SQL statements that must run successfully against this source. Run as live probes by `pawrly check` and surfaced through `describe_table` for the tables they reference.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
         "from": {
           "description": "Optional path to a YAML file containing the rest of this source's body. Resolved relative to the declaring file.",
           "type": [
@@ -992,6 +999,13 @@
           "items": {
             "$ref": "#/definitions/TableDef"
           }
+        },
+        "wiki": {
+          "description": "Agent-facing usage notes for the whole source, surfaced through `describe_table` alongside any per-table `wiki`.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "additionalProperties": false
@@ -1046,6 +1060,13 @@
             {
               "type": "null"
             }
+          ]
+        },
+        "wiki": {
+          "description": "Agent-facing usage notes, surfaced through `describe_table` alongside the schema.",
+          "type": [
+            "string",
+            "null"
           ]
         }
       }

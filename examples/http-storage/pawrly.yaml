@@ -6,8 +6,7 @@
 # A `kind: file` source reads csv / json / jsonl / parquet over `http(s)://` via
 # DuckDB's bundled httpfs — no `storage:` block needed for public files, and the
 # reader (read_parquet / read_csv / read_json) is inferred from the URL extension
-# (query strings and `.gz`/`.zst`/`.bz2` suffixes are handled). See
-# docs/internal/17-http-storage.md for the full design.
+# (query strings and `.gz`/`.zst`/`.bz2` suffixes are handled)
 #
 #   pawrly validate examples/http-storage/pawrly.yaml
 #   pawrly --config examples/http-storage/pawrly.yaml schema

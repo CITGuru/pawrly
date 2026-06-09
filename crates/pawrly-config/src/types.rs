@@ -120,6 +120,17 @@ pub struct SourceDef {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
 
+    /// Agent-facing usage notes for the whole source, surfaced through
+    /// `describe_table` alongside any per-table `wiki`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wiki: Option<String>,
+
+    /// SQL statements that must run successfully against this source. Run as
+    /// live probes by `pawrly check` and surfaced through `describe_table`
+    /// for the tables they reference.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub examples: Vec<String>,
+
     /// Optional path to a YAML file containing the rest of this source's body.
     /// Resolved relative to the declaring file.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -163,6 +174,11 @@ pub struct TableDef {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
 
+    /// Agent-facing usage notes, surfaced through `describe_table` alongside
+    /// the schema.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wiki: Option<String>,
+
     /// Per-kind opaque body (endpoint, params, schema, query, path, format, …).
     /// Flattened so YAML keys live at the top level of the table block.
     #[serde(flatten)]
@@ -194,6 +210,8 @@ impl Config {
                 name: s.name,
                 kind: s.kind,
                 description: s.description,
+                wiki: s.wiki,
+                examples: s.examples,
                 config: s.config,
                 cache: s.cache,
                 safety: s.safety,
@@ -203,6 +221,7 @@ impl Config {
                     .map(|t| pawrly_core::TableDef {
                         name: t.name,
                         description: t.description,
+                        wiki: t.wiki,
                         config: t.body,
                         cache: t.cache,
                         safety: t.safety,

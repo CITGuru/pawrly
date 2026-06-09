@@ -1,8 +1,8 @@
-//! Acceptance for the read-only **namespace catalog** (Phase 1 of
-//! docs/internal/18-materialize.md): once a source table is cached, the same
-//! snapshot is also addressable directly at `<namespace>.<source>.<table>`,
-//! bypassing the live read-through wrapper. The catalog is manifest-driven, so a
-//! source/table only appears once it has been materialized to disk.
+//! Acceptance for the read-only namespace catalog: once a source table is
+//! cached, the same snapshot is also addressable directly at
+//! `<namespace>.<source>.<table>`, bypassing the live read-through wrapper. The
+//! catalog is manifest-driven, so a source/table only appears once it has been
+//! materialized to disk.
 
 #![allow(
     clippy::unwrap_used,

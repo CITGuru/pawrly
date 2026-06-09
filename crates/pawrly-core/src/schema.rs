@@ -107,6 +107,10 @@ pub struct TableDescription {
     /// Example queries (often populated from bundled specs).
     #[serde(default)]
     pub examples: Vec<String>,
+    /// Agent-facing usage notes from the manifest (source-level notes first,
+    /// then table-level, when both exist).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wiki: Option<String>,
 }
 
 /// Compact catalog overview produced by `EngineService::schema_snapshot`.
