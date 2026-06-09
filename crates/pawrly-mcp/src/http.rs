@@ -146,7 +146,10 @@ mod tests {
 
     #[tokio::test]
     async fn initialize_round_trips() {
-        let req = post(&json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize" }), None);
+        let req = post(
+            &json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize" }),
+            None,
+        );
         let resp = router(state(None)).oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         let v = body_json(resp).await;
@@ -186,7 +189,10 @@ mod tests {
 
     #[tokio::test]
     async fn missing_token_is_rejected() {
-        let req = post(&json!({ "jsonrpc": "2.0", "id": 1, "method": "ping" }), None);
+        let req = post(
+            &json!({ "jsonrpc": "2.0", "id": 1, "method": "ping" }),
+            None,
+        );
         let resp = router(state(Some("secret".into())))
             .oneshot(req)
             .await

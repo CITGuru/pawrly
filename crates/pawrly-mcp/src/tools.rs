@@ -252,7 +252,8 @@ pub async fn call_tool(
                 .list_sources()
                 .await
                 .map_err(|e| ToolError::Engine(e.to_string()))?;
-            let rows = serde_json::to_value(&sources).map_err(|e| ToolError::Engine(e.to_string()))?;
+            let rows =
+                serde_json::to_value(&sources).map_err(|e| ToolError::Engine(e.to_string()))?;
             Ok(json!({ "sources": rows }))
         }
         "describe_table" => {
@@ -615,7 +616,12 @@ mod tests {
             .iter()
             .filter_map(|t| t["name"].as_str().map(str::to_string))
             .collect();
-        for want in ["list_sources", "describe_table", "get_schema", "refresh_table"] {
+        for want in [
+            "list_sources",
+            "describe_table",
+            "get_schema",
+            "refresh_table",
+        ] {
             assert!(names.contains(&want.to_string()), "missing tool `{want}`");
         }
     }
@@ -652,9 +658,13 @@ mod tests {
 
     #[tokio::test]
     async fn describe_table_returns_columns() {
-        let out = call_tool(&populated(), "describe_table", &json!({ "table": "gh.pulls" }))
-            .await
-            .unwrap();
+        let out = call_tool(
+            &populated(),
+            "describe_table",
+            &json!({ "table": "gh.pulls" }),
+        )
+        .await
+        .unwrap();
         assert_eq!(out["table"]["name"]["table"], "pulls");
         assert_eq!(out["columns"][0]["name"], "number");
     }
@@ -695,9 +705,13 @@ mod tests {
 
     #[tokio::test]
     async fn refresh_table_returns_outcome() {
-        let out = call_tool(&populated(), "refresh_table", &json!({ "table": "gh.pulls" }))
-            .await
-            .unwrap();
+        let out = call_tool(
+            &populated(),
+            "refresh_table",
+            &json!({ "table": "gh.pulls" }),
+        )
+        .await
+        .unwrap();
         assert_eq!(out["table"]["table"], "pulls");
         assert_eq!(out["rows_written"], 0); // MockEngine writes nothing
     }
