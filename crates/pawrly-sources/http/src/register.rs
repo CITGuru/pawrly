@@ -113,8 +113,9 @@ pub async fn register_http_source(
 
     let schema = ensure_schema(catalog, &def.name)?;
 
-    // Synthesized tables first; an explicit `def.tables` entry overrides a
-    // synthesized table of the same name.
+    // Synthesized tables first. An explicit `def.tables` entry whose name matches
+    // a synthesized table *patches* it (merge only the fields it sets); a new name
+    // is a full table definition.
     let mut tables: Vec<(HttpTableSpec, Option<u32>)> = synthesized
         .into_iter()
         .map(|spec| (spec, source_max_pages))
@@ -125,10 +126,12 @@ pub async fn register_http_source(
             .as_ref()
             .and_then(|s| s.max_pages)
             .or(source_max_pages);
-        let spec = table_spec_from_def(t)?;
-        match tables.iter_mut().find(|(s, _)| s.name == spec.name) {
-            Some(slot) => *slot = (spec, max_pages),
-            None => tables.push((spec, max_pages)),
+        match tables.iter_mut().find(|(s, _)| s.name == t.name) {
+            Some(slot) => {
+                slot.0 = merge_table_def(&slot.0, t)?;
+                slot.1 = max_pages;
+            }
+            None => tables.push((table_spec_from_def(t)?, max_pages)),
         }
     }
     if tables.is_empty() && !def.raw_table {
@@ -206,6 +209,37 @@ fn table_spec_from_def(t: &pawrly_core::TableDef) -> Result<HttpTableSpec, HttpB
         HttpBuildError::Config(ConfigError::Source(
             t.name.clone(),
             format!("invalid http table `{}`: {e}", t.name),
+        ))
+    })
+}
+
+/// Patch a synthesized table with the fields a `TableDef` of the same name sets,
+/// keeping the rest of the synthesis. The table body is deep-merged over the
+/// synthesized spec (see [`crate::openapi::deep_merge`]).
+fn merge_table_def(
+    base: &HttpTableSpec,
+    t: &pawrly_core::TableDef,
+) -> Result<HttpTableSpec, HttpBuildError> {
+    let mut value = serde_json::to_value(base).map_err(|e| {
+        HttpBuildError::Config(ConfigError::Source(
+            t.name.clone(),
+            format!("serialize synthesized table `{}`: {e}", t.name),
+        ))
+    })?;
+    let mut patch = t.config.clone();
+    if let Some(map) = patch.as_object_mut() {
+        // `name` is the match key, not a patchable field.
+        map.remove("name");
+        if let Some(desc) = &t.description {
+            map.entry("description")
+                .or_insert_with(|| serde_json::Value::String(desc.clone()));
+        }
+    }
+    crate::openapi::deep_merge(&mut value, &patch);
+    serde_json::from_value(value).map_err(|e| {
+        HttpBuildError::Config(ConfigError::Source(
+            t.name.clone(),
+            format!("invalid patch for table `{}`: {e}", t.name),
         ))
     })
 }

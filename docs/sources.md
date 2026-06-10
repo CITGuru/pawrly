@@ -398,9 +398,24 @@ SELECT id, amount, currency, status FROM stripe.get_charges LIMIT 10
 ```
 
 Only read-only `GET` operations are exposed; pagination is inferred generically (page, offset,
-cursor, and a last-row cursor). Where inference is uncertain (e.g. a polymorphic
-response) the column degrades to `json` and a diagnostic is logged, and an explicit `tables:` entry
-overrides any synthesized table of the same name.
+cursor, and a last-row cursor). Where inference is uncertain (e.g. a polymorphic response) the column
+degrades to `json` and a diagnostic is logged.
+
+**Adjusting a synthesized table.** A `tables:` entry whose `name` matches a synthesized table
+**patches** it — only the fields you set are merged in, the rest of the synthesis is kept; a name
+that matches nothing is a full new table definition. So fixing one field doesn't mean re-declaring
+the endpoint and every column:
+
+```yaml
+tables:
+  - name: get_charges
+    response: { path: "$.data" }          # patch the rows-path; keep the synthesized columns
+  - name: get_events
+    pagination: null                        # drop the inferred pagination
+```
+
+Fields merge per key; arrays (`response.schema`, `params`) and type-tagged blocks (`pagination`)
+replace wholesale, and a `null` clears a field.
 
 **Top-level `config`** (the same plumbing as hand-declared HTTP mode):
 

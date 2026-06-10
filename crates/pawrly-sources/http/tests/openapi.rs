@@ -14,7 +14,7 @@ use std::sync::Arc;
 use datafusion::catalog::{CatalogProvider, MemoryCatalogProvider};
 use datafusion::execution::config::SessionConfig;
 use datafusion::execution::context::SessionContext;
-use pawrly_core::{CachePolicy, SourceDef, SourceKind};
+use pawrly_core::{CachePolicy, SourceDef, SourceKind, TableDef};
 use pawrly_sources_http::register_http_source;
 use serde_json::{Value, json};
 use wiremock::matchers::{method, path, query_param, query_param_is_missing};
@@ -254,5 +254,57 @@ async fn include_selector_limits_registered_tables() {
     assert!(
         ctx.sql("SELECT id FROM api.test_clocks").await.is_err(),
         "excluded operation must not be registered as a table"
+    );
+}
+
+#[tokio::test]
+async fn explicit_table_patches_synthesized() {
+    let server = MockServer::start().await;
+    let spec = json!({
+        "openapi": "3.0.0",
+        "servers": [{ "url": server.uri() }],
+        "paths": { "/items": { "get": {
+            "operationId": "listItems",
+            "responses": { "200": { "content": { "application/json": { "schema": {
+                "type": "array",
+                "items": { "type": "object", "properties": {
+                    "id": { "type": "integer", "format": "int64" },
+                    "name": { "type": "string" }
+                }}
+            }}}}}
+        }}}
+    });
+    mount_spec(&server, spec).await;
+    Mock::given(method("GET"))
+        .and(path("/items"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            { "id": 1, "name": "a" },
+            { "id": 2, "name": "b" }
+        ])))
+        .mount(&server)
+        .await;
+
+    let (ctx, catalog) = build_ctx().await;
+    // A partial entry (no endpoint) narrows the synthesized schema to `id` only;
+    // the synthesized endpoint and rows-path are kept.
+    let mut def = openapi_source(&server, Value::Null);
+    def.tables = vec![TableDef {
+        name: "list_items".into(),
+        description: None,
+        wiki: None,
+        config: json!({ "response": { "schema": [ { "name": "id", "type": "bigint" } ] } }),
+        cache: None,
+        safety: None,
+    }];
+    register_http_source(&def, &ctx, catalog.as_ref())
+        .await
+        .expect("register");
+
+    // Endpoint inherited from synthesis (request still hits /items) → 2 rows.
+    assert_eq!(count(&ctx, "SELECT id FROM api.list_items").await, 2);
+    // The patch replaced the schema array, so `name` no longer exists.
+    assert!(
+        ctx.sql("SELECT name FROM api.list_items").await.is_err(),
+        "patched-away column must not resolve"
     );
 }

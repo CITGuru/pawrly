@@ -714,6 +714,21 @@ fn glob_match(pattern: &str, text: &str) -> bool {
     true
 }
 
+/// Deep-merge `patch` into `base`. Plain objects merge key-by-key; arrays and
+/// scalars replace; an object carrying a `type` discriminator (a tagged union
+/// such as `pagination`) replaces wholesale rather than blending two variants.
+/// A `null` in the patch clears the key.
+pub(crate) fn deep_merge(base: &mut Value, patch: &Value) {
+    match (base, patch) {
+        (Value::Object(b), Value::Object(p)) if !p.contains_key("type") => {
+            for (key, value) in p {
+                deep_merge(b.entry(key.clone()).or_insert(Value::Null), value);
+            }
+        }
+        (b, p) => *b = p.clone(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1110,6 +1125,41 @@ mod tests {
         assert_eq!(to_snake("get-by-id"), "get_by_id");
         assert_eq!(to_snake("HTTPServer"), "httpserver");
         assert_eq!(to_snake("v1.Resource"), "v1_resource");
+    }
+
+    #[test]
+    fn deep_merge_patches_plain_objects() {
+        // `response: { path }` patches the path and keeps the synthesized schema.
+        let mut base = json!({ "response": { "path": "$", "schema": [{ "name": "id" }] } });
+        deep_merge(&mut base, &json!({ "response": { "path": "$.data" } }));
+        assert_eq!(base["response"]["path"], json!("$.data"));
+        assert_eq!(base["response"]["schema"], json!([{ "name": "id" }]));
+    }
+
+    #[test]
+    fn deep_merge_replaces_tagged_unions_and_arrays() {
+        // `pagination` carries `type`, so it swaps wholesale (no stale fields).
+        let mut base = json!({ "pagination": { "type": "row_cursor", "param": "starting_after", "field": "id" } });
+        deep_merge(
+            &mut base,
+            &json!({ "pagination": { "type": "page", "param": "page" } }),
+        );
+        assert_eq!(
+            base["pagination"],
+            json!({ "type": "page", "param": "page" })
+        );
+
+        // arrays replace, never element-merge.
+        let mut arr = json!({ "schema": [{ "name": "a" }, { "name": "b" }] });
+        deep_merge(&mut arr, &json!({ "schema": [{ "name": "id" }] }));
+        assert_eq!(arr["schema"], json!([{ "name": "id" }]));
+    }
+
+    #[test]
+    fn deep_merge_null_clears() {
+        let mut base = json!({ "pagination": { "type": "page", "param": "page" } });
+        deep_merge(&mut base, &json!({ "pagination": null }));
+        assert_eq!(base["pagination"], Value::Null);
     }
 
     #[test]
