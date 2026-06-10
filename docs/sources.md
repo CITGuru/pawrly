@@ -370,6 +370,65 @@ SELECT number, title FROM gh.pulls
 WHERE owner = 'CITGuru' AND repo = 'pawrly' AND state = 'open' LIMIT 20
 ```
 
+#### From an OpenAPI spec (`config.type: openapi`)
+
+Instead of hand-writing `tables:`, point an HTTP source at an OpenAPI 3.0.x spec and Pawrly
+synthesizes one table per `GET` operation at load time — endpoint, params, columns, rows path, and
+pagination are read from the document. Here `base_url` is the **spec URL**; the real API base comes
+from the spec's own `servers`.
+
+```yaml
+sources:
+  - name: stripe
+    kind: http
+    config:
+      type: openapi
+      base_url: https://raw.githubusercontent.com/stripe/openapi/refs/heads/master/latest/openapi.spec3.yaml
+      auth:
+        type: header
+        headers:
+          - name: Authorization
+            bearer: ${secret:STRIPE_API_KEY}
+      openapi:
+        include: { paths: ["/v1/charges*", "/v1/customers*"] }   # optional; default = every GET
+```
+
+```sql
+SELECT id, amount, currency, status FROM stripe.get_charges LIMIT 10
+```
+
+Only read-only `GET` operations are exposed; pagination is inferred generically (page, offset,
+cursor, and a last-row cursor). Where inference is uncertain (e.g. a polymorphic
+response) the column degrades to `json` and a diagnostic is logged, and an explicit `tables:` entry
+overrides any synthesized table of the same name.
+
+**Top-level `config`** (the same plumbing as hand-declared HTTP mode):
+
+| Key          | Required | Description                                                                                  |
+| ------------ | -------- | -------------------------------------------------------------------------------------------- |
+| `type`       | yes      | `openapi` — enables spec-driven synthesis. Absent/`manual` keeps the hand-declared behaviour. |
+| `base_url`   | yes      | The **spec** location: an `http(s)://` URL or a `file://` path. The API base comes from the spec's `servers`. |
+| `auth`       | no       | Auth block (`header` / `basic` / `custom` / `oauth2`) — see [Authentication](#authentication).  |
+| `token`      | no       | Bearer shorthand: sent as `Authorization: Bearer <token>` (equivalent to a one-header `auth`). |
+| `headers`    | no       | Static request headers attached to every call.                                               |
+| `retry`      | no       | `{ max_retries, base_backoff_ms, max_backoff_ms }` — see [Rate limiting & retries](#rate-limiting--retries). |
+| `rate_limit` | no       | `{ requests_per_second, remaining_header, reset_header, extra_statuses }`.                    |
+
+**`config.openapi`** (synthesis-specific):
+
+| Key        | Description                                                                                                                |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `include`  | `{ tags: [...], paths: [globs], operations: [...] }` — only matching `GET`s become tables. A `*` glob matches path segments. Omit `include` to register **every** `GET`. |
+| `exclude`  | Same shape as `include`; an operation matching `exclude` is dropped (wins over `include`).                                  |
+| `naming`   | How tables are named: `operationId` (default) \| `path` (segments joined) \| `tag` (`<tag>_<leaf>`). Collisions get a numeric suffix. |
+| `base_url` | Override for the effective **request** base, used only when the spec declares no usable `servers[0].url`.                  |
+| `cache`    | `{ ttl: <duration> }` — cache the fetched spec on disk and reuse it while fresh (e.g. `24h`, `30m`). Omit to re-fetch on every load. Applies to `http(s)://` specs only. |
+
+Source-level `safety.max_pages` caps the pagination loop for synthesized tables (they inherit no
+per-table `safety`). With `openapi.cache` set, the spec is stored under
+`$PAWRLY_HOME/cache/openapi/` (default `~/.pawrly`) keyed by URL; without it, the document is fetched
+on every load (or point `base_url` at a vendored `file://` copy).
+
 #### Authentication
 
 Set source-level auth with the `config.token` shorthand or a full `auth:` block (the block wins if both are present). The block is tagged by `type` — `header`, `basic`, `custom`, or `oauth2`:
@@ -520,6 +579,7 @@ Set `pagination` to keep fetching pages; absent means a single request. A SQL `L
 | ------------- | ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `link_header` | —                                                    | Follows the RFC 5988 `Link:` header's `rel="next"` URL until absent.                                                                                    |
 | `cursor`      | `next_path`, `param`                                 | Reads an opaque cursor from the body at `next_path` (`$.a.b`) and echoes it back as the `param` query parameter; stops when the cursor is absent/empty. |
+| `row_cursor`  | `param`, `field` (default `id`), `more_path?`        | Sends `param` = the last row's `field` (e.g. `starting_after=<last id>`); stops when `more_path` (a `$.a.b` boolean) is `false`, else on an empty page. |
 | `page`        | `param`, `start` (default 1), `size_param?`, `size?` | Increments the page number in `param` until a page returns zero rows; optionally sends a page size via `size_param`/`size`.                             |
 | `offset`      | `param`, `size_param`, `size`                        | Increments `param` by `size` each page until a short page (fewer than `size` rows).                                                                     |
 
@@ -556,7 +616,9 @@ Set `pagination` to keep fetching pages; absent means a single request. A SQL `L
 
 A runnable cache-over-API walkthrough lives at [examples/cache-http/](../examples/cache-http/pawrly.yaml).
 
-### `sqlite` — local SQLite databases
+### Databases and Lakehouse Formats
+
+#### `sqlite` — local SQLite databases
 
 Attaches a SQLite file read-only and exposes its tables; equality filters push down. When `tables:` is omitted, every user table is auto-registered. `sqlite` is the one attach-style kind whose `tables:` entries are honored — supply a `query` to restrict or reshape a table.
 
@@ -582,7 +644,7 @@ sources:
 | `query`       | Optional SQL backing the table; defaults to `SELECT * FROM "<name>"`. |
 
 
-### `postgres`, `mysql` — foreign databases
+#### `postgres`, `mysql` — foreign databases
 
 DuckDB `ATTACH`es the database **read-only** and exposes its tables lazily (`<source>.<table>`); equality predicates, projection, and limits push down. No `tables:` needed.
 
@@ -607,7 +669,7 @@ sources:
       password: ${secret:PG_PASSWORD}
 ```
 
-### `duckdb` — local DuckDB database file
+#### `duckdb` — local DuckDB database file
 
 Attaches a `.duckdb` database file read-only and exposes its tables lazily.
 
@@ -624,7 +686,7 @@ sources:
 | ------------ | -------- | ----------------------------------------------------------- |
 | `path`       | **yes**  | Path to the `.duckdb` file; resolved against the config dir. |
 
-### `snowflake`
+#### `snowflake`
 
 DuckDB `ATTACH` via the Snowflake community extension (installed on first use). Requires `account`, `user`, `password`; optional `database`, `schema`, `warehouse`, `role`.
 
@@ -641,7 +703,7 @@ sources:
       schema: PUBLIC
 ```
 
-### `iceberg`, `delta` — table formats
+#### `iceberg`, `delta` — table formats
 
 Each declared table maps to a DuckDB scan function over a table location. `tables:` is required, each with a `path` (or `location`).
 
@@ -661,7 +723,7 @@ For tables on an object store, provide credentials with a `storage:` block (same
 | ------------------ | -------- | ---------------------------------------------- |
 | `path` / `location` | **yes**  | Table location passed to the DuckDB scan function. |
 
-### `ducklake` — DuckLake lakehouse catalog
+#### `ducklake` — DuckLake lakehouse catalog
 
 Attaches a [DuckLake](https://ducklake.select) catalog (a metadata database plus a data path) and exposes its tables lazily.
 

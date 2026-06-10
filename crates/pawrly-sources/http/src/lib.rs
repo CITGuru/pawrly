@@ -6,6 +6,7 @@
 
 #![doc(html_root_url = "https://docs.rs/pawrly-sources-http")]
 
+mod openapi;
 mod paginate;
 mod raw;
 mod register;

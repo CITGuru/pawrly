@@ -24,9 +24,15 @@ pub enum HttpBuildError {
     #[error("invalid base_url: {0}")]
     BadUrl(String),
 
+    #[error("openapi: {0}")]
+    Spec(String),
+
     #[error("datafusion: {0}")]
     DataFusion(String),
 }
+
+/// Table count above which an OpenAPI source logs a hint to narrow its catalog.
+const MANY_TABLES: usize = 50;
 
 #[derive(Debug, Clone, Default)]
 pub struct HttpSourceReport {
@@ -49,10 +55,7 @@ pub async fn register_http_source(
 ) -> Result<HttpSourceReport, HttpBuildError> {
     let _ = ctx;
 
-    // 1. Resolve base URL + auth from def.config. `base_url` is required for
-    //    `kind: http`; an empty/missing value is a config error.
     let cfg = &def.config;
-
     let base_url_str = cfg
         .get("base_url")
         .and_then(|v| v.as_str())
@@ -63,44 +66,70 @@ pub async fn register_http_source(
             "`kind: http` requires `config.base_url`".to_string(),
         ));
     }
-    let base_url =
-        url::Url::parse(&base_url_str).map_err(|e| HttpBuildError::BadUrl(e.to_string()))?;
 
-    let auth = parse_auth(def);
+    let client = HttpSource::build_client();
+    let source_max_pages = def.safety.as_ref().and_then(|s| s.max_pages);
 
-    let headers = parse_headers(def);
-
-    let retry = parse_retry(def);
-    let rate_limit = parse_rate_limit(def);
+    // In openapi mode `base_url` points at the spec, not the API; the request
+    // base comes from the spec's `servers`.
+    let (base_url, synthesized) = if cfg.get("type").and_then(|v| v.as_str()) == Some("openapi") {
+        let bytes = fetch_spec(
+            &client,
+            &base_url_str,
+            spec_cache(cfg, &base_url_str).as_ref(),
+        )
+        .await?;
+        let doc: serde_json::Value = serde_yaml::from_slice(&bytes)
+            .map_err(|e| HttpBuildError::Spec(format!("parse openapi document: {e}")))?;
+        let synth = crate::openapi::synthesize(&doc, &openapi_options(cfg))
+            .map_err(|e| HttpBuildError::Spec(e.to_string()))?;
+        for d in &synth.diagnostics {
+            tracing::warn!(source = %def.name, table = ?d.table, code = d.code, "{}", d.message);
+        }
+        if synth.tables.len() > MANY_TABLES {
+            tracing::info!(
+                source = %def.name,
+                tables = synth.tables.len(),
+                "openapi source registered many tables; set config.openapi.include to narrow the catalog"
+            );
+        }
+        (effective_base(cfg, &synth, &base_url_str)?, synth.tables)
+    } else {
+        let base =
+            url::Url::parse(&base_url_str).map_err(|e| HttpBuildError::BadUrl(e.to_string()))?;
+        (base, Vec::new())
+    };
 
     let source = Arc::new(HttpSource {
         name: def.name.clone(),
         base_url,
-        auth,
-        headers,
-        client: HttpSource::build_client(),
-        retry,
-        rate_limit,
+        auth: parse_auth(def),
+        headers: parse_headers(def),
+        client,
+        retry: parse_retry(def),
+        rate_limit: parse_rate_limit(def),
         oauth_token: tokio::sync::Mutex::new(None),
     });
 
-    // 2. Ensure the schema provider exists on the catalog.
     let schema = ensure_schema(catalog, &def.name)?;
 
-    // 3. Tables are user-declared under `def.tables`; each table's opaque
-    //    per-table `config` deserializes into an `HttpTableSpec`. The effective
-    //    page cap falls back to the source-level safety policy when a table has
-    //    no policy of its own.
-    let source_max_pages = def.safety.as_ref().and_then(|s| s.max_pages);
-
-    let mut tables: Vec<(HttpTableSpec, Option<u32>)> = Vec::new();
+    // Synthesized tables first; an explicit `def.tables` entry overrides a
+    // synthesized table of the same name.
+    let mut tables: Vec<(HttpTableSpec, Option<u32>)> = synthesized
+        .into_iter()
+        .map(|spec| (spec, source_max_pages))
+        .collect();
     for t in &def.tables {
         let max_pages = t
             .safety
             .as_ref()
             .and_then(|s| s.max_pages)
             .or(source_max_pages);
-        tables.push((table_spec_from_def(t)?, max_pages));
+        let spec = table_spec_from_def(t)?;
+        match tables.iter_mut().find(|(s, _)| s.name == spec.name) {
+            Some(slot) => *slot = (spec, max_pages),
+            None => tables.push((spec, max_pages)),
+        }
     }
     if tables.is_empty() && !def.raw_table {
         tracing::warn!(
@@ -130,8 +159,8 @@ pub async fn register_http_source(
         });
     }
 
-    // 4. Optional raw HTTP table named after the source — registered in the
-    //    *default* schema so `SELECT * FROM <source>` resolves to it.
+    // Optional raw HTTP table named after the source — registered in the
+    // *default* schema so `SELECT * FROM <source>` resolves to it.
     let raw_table_registered = if def.raw_table {
         let default_schema = catalog
             .schema("default")
@@ -279,6 +308,185 @@ fn parse_rate_limit(def: &SourceDef) -> RateLimitPolicy {
     }
 }
 
+/// Read the `config.openapi` synthesis options (`include`/`exclude`/`naming`).
+fn openapi_options(cfg: &serde_json::Value) -> crate::openapi::SynthOptions {
+    use crate::openapi::{Naming, Selector, SynthOptions};
+
+    let block = cfg.get("openapi");
+    let selector = |key: &str| -> Selector {
+        let Some(sel) = block.and_then(|b| b.get(key)) else {
+            return Selector::default();
+        };
+        let list = |field: &str| {
+            sel.get(field)
+                .and_then(|v| v.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        Selector {
+            tags: list("tags"),
+            paths: list("paths"),
+            operations: list("operations"),
+        }
+    };
+    let naming = match block.and_then(|b| b.get("naming")).and_then(|v| v.as_str()) {
+        Some("path") => Naming::Path,
+        Some("tag") => Naming::Tag,
+        _ => Naming::OperationId,
+    };
+    SynthOptions {
+        include: selector("include"),
+        exclude: selector("exclude"),
+        naming,
+    }
+}
+
+/// An on-disk cache for a fetched spec: where it lives and how long it stays fresh.
+struct SpecCache {
+    path: std::path::PathBuf,
+    ttl: std::time::Duration,
+}
+
+/// Fetch spec bytes from an `http(s)://` URL or a `file://` path. When `cache` is
+/// set and the on-disk copy is within its TTL, the network is skipped.
+async fn fetch_spec(
+    client: &reqwest::Client,
+    location: &str,
+    cache: Option<&SpecCache>,
+) -> Result<Vec<u8>, HttpBuildError> {
+    if let Some(path) = location.strip_prefix("file://") {
+        return tokio::fs::read(path)
+            .await
+            .map_err(|e| HttpBuildError::Spec(format!("read spec `{path}`: {e}")));
+    }
+    if let Some(cache) = cache
+        && let Some(bytes) = read_if_fresh(&cache.path, cache.ttl).await
+    {
+        return Ok(bytes);
+    }
+    let resp = client
+        .get(location)
+        .send()
+        .await
+        .map_err(|e| HttpBuildError::Spec(format!("fetch spec: {e}")))?;
+    if !resp.status().is_success() {
+        return Err(HttpBuildError::Spec(format!(
+            "fetch spec returned HTTP {}",
+            resp.status()
+        )));
+    }
+    let bytes = resp
+        .bytes()
+        .await
+        .map(|b| b.to_vec())
+        .map_err(|e| HttpBuildError::Spec(format!("read spec body: {e}")))?;
+    if let Some(cache) = cache {
+        write_cache(&cache.path, &bytes).await;
+    }
+    Ok(bytes)
+}
+
+/// Resolve the spec cache for an openapi source, or `None` when caching is off
+/// (no `config.openapi.cache.ttl`, a `file://` spec, or no home directory).
+fn spec_cache(cfg: &serde_json::Value, location: &str) -> Option<SpecCache> {
+    if location.starts_with("file://") {
+        return None;
+    }
+    Some(SpecCache {
+        ttl: spec_cache_ttl(cfg)?,
+        path: spec_cache_path(location)?,
+    })
+}
+
+/// Read `config.openapi.cache.ttl` as a humantime duration (e.g. `24h`).
+fn spec_cache_ttl(cfg: &serde_json::Value) -> Option<std::time::Duration> {
+    #[derive(serde::Deserialize)]
+    struct Ttl {
+        #[serde(with = "humantime_serde")]
+        ttl: std::time::Duration,
+    }
+    let cache = cfg.get("openapi")?.get("cache")?;
+    serde_json::from_value::<Ttl>(cache.clone())
+        .ok()
+        .map(|t| t.ttl)
+}
+
+/// `$PAWRLY_HOME/cache/openapi/<hash>.spec` (falling back to `~/.pawrly`), keyed
+/// by the spec URL so distinct specs never collide.
+fn spec_cache_path(location: &str) -> Option<std::path::PathBuf> {
+    use std::hash::{Hash as _, Hasher as _};
+
+    let base = std::env::var_os("PAWRLY_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".pawrly"))
+        })?;
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    location.hash(&mut hasher);
+    Some(
+        base.join("cache")
+            .join("openapi")
+            .join(format!("{:016x}.spec", hasher.finish())),
+    )
+}
+
+/// The cached spec if it exists and was written within `ttl`.
+async fn read_if_fresh(path: &std::path::Path, ttl: std::time::Duration) -> Option<Vec<u8>> {
+    let modified = tokio::fs::metadata(path).await.ok()?.modified().ok()?;
+    if modified.elapsed().ok()? <= ttl {
+        tokio::fs::read(path).await.ok()
+    } else {
+        None
+    }
+}
+
+/// Best-effort write of a fetched spec to the cache; failures are non-fatal.
+async fn write_cache(path: &std::path::Path, bytes: &[u8]) {
+    if let Some(parent) = path.parent()
+        && tokio::fs::create_dir_all(parent).await.is_err()
+    {
+        return;
+    }
+    if let Err(e) = tokio::fs::write(path, bytes).await {
+        tracing::debug!(error = %e, "failed to write openapi spec cache");
+    }
+}
+
+/// The effective request base for an OpenAPI source: a `config.openapi.base_url`
+/// override wins, then the spec's `servers[0].url` (resolved against the spec
+/// origin when relative), then the origin of the spec URL.
+fn effective_base(
+    cfg: &serde_json::Value,
+    synth: &crate::openapi::Synthesis,
+    spec_location: &str,
+) -> Result<url::Url, HttpBuildError> {
+    if let Some(over) = cfg
+        .get("openapi")
+        .and_then(|b| b.get("base_url"))
+        .and_then(|v| v.as_str())
+    {
+        return url::Url::parse(over).map_err(|e| HttpBuildError::BadUrl(e.to_string()));
+    }
+    if let Some(server) = &synth.base_url {
+        if let Ok(u) = url::Url::parse(server) {
+            return Ok(u);
+        }
+        if let Ok(joined) = url::Url::parse(spec_location).and_then(|s| s.join(server)) {
+            return Ok(joined);
+        }
+    }
+    let mut origin =
+        url::Url::parse(spec_location).map_err(|e| HttpBuildError::BadUrl(e.to_string()))?;
+    origin.set_path("/");
+    origin.set_query(None);
+    origin.set_fragment(None);
+    Ok(origin)
+}
+
 fn ensure_schema(
     catalog: &dyn CatalogProvider,
     name: &str,
@@ -296,5 +504,84 @@ fn ensure_schema(
         Err(HttpBuildError::DataFusion(
             "catalog does not support schema registration".into(),
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use std::time::Duration;
+
+    #[test]
+    fn spec_cache_ttl_reads_humantime() {
+        assert_eq!(
+            spec_cache_ttl(&json!({ "openapi": { "cache": { "ttl": "24h" } } })),
+            Some(Duration::from_secs(86_400))
+        );
+        assert_eq!(spec_cache_ttl(&json!({ "openapi": {} })), None);
+        assert_eq!(
+            spec_cache_ttl(&json!({ "openapi": { "cache": { "ttl": "nonsense" } } })),
+            None
+        );
+    }
+
+    #[test]
+    fn spec_cache_is_off_for_file_urls() {
+        let cfg = json!({ "openapi": { "cache": { "ttl": "1h" } } });
+        assert!(spec_cache(&cfg, "file:///tmp/spec.yaml").is_none());
+    }
+
+    #[tokio::test]
+    async fn read_if_fresh_honors_ttl() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("spec");
+        write_cache(&path, b"openapi: 3.0.0").await;
+
+        assert_eq!(
+            read_if_fresh(&path, Duration::from_secs(3600))
+                .await
+                .as_deref(),
+            Some(&b"openapi: 3.0.0"[..])
+        );
+        tokio::time::sleep(Duration::from_millis(15)).await;
+        assert_eq!(read_if_fresh(&path, Duration::ZERO).await, None);
+        assert_eq!(
+            read_if_fresh(&dir.path().join("missing"), Duration::from_secs(60)).await,
+            None
+        );
+    }
+
+    /// A fresh cache short-circuits the network: the server answers once, yet a
+    /// second fetch still succeeds from disk.
+    #[tokio::test]
+    async fn fetch_spec_skips_network_when_cached() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/spec"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("openapi: 3.0.0"))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cache = SpecCache {
+            path: dir.path().join("s.spec"),
+            ttl: Duration::from_secs(3600),
+        };
+        let client = HttpSource::build_client();
+        let url = format!("{}/spec", server.uri());
+
+        let first = fetch_spec(&client, &url, Some(&cache))
+            .await
+            .expect("first fetch");
+        let second = fetch_spec(&client, &url, Some(&cache))
+            .await
+            .expect("cached fetch");
+        assert_eq!(first, b"openapi: 3.0.0");
+        assert_eq!(second, first);
     }
 }
