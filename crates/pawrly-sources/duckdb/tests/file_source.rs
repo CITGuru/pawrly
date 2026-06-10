@@ -213,6 +213,92 @@ async fn ndjson_file_still_works() {
     assert_eq!(count(&ctx, "SELECT count(*) FROM data.t").await, 2);
 }
 
+/// NDJSON with a declared schema decodes a polymorphic field (a plain string in
+/// one row, an object in the next) by stringifying the object into the `varchar`
+/// column — which DataFusion's own reader rejects. Also exercises the `.jsonl`
+/// extension.
+#[tokio::test]
+async fn ndjson_declared_schema_stringifies_polymorphic_field() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("events.jsonl"),
+        "{\"id\":1,\"message\":\"hi\"}\n{\"id\":2,\"message\":{\"role\":\"user\"}}\n",
+    )
+    .unwrap();
+
+    let (ctx, catalog) = build_ctx().await;
+    let def = file_source(json!({
+        "path": "events.jsonl",
+        "format": "json",
+        "schema": [
+            { "name": "id",      "type": "bigint" },
+            { "name": "message", "type": "varchar" }
+        ]
+    }));
+    register_file_source(&def, &ctx, catalog.as_ref(), dir.path())
+        .await
+        .expect("register ndjson table with declared schema");
+
+    assert_eq!(count(&ctx, "SELECT count(*) FROM data.t").await, 2);
+    // The object row survives as compact raw JSON text.
+    assert_eq!(
+        count(
+            &ctx,
+            "SELECT count(*) FROM data.t WHERE message = '{\"role\":\"user\"}'"
+        )
+        .await,
+        1
+    );
+    // The plain-string row keeps its bare value (not JSON-quoted).
+    assert_eq!(
+        count(&ctx, "SELECT count(*) FROM data.t WHERE message = 'hi'").await,
+        1
+    );
+}
+
+/// A segment-partitioned NDJSON dataset with a declared schema both derives its
+/// partition column and stringifies a non-string payload field into `varchar`.
+#[tokio::test]
+async fn segment_partitioned_ndjson_declared_schema() {
+    let dir = tempfile::tempdir().unwrap();
+    let proj = dir.path().join("projects").join("alpha");
+    std::fs::create_dir_all(&proj).unwrap();
+    std::fs::write(
+        proj.join("s.jsonl"),
+        "{\"type\":\"user\",\"payload\":{\"k\":1}}\n{\"type\":\"assistant\",\"payload\":\"text\"}\n",
+    )
+    .unwrap();
+
+    let (ctx, catalog) = build_ctx().await;
+    let def = file_source(json!({
+        "path": "projects/*/*.jsonl",
+        "format": "json",
+        "partition_cols": [
+            { "name": "project", "type": "varchar", "kind": "segment", "index": 0 }
+        ],
+        "schema": [
+            { "name": "type",    "type": "varchar" },
+            { "name": "payload", "type": "varchar" }
+        ]
+    }));
+    register_file_source(&def, &ctx, catalog.as_ref(), dir.path())
+        .await
+        .expect("register segment-partitioned ndjson table");
+
+    assert_eq!(
+        count(&ctx, "SELECT count(*) FROM data.t WHERE project = 'alpha'").await,
+        2
+    );
+    assert_eq!(
+        count(
+            &ctx,
+            "SELECT count(*) FROM data.t WHERE payload = '{\"k\":1}'"
+        )
+        .await,
+        1
+    );
+}
+
 /// A glob of JSON-array files unions every element into one table.
 #[tokio::test]
 async fn json_array_glob_unions() {

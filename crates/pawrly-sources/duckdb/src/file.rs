@@ -390,6 +390,16 @@ async fn register_one(
         return register_json_array(schema, table_name, path, options);
     }
 
+    // NDJSON with a declared schema is decoded in-memory so non-string values
+    // can be stringified into `varchar`; the listing reader rejects an object
+    // value for a declared string column. Hive-partitioned tables keep the
+    // streaming listing path.
+    if format == FileFormat::Json && options.partition_cols.is_empty() {
+        if let Some(decl) = &options.schema {
+            return register_ndjson_memtable(schema, table_name, path, decl);
+        }
+    }
+
     // A single concrete file is canonicalized (resolving symlinks, asserting it
     // exists). A glob or directory is left as an absolute path so DataFusion can
     // list every matching file into one table.
@@ -656,6 +666,127 @@ fn format_extensions(format: FileFormat) -> &'static [&'static str] {
     }
 }
 
+/// Register a non-partitioned NDJSON table (a single file, glob, or directory)
+/// as an in-memory table decoded against the declared `schema` via
+/// [`ndjson_file_to_batch`].
+fn register_ndjson_memtable(
+    schema_provider: &dyn SchemaProvider,
+    table_name: &str,
+    path: &std::path::Path,
+    decl_schema: &SchemaRef,
+) -> Result<(), FileBuildError> {
+    use datafusion::datasource::MemTable;
+
+    let files = collect_files(path, format_extensions(FileFormat::Json))?;
+    let mut batches = Vec::with_capacity(files.len());
+    for file in &files {
+        batches.push(ndjson_file_to_batch(file, decl_schema)?);
+    }
+    let table = MemTable::try_new(decl_schema.clone(), vec![batches])
+        .map_err(|e| FileBuildError::DataFusion(format!("mem table: {e}")))?;
+    schema_provider
+        .register_table(table_name.to_string(), Arc::new(table))
+        .map_err(|e| FileBuildError::DataFusion(format!("register table: {e}")))?;
+    Ok(())
+}
+
+/// Read one NDJSON file into a `RecordBatch` matching `schema`. A `varchar`
+/// column takes a JSON string verbatim and serializes any other value (object,
+/// array, number, bool) to compact JSON text; numeric/bool columns parse the
+/// matching scalar or its string form, and a missing/null/non-coercible value
+/// becomes `NULL`. This honours the declared type for a field whose JSON type
+/// varies across rows, which DataFusion's JSON reader cannot.
+fn ndjson_file_to_batch(
+    path: &std::path::Path,
+    schema: &SchemaRef,
+) -> Result<arrow_array::RecordBatch, FileBuildError> {
+    use arrow_array::{
+        ArrayRef, BooleanArray, Float64Array, Int32Array, Int64Array, RecordBatch, StringArray,
+    };
+
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| FileBuildError::Io(format!("read {}: {e}", path.display())))?;
+    let rows: Vec<serde_json::Value> = text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(serde_json::from_str::<serde_json::Value>)
+        .collect::<Result<_, _>>()
+        .map_err(|e| FileBuildError::DataFusion(format!("parse json {}: {e}", path.display())))?;
+
+    let field_at = |row: &serde_json::Value, name: &str| row.get(name).cloned();
+    let mut columns: Vec<ArrayRef> = Vec::with_capacity(schema.fields().len());
+    for field in schema.fields() {
+        let name = field.name();
+        let array: ArrayRef = match field.data_type() {
+            DataType::Int64 => Arc::new(Int64Array::from(
+                rows.iter()
+                    .map(|r| json_as_i64(field_at(r, name).as_ref()))
+                    .collect::<Vec<_>>(),
+            )),
+            DataType::Int32 => Arc::new(Int32Array::from(
+                rows.iter()
+                    .map(|r| {
+                        json_as_i64(field_at(r, name).as_ref()).and_then(|v| i32::try_from(v).ok())
+                    })
+                    .collect::<Vec<_>>(),
+            )),
+            DataType::Float64 => Arc::new(Float64Array::from(
+                rows.iter()
+                    .map(|r| json_as_f64(field_at(r, name).as_ref()))
+                    .collect::<Vec<_>>(),
+            )),
+            DataType::Boolean => Arc::new(BooleanArray::from(
+                rows.iter()
+                    .map(|r| json_as_bool(field_at(r, name).as_ref()))
+                    .collect::<Vec<_>>(),
+            )),
+            _ => Arc::new(StringArray::from(
+                rows.iter()
+                    .map(|r| json_as_string(field_at(r, name).as_ref()))
+                    .collect::<Vec<_>>(),
+            )),
+        };
+        columns.push(array);
+    }
+    RecordBatch::try_new(schema.clone(), columns)
+        .map_err(|e| FileBuildError::DataFusion(format!("build batch {}: {e}", path.display())))
+}
+
+/// A `varchar` cell: a JSON string verbatim, any other non-null value as its
+/// compact JSON text, and null/absent as `NULL`.
+fn json_as_string(v: Option<&serde_json::Value>) -> Option<String> {
+    match v {
+        None | Some(serde_json::Value::Null) => None,
+        Some(serde_json::Value::String(s)) => Some(s.clone()),
+        Some(other) => Some(other.to_string()),
+    }
+}
+
+fn json_as_i64(v: Option<&serde_json::Value>) -> Option<i64> {
+    match v {
+        Some(serde_json::Value::Number(n)) => n.as_i64(),
+        Some(serde_json::Value::String(s)) => s.parse().ok(),
+        _ => None,
+    }
+}
+
+fn json_as_f64(v: Option<&serde_json::Value>) -> Option<f64> {
+    match v {
+        Some(serde_json::Value::Number(n)) => n.as_f64(),
+        Some(serde_json::Value::String(s)) => s.parse().ok(),
+        _ => None,
+    }
+}
+
+fn json_as_bool(v: Option<&serde_json::Value>) -> Option<bool> {
+    match v {
+        Some(serde_json::Value::Bool(b)) => Some(*b),
+        Some(serde_json::Value::String(s)) => s.parse().ok(),
+        _ => None,
+    }
+}
+
 /// Build a constant Arrow array of `value` (typed per `dtype`), length `len`.
 fn constant_array(dtype: &DataType, value: &str, len: usize) -> arrow_array::ArrayRef {
     use arrow_array::{
@@ -725,29 +856,55 @@ async fn register_segment_partitioned(
             .collect();
 
         let path_str = file.to_string_lossy().into_owned();
-        let df = match format {
-            FileFormat::Parquet => ctx
-                .read_parquet(path_str, ParquetReadOptions::default())
-                .await
-                .map_err(|e| FileBuildError::DataFusion(format!("read parquet: {e}")))?,
-            FileFormat::Csv => ctx
-                .read_csv(
-                    path_str,
-                    CsvReadOptions::new()
-                        .has_header(csv.has_header)
-                        .delimiter(csv.delimiter),
-                )
-                .await
-                .map_err(|e| FileBuildError::DataFusion(format!("read csv: {e}")))?,
-            FileFormat::Json => ctx
-                .read_json(path_str, JsonReadOptions::default())
-                .await
-                .map_err(|e| FileBuildError::DataFusion(format!("read json: {e}")))?,
+        // Pin the reader's expected extension to this concrete file's own, so
+        // names like `.jsonl`/`.ndjson` aren't rejected against the format
+        // default.
+        let ext = file
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| format!(".{e}"))
+            .unwrap_or_default();
+        // With a declared schema, JSON is decoded in-memory (stringifying
+        // non-string values into `varchar`); other formats push the schema into
+        // the reader. Without one, the reader infers per file.
+        let json_decl = match format {
+            FileFormat::Json => options.schema.as_ref(),
+            _ => None,
         };
-        let batches = df
-            .collect()
-            .await
-            .map_err(|e| FileBuildError::DataFusion(format!("collect {}: {e}", file.display())))?;
+        let batches = if let Some(decl) = json_decl {
+            vec![ndjson_file_to_batch(file, decl)?]
+        } else {
+            let df = match format {
+                FileFormat::Parquet => {
+                    let mut opts = ParquetReadOptions::default().file_extension(&ext);
+                    if let Some(s) = &options.schema {
+                        opts = opts.schema(s.as_ref());
+                    }
+                    ctx.read_parquet(path_str, opts)
+                        .await
+                        .map_err(|e| FileBuildError::DataFusion(format!("read parquet: {e}")))?
+                }
+                FileFormat::Csv => {
+                    let mut opts = CsvReadOptions::new()
+                        .has_header(csv.has_header)
+                        .delimiter(csv.delimiter)
+                        .file_extension(&ext);
+                    if let Some(s) = &options.schema {
+                        opts = opts.schema(s.as_ref());
+                    }
+                    ctx.read_csv(path_str, opts)
+                        .await
+                        .map_err(|e| FileBuildError::DataFusion(format!("read csv: {e}")))?
+                }
+                FileFormat::Json => ctx
+                    .read_json(path_str, JsonReadOptions::default().file_extension(&ext))
+                    .await
+                    .map_err(|e| FileBuildError::DataFusion(format!("read json: {e}")))?,
+            };
+            df.collect().await.map_err(|e| {
+                FileBuildError::DataFusion(format!("collect {}: {e}", file.display()))
+            })?
+        };
 
         for batch in batches {
             let n = batch.num_rows();
@@ -809,18 +966,35 @@ fn infer_format_from_path(s: &str) -> Result<FileFormat, FileBuildError> {
 }
 
 fn resolve_path(workspace_dir: &std::path::Path, p: &str) -> PathBuf {
-    let path = std::path::Path::new(p);
+    let path = expand_tilde(p);
     if path.is_absolute() {
-        path.to_path_buf()
+        path
     } else {
         workspace_dir.join(path)
     }
 }
 
 fn resolve_glob(workspace_dir: &std::path::Path, p: &str) -> String {
-    if std::path::Path::new(p).is_absolute() {
-        p.to_string()
+    let path = expand_tilde(p);
+    if path.is_absolute() {
+        path.to_string_lossy().into_owned()
     } else {
-        workspace_dir.join(p).to_string_lossy().into_owned()
+        workspace_dir.join(path).to_string_lossy().into_owned()
     }
+}
+
+/// Expand a leading `~` / `~/` in a path against `$HOME`, so a source `path:`
+/// beginning with `~` resolves to the user's home instead of being joined onto
+/// the workspace dir as a literal `~`. Any other path is returned unchanged.
+fn expand_tilde(p: &str) -> PathBuf {
+    if p == "~" {
+        if let Some(home) = std::env::var_os("HOME") {
+            return PathBuf::from(home);
+        }
+    } else if let Some(rest) = p.strip_prefix("~/") {
+        if let Some(home) = std::env::var_os("HOME") {
+            return PathBuf::from(home).join(rest);
+        }
+    }
+    PathBuf::from(p)
 }
