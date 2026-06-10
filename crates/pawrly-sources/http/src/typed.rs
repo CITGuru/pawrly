@@ -352,9 +352,8 @@ impl TableProvider for HttpTableProvider {
                 return Err(scan_error(msg));
             }
 
-            let rows = extract_rows(&body, &self.spec.response.path)?;
-            let row_count = rows.len();
-            all_rows.extend(rows);
+            let page_start = all_rows.len();
+            all_rows.extend(extract_rows(&body, &self.spec.response.path)?);
 
             // Stop early once enough rows are collected to satisfy a LIMIT.
             if let Some(lim) = limit
@@ -368,7 +367,8 @@ impl TableProvider for HttpTableProvider {
                 break;
             };
 
-            match paginate::next_page(config, &next_params, &body, &headers, row_count, page_index)
+            let page_rows = &all_rows[page_start..];
+            match paginate::next_page(config, &next_params, &body, &headers, page_rows, page_index)
             {
                 Some(NextPage::Params(p)) => {
                     next_params = p;

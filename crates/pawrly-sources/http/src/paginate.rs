@@ -2,7 +2,7 @@
 //! body, and computing the next page request per [`PaginationConfig`].
 //!
 //! These are deliberately pure-ish: they take the just-fetched response pieces
-//! (body + headers + row count) and the current request state (params/url), and
+//! (body + headers + rows) and the current request state (params/url), and
 //! return the next request to issue — or `None` to stop.
 
 use std::collections::BTreeMap;
@@ -41,9 +41,14 @@ pub fn json_at_path<'a>(body: &'a Value, path: &str) -> Option<&'a Value> {
 /// Read a cursor string out of a JSON body at `path`. Numbers are stringified.
 /// Returns `None` when the value is absent, null, or an empty string.
 pub fn cursor_at_path(body: &Value, path: &str) -> Option<String> {
-    match json_at_path(body, path) {
-        Some(Value::String(s)) if !s.is_empty() => Some(s.clone()),
-        Some(Value::Number(n)) => Some(n.to_string()),
+    json_at_path(body, path).and_then(value_to_cursor)
+}
+
+/// A cursor value from a single JSON value: a non-empty string or a number.
+fn value_to_cursor(value: &Value) -> Option<String> {
+    match value {
+        Value::String(s) if !s.is_empty() => Some(s.clone()),
+        Value::Number(n) => Some(n.to_string()),
         _ => None,
     }
 }
@@ -119,7 +124,9 @@ pub fn seed_initial(config: &PaginationConfig, params: &mut BTreeMap<String, Str
                 .entry(size_param.clone())
                 .or_insert_with(|| size.to_string());
         }
-        PaginationConfig::Cursor { .. } | PaginationConfig::LinkHeader => {}
+        PaginationConfig::Cursor { .. }
+        | PaginationConfig::RowCursor { .. }
+        | PaginationConfig::LinkHeader => {}
     }
 }
 
@@ -133,13 +140,31 @@ pub fn next_page(
     params: &BTreeMap<String, String>,
     body: &Value,
     headers: &reqwest::header::HeaderMap,
-    row_count: usize,
+    rows: &[Value],
     page_index: usize,
 ) -> Option<NextPage> {
+    let row_count = rows.len();
     match config {
         PaginationConfig::LinkHeader => parse_link_next(headers).map(NextPage::Url),
         PaginationConfig::Cursor { next_path, param } => {
             let cursor = cursor_at_path(body, next_path)?;
+            let mut next = params.clone();
+            next.insert(param.clone(), cursor);
+            Some(NextPage::Params(next))
+        }
+        PaginationConfig::RowCursor {
+            param,
+            field,
+            more_path,
+        } => {
+            match more_path {
+                Some(path) if json_at_path(body, path).and_then(Value::as_bool) != Some(true) => {
+                    return None;
+                }
+                None if rows.is_empty() => return None,
+                _ => {}
+            }
+            let cursor = value_to_cursor(rows.last()?.get(field)?)?;
             let mut next = params.clone();
             next.insert(param.clone(), cursor);
             Some(NextPage::Params(next))
@@ -224,6 +249,46 @@ mod tests {
         );
         let done = link("<https://sentry.io/x?cursor=abc>; rel=\"next\"; results=\"false\"");
         assert_eq!(parse_link_next(&done), None);
+    }
+
+    #[test]
+    fn row_cursor_advances_then_stops_on_more_flag() {
+        let cfg = PaginationConfig::RowCursor {
+            param: "starting_after".into(),
+            field: "id".into(),
+            more_path: Some("$.has_more".into()),
+        };
+        let params = BTreeMap::new();
+        let headers = HeaderMap::new();
+        let rows = vec![
+            serde_json::json!({ "id": "a" }),
+            serde_json::json!({ "id": "b" }),
+        ];
+
+        match next_page(
+            &cfg,
+            &params,
+            &serde_json::json!({ "has_more": true }),
+            &headers,
+            &rows,
+            0,
+        ) {
+            Some(NextPage::Params(p)) => {
+                assert_eq!(p.get("starting_after").map(String::as_str), Some("b"));
+            }
+            _ => panic!("expected a next page"),
+        }
+        assert!(
+            next_page(
+                &cfg,
+                &params,
+                &serde_json::json!({ "has_more": false }),
+                &headers,
+                &rows,
+                1
+            )
+            .is_none()
+        );
     }
 
     #[test]

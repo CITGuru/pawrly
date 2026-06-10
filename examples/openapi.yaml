@@ -1,0 +1,54 @@
+# Pawrly OpenAPI-driven sources.
+# yaml-language-server: $schema=../schemas/pawrly.schema.json
+#
+# `config.type: openapi` turns a `kind: http` source into a spec-driven one:
+# `base_url` points at the spec (not the API), and pawrly synthesizes one table
+# per GET operation at load time — endpoint, params, columns, and rows path are
+# read straight from the document. The real request base comes from the spec's
+# own `servers`. With no `type` (or `type: manual`), the source is a normal
+# hand-declared HTTP source.
+
+version: 1
+name: openapi-sources
+
+secrets:
+  - kind: env
+
+sources:
+  # ----- Stripe ---------------------------------------------------------------
+  # The public Stripe spec (OpenAPI 3.0.0) synthesizes ~274 tables; queries hit
+  # https://api.stripe.com (taken from the spec's `servers`). List endpoints
+  # expose rows at `$.data`; auth is the bearer secret key. `include` narrows
+  # the catalog — omit it to register every GET operation.
+  - name: stripe
+    kind: http
+    examples:
+      - SELECT id, amount, currency, status FROM stripe.get_charges LIMIT 10
+    config:
+      type: openapi
+      base_url: https://raw.githubusercontent.com/stripe/openapi/refs/heads/master/latest/openapi.spec3.yaml
+      auth:
+        type: header
+        headers:
+          - name: Authorization
+            bearer: ${secret:STRIPE_API_KEY}
+      openapi:
+        include:
+          paths:
+            - /v1/charges*
+            - /v1/customers*
+            - /v1/invoices*
+        cache: { ttl: 24h }                      # cache the fetched spec on disk (re-fetch when stale)
+        # exclude: { paths: ["/v1/*/test_*"] }   # dropped (wins over include)
+        # naming: operationId                     # | path | tag  (default: operationId)
+        # base_url: https://api.stripe.com        # request-base override (only if spec has no servers)
+
+  # ----- GitHub: just a URL ---------------------------------------------------
+  # No per-vendor config — point at any 3.0.x spec and query. Without `include`
+  # the full catalog is registered (pawrly logs a hint past ~50 tables).
+  - name: gh
+    kind: http
+    config:
+      type: openapi
+      base_url: https://raw.githubusercontent.com/github/rest-api-description/main/descriptions/api.github.com/api.github.com.json
+      token: ${secret:GITHUB_TOKEN}

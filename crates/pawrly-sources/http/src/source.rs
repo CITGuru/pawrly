@@ -147,6 +147,20 @@ pub enum PaginationConfig {
         /// Query-param name to send the cursor as on the next request.
         param: String,
     },
+    /// Cursor drawn from the last row of the page rather than a body field:
+    /// send `param` = `<last row>.<field>` (e.g. `starting_after=<last id>`).
+    /// Stop when `more_path` (a `$.a.b` JSONPath to a boolean) is `false`;
+    /// absent `more_path` stops on an empty page.
+    RowCursor {
+        /// Query-param name carrying the cursor on the next request.
+        param: String,
+        /// Field on each row whose value is the cursor (typically `id`).
+        #[serde(default = "default_cursor_field")]
+        field: String,
+        /// Optional `$.a.b` path to a boolean "more pages" flag.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        more_path: Option<String>,
+    },
     /// Page-number pagination: increment `param` starting at `start`. Stop when
     /// a page returns zero rows. Optionally also send a page-size parameter.
     Page {
@@ -176,6 +190,10 @@ pub enum PaginationConfig {
 
 fn default_page_start() -> u32 {
     1
+}
+
+fn default_cursor_field() -> String {
+    "id".into()
 }
 
 /// Retry policy for transient HTTP failures (transport errors, 5xx, 429).
