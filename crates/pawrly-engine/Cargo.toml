@@ -17,6 +17,7 @@ pawrly-semantic = { workspace = true }
 pawrly-secrets = { workspace = true }
 pawrly-sources-duckdb = { workspace = true }
 pawrly-sources-http = { workspace = true }
+pawrly-sources-mcp = { workspace = true }
 datafusion = { workspace = true }
 arrow-array = { workspace = true }
 arrow-schema = { workspace = true }

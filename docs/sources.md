@@ -59,6 +59,7 @@ The kind selects the backend and the shape of `config`/`tables`. The list is clo
 | ----------- | ------------------ | ----------------------------------------------------------------------------------------- |
 | `file`      | —                  | DataFusion native readers (local), or DuckDB object-store reads (with a `storage:` block) |
 | `http`      | —                  | native HTTP table provider                                                                |
+| `mcp`       | —                  | external MCP server's tools as tables (stdio or streamable HTTP)                          |
 | `sqlite`    | —                  | read-only attach                                                                          |
 | `postgres`  | `pg`, `postgresql` | DuckDB `ATTACH` (read-only)                                                               |
 | `mysql`     | —                  | DuckDB `ATTACH` (read-only)                                                               |
@@ -133,6 +134,7 @@ Whether a kind needs `tables:`, and whether it reads per-table fields at all:
 | `file` (local)               | optional (globs auto-discover)     | `path`, `format`, `csv`, `json`, `schema`, `partition_cols` |
 | `file` (object store)        | **required**                       | `path`/`location`, `format`                            |
 | `http`                       | required for typed tables          | full request/response spec (see the Http backend section below) |
+| `mcp`                        | optional (tools auto-expose)       | `transport`, then `command`/`url` + `auth` (see the MCP backend section) |
 | `sqlite`                     | optional (auto-enumerates)         | `query` (reshape/restrict)                             |
 | `postgres`, `mysql`, `duckdb`, `snowflake`, `ducklake` | optional (lazy catalog enumeration) | none — entries are ignored; the live catalog is exposed as-is |
 | `iceberg`, `delta`           | **required**                       | `path`/`location`                                      |
@@ -630,6 +632,70 @@ Set `pagination` to keep fetching pages; absent means a single request. A SQL `L
 ```
 
 A runnable cache-over-API walkthrough lives at [examples/cache-http/](../examples/cache-http/pawrly.yaml).
+
+### MCP Backend (`mcp)` — an MCP server's tools as tables
+
+Connects to an external [Model Context Protocol](https://modelcontextprotocol.io) server and exposes
+its tools as SQL tables: a `SELECT` runs `tools/call`, pushed-down `WHERE` filters become tool
+arguments, and the result rows are projected into columns. Connect over **stdio** (a local
+subprocess) or **streamable HTTP** (a remote server).
+
+```yaml
+sources:
+  - name: linear
+    kind: mcp
+    config:
+      transport: streamable_http
+      url: https://mcp.linear.app/mcp
+      auth:
+        type: header
+        headers:
+          - name: Authorization
+            bearer: ${secret:LINEAR_API_KEY}
+
+  - name: github
+    kind: mcp
+    config:
+      transport: stdio
+      command: ["npx", "-y", "@modelcontextprotocol/server-github"]
+      env:
+        GITHUB_TOKEN: ${secret:GITHUB_TOKEN}
+```
+
+```sql
+SELECT id, title, status FROM linear.list_issues WHERE assignee = 'me@example.com' LIMIT 20
+```
+
+**Two ways to get tables, one dial.** A source produces tables from introspection (`tools/list`) and
+from declaration (`tables:`). `config.expose` sets how much introspection auto-exposes:
+
+| `expose` | auto-exposed | use |
+| -------- | ------------ | --- |
+| `read_only` (default) | tools with `annotations.readOnlyHint == true` | zero-config, safe |
+| `all` | every non-destructive tool | you accept a `SELECT` may call any read tool |
+| `listed` | none — only `tables:` / `include:` | fully declarative |
+
+`include`/`exclude` (by tool name) narrow whatever `expose` admits; a `destructiveHint` tool is never
+auto-exposed.
+
+**Output columns.** A tool result is exposed as a single `result` json column unless the tool
+declares an `outputSchema` (columns inferred) or a `tables:` entry declares them. Each `tables:`
+entry **patches** a synthesized table of the same name or **defines** a new one (`tool:` + knobs):
+
+| field | meaning |
+| ----- | ------- |
+| `tool` | the MCP tool to call (defaults to the table name on a patch). |
+| `columns` | `{ name, type, path: [keys] }` — pull a (possibly nested) field out of each row element; empty `path` is the whole element as JSON. |
+| `tool_args` | static arguments always sent. |
+| `filters` | bind a SQL filter to a differently-named argument. |
+| `limit_binding` | `{ tool_arg, max }` — push SQL `LIMIT` into a tool argument. |
+| `pagination` | `{ cursor_arg, response_cursor_path }` — cursor pagination (default: follow `nextCursor`). |
+
+**Security.** A `streamable_http` `url` must be `https` (or `http` only for loopback), and may not
+embed credentials in the URL — use the `auth` block (`header`/`bearer`/`basic`, same shapes as the
+HTTP backend) with `${secret:…}` tokens. Validated at config-load time.
+
+A runnable, per-source-per-file example lives at [examples/mcp.yaml](../examples/mcp.yaml).
 
 ### Databases and Lakehouse Formats
 

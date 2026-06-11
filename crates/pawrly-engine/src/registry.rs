@@ -94,6 +94,24 @@ pub async fn register_source(
                 tables,
             })
         }
+        SourceKind::Mcp => {
+            let report = pawrly_sources_mcp::register_mcp_source(def, ctx, catalog)
+                .await
+                .map_err(|e| RegisterError::Other(e.to_string()))?;
+            Ok(RegisterReport {
+                table_count: report.table_count,
+                tables: report
+                    .tables
+                    .into_iter()
+                    .map(|t| TableSummary {
+                        name: t.name,
+                        description: t.description,
+                        wiki: None,
+                        required_filters: Vec::new(),
+                    })
+                    .collect(),
+            })
+        }
         SourceKind::Sqlite => {
             let report = pawrly_sources_duckdb::register_sqlite_source(def, ctx, catalog)
                 .await

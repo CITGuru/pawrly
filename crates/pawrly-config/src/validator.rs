@@ -462,7 +462,84 @@ fn validate_source(src: &crate::types::SourceDef, errors: &mut ConfigErrors) {
                 }
             }
         }
+        SourceKind::Mcp => validate_mcp(src, errors),
         _ => {}
+    }
+}
+
+/// Validate an MCP source's connection config, including the streamable-HTTP
+/// transport-security rules (https-or-loopback, no credentials in the URL).
+fn validate_mcp(src: &crate::types::SourceDef, errors: &mut ConfigErrors) {
+    let push = |errors: &mut ConfigErrors, msg: String| {
+        errors.push(ConfigError::Source(src.name.clone(), msg));
+    };
+    match src.config.get("transport").and_then(|v| v.as_str()) {
+        Some("stdio") => {
+            let has_command = match src.config.get("command") {
+                Some(serde_json::Value::String(s)) => !s.trim().is_empty(),
+                Some(serde_json::Value::Array(a)) => a
+                    .first()
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|s| !s.trim().is_empty()),
+                _ => false,
+            };
+            if !has_command {
+                push(
+                    errors,
+                    "`transport: stdio` requires a non-empty `config.command`".into(),
+                );
+            }
+        }
+        Some("streamable_http") => {
+            let Some(raw) = src.config.get("url").and_then(|v| v.as_str()) else {
+                push(
+                    errors,
+                    "`transport: streamable_http` requires `config.url`".into(),
+                );
+                return;
+            };
+            match url::Url::parse(raw) {
+                Ok(url) => {
+                    match url.scheme() {
+                        "https" => {}
+                        "http" if is_loopback(&url) => {}
+                        "http" => push(
+                            errors,
+                            "MCP `streamable_http` url must use https unless it targets localhost"
+                                .into(),
+                        ),
+                        other => push(
+                            errors,
+                            format!("MCP `streamable_http` url has unsupported scheme `{other}`"),
+                        ),
+                    }
+                    if !url.username().is_empty() || url.password().is_some() {
+                        push(
+                            errors,
+                            "MCP `streamable_http` url must not embed credentials; use the `auth` block".into(),
+                        );
+                    }
+                }
+                Err(e) => push(errors, format!("MCP `streamable_http` url is invalid: {e}")),
+            }
+        }
+        Some(other) => push(
+            errors,
+            format!(
+                "`kind: mcp` transport `{other}` is not supported (use `stdio` or `streamable_http`)"
+            ),
+        ),
+        None => push(errors, "`kind: mcp` requires `config.transport`".into()),
+    }
+}
+
+/// Loopback per the parsed host (so `127.example.com` is correctly not local).
+fn is_loopback(url: &url::Url) -> bool {
+    match url.host() {
+        Some(url::Host::Domain(host)) => host.eq_ignore_ascii_case("localhost"),
+        Some(url::Host::Ipv4(addr)) => addr.is_loopback(),
+        Some(url::Host::Ipv6(addr)) => addr.is_loopback(),
+        None => false,
     }
 }
 
@@ -594,6 +671,58 @@ mod tests {
                 .iter()
                 .any(|e| matches!(e, ConfigError::Source(_, msg) if msg.contains("path")))
         );
+    }
+
+    fn has_msg(errs: &ConfigErrors, needle: &str) -> bool {
+        errs.0
+            .iter()
+            .any(|e| matches!(e, ConfigError::Source(_, msg) if msg.contains(needle)))
+    }
+
+    #[test]
+    fn mcp_requires_transport() {
+        let errs = validate(&cfg(vec![src("m", SourceKind::Mcp, serde_json::json!({}))]));
+        assert!(has_msg(&errs, "transport"));
+    }
+
+    #[test]
+    fn mcp_stdio_requires_command() {
+        let missing = validate(&cfg(vec![src(
+            "m",
+            SourceKind::Mcp,
+            serde_json::json!({ "transport": "stdio" }),
+        )]));
+        assert!(has_msg(&missing, "command"));
+        let ok = validate(&cfg(vec![src(
+            "m",
+            SourceKind::Mcp,
+            serde_json::json!({ "transport": "stdio", "command": ["server"] }),
+        )]));
+        assert!(!has_msg(&ok, "command"));
+    }
+
+    #[test]
+    fn mcp_streamable_http_enforces_transport_security() {
+        let url_case = |url: &str| {
+            validate(&cfg(vec![src(
+                "m",
+                SourceKind::Mcp,
+                serde_json::json!({ "transport": "streamable_http", "url": url }),
+            )]))
+        };
+        // Plain http to a non-loopback host is rejected.
+        assert!(has_msg(&url_case("http://mcp.example.com/x"), "https"));
+        // Loopback http is allowed.
+        assert!(!has_msg(&url_case("http://localhost:8080/mcp"), "https"));
+        // A `127.` *prefix* on a domain is not loopback.
+        assert!(has_msg(&url_case("http://127.example.com/mcp"), "https"));
+        // Credentials in the URL are rejected.
+        assert!(has_msg(
+            &url_case("https://u:p@mcp.example.com/x"),
+            "credentials"
+        ));
+        // A clean https url passes.
+        assert!(!has_msg(&url_case("https://mcp.example.com/x"), "https"));
     }
 
     #[test]

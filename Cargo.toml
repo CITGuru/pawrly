@@ -10,8 +10,10 @@ members = [
     "crates/pawrly-server",
     "crates/pawrly-client",
     "crates/pawrly-flight",
+    "crates/pawrly-schema",
     "crates/pawrly-sources/http",
     "crates/pawrly-sources/duckdb",
+    "crates/pawrly-sources/mcp",
     "crates/pawrly-cli",
     "crates/pawrly-mcp",
     "crates/pawrly-lib",
@@ -36,8 +38,10 @@ pawrly-engine = { path = "crates/pawrly-engine", version = "0.0.1" }
 pawrly-server = { path = "crates/pawrly-server", version = "0.0.1" }
 pawrly-client = { path = "crates/pawrly-client", version = "0.0.1" }
 pawrly-flight = { path = "crates/pawrly-flight", version = "0.0.1" }
+pawrly-schema = { path = "crates/pawrly-schema", version = "0.0.1" }
 pawrly-sources-http = { path = "crates/pawrly-sources/http", version = "0.0.1" }
 pawrly-sources-duckdb = { path = "crates/pawrly-sources/duckdb", version = "0.0.1" }
+pawrly-sources-mcp = { path = "crates/pawrly-sources/mcp", version = "0.0.1" }
 pawrly-cli = { path = "crates/pawrly-cli", version = "0.0.1" }
 pawrly-mcp = { path = "crates/pawrly-mcp", version = "0.0.1" }
 
