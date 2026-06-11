@@ -477,18 +477,25 @@ fn validate_mcp(src: &crate::types::SourceDef, errors: &mut ConfigErrors) {
         Some("stdio") => {
             let has_command = match src.config.get("command") {
                 Some(serde_json::Value::String(s)) => !s.trim().is_empty(),
-                Some(serde_json::Value::Array(a)) => {
-                    a.first().and_then(|v| v.as_str()).is_some_and(|s| !s.trim().is_empty())
-                }
+                Some(serde_json::Value::Array(a)) => a
+                    .first()
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|s| !s.trim().is_empty()),
                 _ => false,
             };
             if !has_command {
-                push(errors, "`transport: stdio` requires a non-empty `config.command`".into());
+                push(
+                    errors,
+                    "`transport: stdio` requires a non-empty `config.command`".into(),
+                );
             }
         }
         Some("streamable_http") => {
             let Some(raw) = src.config.get("url").and_then(|v| v.as_str()) else {
-                push(errors, "`transport: streamable_http` requires `config.url`".into());
+                push(
+                    errors,
+                    "`transport: streamable_http` requires `config.url`".into(),
+                );
                 return;
             };
             match url::Url::parse(raw) {
@@ -498,7 +505,8 @@ fn validate_mcp(src: &crate::types::SourceDef, errors: &mut ConfigErrors) {
                         "http" if is_loopback(&url) => {}
                         "http" => push(
                             errors,
-                            "MCP `streamable_http` url must use https unless it targets localhost".into(),
+                            "MCP `streamable_http` url must use https unless it targets localhost"
+                                .into(),
                         ),
                         other => push(
                             errors,
@@ -517,7 +525,9 @@ fn validate_mcp(src: &crate::types::SourceDef, errors: &mut ConfigErrors) {
         }
         Some(other) => push(
             errors,
-            format!("`kind: mcp` transport `{other}` is not supported (use `stdio` or `streamable_http`)"),
+            format!(
+                "`kind: mcp` transport `{other}` is not supported (use `stdio` or `streamable_http`)"
+            ),
         ),
         None => push(errors, "`kind: mcp` requires `config.transport`".into()),
     }
@@ -707,7 +717,10 @@ mod tests {
         // A `127.` *prefix* on a domain is not loopback.
         assert!(has_msg(&url_case("http://127.example.com/mcp"), "https"));
         // Credentials in the URL are rejected.
-        assert!(has_msg(&url_case("https://u:p@mcp.example.com/x"), "credentials"));
+        assert!(has_msg(
+            &url_case("https://u:p@mcp.example.com/x"),
+            "credentials"
+        ));
         // A clean https url passes.
         assert!(!has_msg(&url_case("https://mcp.example.com/x"), "https"));
     }
