@@ -1,6 +1,6 @@
 [package]
-name = "pawrly-sources-http"
-description = "HTTP/REST source for Pawrly: hand-declared and OpenAPI-driven tables."
+name = "pawrly-sources-mcp"
+description = "MCP source for Pawrly: an external MCP server's tools as SQL tables (stdio + streamable HTTP)."
 version = { workspace = true }
 edition = { workspace = true }
 rust-version = { workspace = true }
@@ -16,20 +16,15 @@ pawrly-schema = { workspace = true }
 datafusion = { workspace = true }
 arrow-array = { workspace = true }
 arrow-schema = { workspace = true }
-arrow-json = { workspace = true }
 async-trait = { workspace = true }
 futures = { workspace = true }
 reqwest = { workspace = true }
 url = { workspace = true }
-governor = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-serde_yaml = { workspace = true }
-humantime-serde = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }
-chrono = { workspace = true }
 
 [dev-dependencies]
 wiremock = { workspace = true }

@@ -1,0 +1,53 @@
+# Linear MCP source — included by ../mcp.yaml.
+#
+# `kind: mcp` over streamable HTTP: pawrly introspects Linear's read-only tools
+# (`get_*`/`list_*`) and exposes each as a table. Tool results come back as a
+# single `result` json column unless a `tables:` entry declares typed columns;
+# `path:` walks into each row element (nested keys allowed). Filters like
+# `assignee`, `team`, `state`, `project` push down into the tool call.
+sources:
+  - name: linear
+    kind: mcp
+    examples:
+      - SELECT id, title, status FROM linear.list_issues WHERE assignee = 'me@example.com' LIMIT 20
+    config:
+      transport: streamable_http
+      url: https://mcp.linear.app/mcp
+      expose: read_only            # read_only (default) | all | listed
+      auth:
+        type: header
+        headers:
+          - name: Authorization
+            bearer: ${secret:LINEAR_API_KEY}
+    tables:
+      - name: list_issues
+        columns:
+          - { name: id,       type: varchar, path: [id] }
+          - { name: title,    type: varchar, path: [title] }
+          - { name: status,   type: varchar, path: [status] }
+          - { name: priority, type: varchar, path: [priority, name] }
+          - { name: team,     type: varchar, path: [team] }
+          - { name: url,      type: varchar, path: [url] }
+
+      - name: list_projects
+        columns:
+          - { name: id,      type: varchar, path: [id] }
+          - { name: name,    type: varchar, path: [name] }
+          - { name: status,  type: varchar, path: [status, name] }   # status is an object
+          - { name: summary, type: varchar, path: [summary] }
+          - { name: url,     type: varchar, path: [url] }
+
+      - name: list_teams
+        columns:
+          - { name: id,   type: varchar, path: [id] }
+          - { name: name, type: varchar, path: [name] }
+          - { name: icon, type: varchar, path: [icon] }
+
+      - name: list_users
+        columns:
+          - { name: id,           type: varchar, path: [id] }
+          - { name: name,         type: varchar, path: [name] }
+          - { name: email,        type: varchar, path: [email] }
+          - { name: display_name, type: varchar, path: [displayName] }
+          - { name: is_admin,     type: bool,    path: [isAdmin] }
+          - { name: is_active,    type: bool,    path: [isActive] }

@@ -3156,6 +3156,7 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "tracing",
+ "url",
 ]
 
 [[package]]
@@ -3207,6 +3208,7 @@ dependencies = [
  "pawrly-semantic",
  "pawrly-sources-duckdb",
  "pawrly-sources-http",
+ "pawrly-sources-mcp",
  "rusqlite",
  "serde",
  "serde_json",
@@ -3271,6 +3273,13 @@ dependencies = [
  "thiserror 1.0.69",
  "tonic 0.12.3",
  "tonic-build",
+]
+
+[[package]]
+name = "pawrly-schema"
+version = "0.0.1"
+dependencies = [
+ "serde_json",
 ]
 
 [[package]]
@@ -3360,10 +3369,33 @@ dependencies = [
  "governor",
  "humantime-serde",
  "pawrly-core",
+ "pawrly-schema",
  "reqwest",
  "serde",
  "serde_json",
  "serde_yaml",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+ "url",
+ "wiremock",
+]
+
+[[package]]
+name = "pawrly-sources-mcp"
+version = "0.0.1"
+dependencies = [
+ "arrow-array",
+ "arrow-schema",
+ "async-trait",
+ "datafusion",
+ "futures",
+ "pawrly-core",
+ "pawrly-schema",
+ "reqwest",
+ "serde",
+ "serde_json",
  "tempfile",
  "thiserror 1.0.69",
  "tokio",

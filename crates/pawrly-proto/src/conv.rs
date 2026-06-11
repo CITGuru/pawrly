@@ -20,6 +20,7 @@ impl From<core::SourceKind> for v1::SourceKind {
         match k {
             core::SourceKind::Http => Self::Http,
             core::SourceKind::File => Self::File,
+            core::SourceKind::Mcp => Self::Mcp,
             core::SourceKind::Sqlite => Self::Sqlite,
             core::SourceKind::Postgres => Self::Postgres,
             core::SourceKind::Mysql => Self::Mysql,
@@ -40,6 +41,7 @@ impl TryFrom<v1::SourceKind> for core::SourceKind {
             v1::SourceKind::Unspecified => Err(ConvError::UnspecifiedSourceKind),
             v1::SourceKind::Http => Ok(Self::Http),
             v1::SourceKind::File => Ok(Self::File),
+            v1::SourceKind::Mcp => Ok(Self::Mcp),
             v1::SourceKind::Sqlite => Ok(Self::Sqlite),
             v1::SourceKind::Postgres => Ok(Self::Postgres),
             v1::SourceKind::Mysql => Ok(Self::Mysql),

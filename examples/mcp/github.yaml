@@ -1,0 +1,13 @@
+# GitHub MCP source — included by ../mcp.yaml.
+#
+# `kind: mcp` over stdio: pawrly launches the server as a local subprocess via
+# npx and speaks JSON-RPC over its stdin/stdout. Env vars (secrets allowed) are
+# passed to the process.
+sources:
+  - name: github
+    kind: mcp
+    config:
+      transport: stdio
+      command: ["npx", "-y", "@modelcontextprotocol/server-github"]
+      env:
+        GITHUB_TOKEN: ${secret:GITHUB_TOKEN}

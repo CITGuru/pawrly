@@ -11,6 +11,11 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use serde_json::Value;
 
+use pawrly_schema::{
+    column_type as map_column_type, deref, is_object, param_type as map_param_type,
+    rows_array as wrapped_list, schema_type,
+};
+
 use crate::source::{HttpTableSpec, PaginationConfig, ParamSpec, ResponseColumn, ResponseSpec};
 
 /// A non-fatal problem encountered while synthesizing a table.
@@ -453,37 +458,6 @@ fn classify(
     ("$".into(), vec![json_column("value")])
 }
 
-/// The single array property that holds rows: a well-known name first, else the
-/// only non-metadata array property.
-fn wrapped_list<'a>(
-    doc: &'a Value,
-    props: &'a serde_json::Map<String, Value>,
-) -> Option<(String, Value)> {
-    for name in ["items", "data", "results", "rows"] {
-        if let Some(prop) = props.get(name) {
-            let prop = deref(doc, prop);
-            if schema_type(&prop).as_deref() == Some("array") {
-                return Some((name.to_string(), prop));
-            }
-        }
-    }
-    let mut arrays = props.iter().filter(|(name, prop)| {
-        !is_metadata_field(name) && schema_type(&deref(doc, prop)).as_deref() == Some("array")
-    });
-    let first = arrays.next()?;
-    if arrays.next().is_some() {
-        return None;
-    }
-    Some((first.0.clone(), deref(doc, first.1)))
-}
-
-fn is_metadata_field(name: &str) -> bool {
-    matches!(
-        name,
-        "total_count" | "incomplete_results" | "has_more" | "next" | "previous"
-    )
-}
-
 fn object_columns(
     doc: &Value,
     schema: &Value,
@@ -595,90 +569,6 @@ fn infer_pagination(
     None
 }
 
-/// Follow a chain of local `#/...` `$ref`s. External or unresolvable refs return
-/// the reference node unchanged (the caller degrades to a json column).
-fn deref(doc: &Value, value: &Value) -> Value {
-    let mut current = value;
-    for _ in 0..32 {
-        let Some(reference) = current.get("$ref").and_then(Value::as_str) else {
-            return current.clone();
-        };
-        let Some(pointer) = reference.strip_prefix('#') else {
-            return current.clone();
-        };
-        match doc.pointer(pointer) {
-            Some(target) => current = target,
-            None => return current.clone(),
-        }
-    }
-    current.clone()
-}
-
-/// The first non-null type, tolerating 3.1-style `type: [..]` arrays.
-fn schema_type(schema: &Value) -> Option<String> {
-    match schema.get("type") {
-        Some(Value::String(s)) => Some(s.clone()),
-        Some(Value::Array(arr)) => arr
-            .iter()
-            .filter_map(Value::as_str)
-            .find(|s| *s != "null")
-            .map(str::to_string),
-        _ => None,
-    }
-}
-
-fn is_object(schema: &Value) -> bool {
-    match schema_type(schema).as_deref() {
-        Some("object") => true,
-        None => schema.get("properties").is_some(),
-        _ => false,
-    }
-}
-
-fn schema_format(schema: &Value) -> Option<&str> {
-    schema.get("format").and_then(Value::as_str)
-}
-
-fn map_param_type(schema: &Value) -> String {
-    match schema_type(schema).as_deref() {
-        Some("integer") => int_type(schema),
-        Some("number") => number_type(schema),
-        Some("boolean") => "bool".into(),
-        _ => "varchar".into(),
-    }
-}
-
-fn map_column_type(schema: &Value) -> String {
-    match schema_type(schema).as_deref() {
-        Some("integer") => int_type(schema),
-        Some("number") => number_type(schema),
-        Some("boolean") => "bool".into(),
-        Some("string") => match schema_format(schema) {
-            Some("date") => "date".into(),
-            Some("date-time") => "timestamp".into(),
-            _ => "varchar".into(),
-        },
-        Some("object" | "array") => "json".into(),
-        _ => "json".into(),
-    }
-}
-
-fn int_type(schema: &Value) -> String {
-    if schema_format(schema) == Some("int32") {
-        "int".into()
-    } else {
-        "bigint".into()
-    }
-}
-
-fn number_type(schema: &Value) -> String {
-    if schema_format(schema) == Some("float") {
-        "float".into()
-    } else {
-        "double".into()
-    }
-}
-
 fn scalar_to_string(value: &Value) -> String {
     match value {
         Value::String(s) => s.clone(),
@@ -712,21 +602,6 @@ fn glob_match(pattern: &str, text: &str) -> bool {
         }
     }
     true
-}
-
-/// Deep-merge `patch` into `base`. Plain objects merge key-by-key; arrays and
-/// scalars replace; an object carrying a `type` discriminator (a tagged union
-/// such as `pagination`) replaces wholesale rather than blending two variants.
-/// A `null` in the patch clears the key.
-pub(crate) fn deep_merge(base: &mut Value, patch: &Value) {
-    match (base, patch) {
-        (Value::Object(b), Value::Object(p)) if !p.contains_key("type") => {
-            for (key, value) in p {
-                deep_merge(b.entry(key.clone()).or_insert(Value::Null), value);
-            }
-        }
-        (b, p) => *b = p.clone(),
-    }
 }
 
 #[cfg(test)]
@@ -902,36 +777,6 @@ mod tests {
         assert_eq!(by["owner"], "json");
         assert_eq!(by["labels"], "json");
         assert_eq!(by["id"], "bigint");
-    }
-
-    #[test]
-    fn type_mapping_is_array_tolerant() {
-        assert_eq!(
-            map_column_type(&json!({ "type": ["string", "null"] })),
-            "varchar"
-        );
-        assert_eq!(
-            map_column_type(&json!({ "type": ["null", "integer"] })),
-            "bigint"
-        );
-        assert_eq!(
-            map_column_type(&json!({ "type": "string", "format": "date-time" })),
-            "timestamp"
-        );
-        assert_eq!(
-            map_column_type(&json!({ "type": "string", "format": "date" })),
-            "date"
-        );
-        assert_eq!(
-            map_column_type(&json!({ "type": "integer", "format": "int32" })),
-            "int"
-        );
-        assert_eq!(
-            map_column_type(&json!({ "type": "number", "format": "float" })),
-            "float"
-        );
-        assert_eq!(map_column_type(&json!({ "type": "number" })), "double");
-        assert_eq!(map_column_type(&json!({})), "json");
     }
 
     #[test]
@@ -1125,41 +970,6 @@ mod tests {
         assert_eq!(to_snake("get-by-id"), "get_by_id");
         assert_eq!(to_snake("HTTPServer"), "httpserver");
         assert_eq!(to_snake("v1.Resource"), "v1_resource");
-    }
-
-    #[test]
-    fn deep_merge_patches_plain_objects() {
-        // `response: { path }` patches the path and keeps the synthesized schema.
-        let mut base = json!({ "response": { "path": "$", "schema": [{ "name": "id" }] } });
-        deep_merge(&mut base, &json!({ "response": { "path": "$.data" } }));
-        assert_eq!(base["response"]["path"], json!("$.data"));
-        assert_eq!(base["response"]["schema"], json!([{ "name": "id" }]));
-    }
-
-    #[test]
-    fn deep_merge_replaces_tagged_unions_and_arrays() {
-        // `pagination` carries `type`, so it swaps wholesale (no stale fields).
-        let mut base = json!({ "pagination": { "type": "row_cursor", "param": "starting_after", "field": "id" } });
-        deep_merge(
-            &mut base,
-            &json!({ "pagination": { "type": "page", "param": "page" } }),
-        );
-        assert_eq!(
-            base["pagination"],
-            json!({ "type": "page", "param": "page" })
-        );
-
-        // arrays replace, never element-merge.
-        let mut arr = json!({ "schema": [{ "name": "a" }, { "name": "b" }] });
-        deep_merge(&mut arr, &json!({ "schema": [{ "name": "id" }] }));
-        assert_eq!(arr["schema"], json!([{ "name": "id" }]));
-    }
-
-    #[test]
-    fn deep_merge_null_clears() {
-        let mut base = json!({ "pagination": { "type": "page", "param": "page" } });
-        deep_merge(&mut base, &json!({ "pagination": null }));
-        assert_eq!(base["pagination"], Value::Null);
     }
 
     #[test]

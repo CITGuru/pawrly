@@ -19,6 +19,7 @@ pub enum SourceKind {
     // Foundational backends
     Http,
     File,
+    Mcp,
     // First-class builtins (DuckDB-backed)
     Sqlite,
     Postgres,
@@ -37,6 +38,7 @@ impl SourceKind {
         match self {
             Self::Http => "http",
             Self::File => "file",
+            Self::Mcp => "mcp",
             Self::Sqlite => "sqlite",
             Self::Postgres => "postgres",
             Self::Mysql => "mysql",
@@ -89,6 +91,7 @@ impl std::str::FromStr for SourceKind {
         match lowered.as_str() {
             "http" => Ok(Self::Http),
             "file" => Ok(Self::File),
+            "mcp" => Ok(Self::Mcp),
             "sqlite" => Ok(Self::Sqlite),
             "postgres" | "pg" | "postgresql" => Ok(Self::Postgres),
             "mysql" => Ok(Self::Mysql),
@@ -111,6 +114,7 @@ mod tests {
         for kind in [
             SourceKind::Http,
             SourceKind::File,
+            SourceKind::Mcp,
             SourceKind::Sqlite,
             SourceKind::Postgres,
             SourceKind::Duckdb,

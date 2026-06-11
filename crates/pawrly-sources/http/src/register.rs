@@ -215,7 +215,7 @@ fn table_spec_from_def(t: &pawrly_core::TableDef) -> Result<HttpTableSpec, HttpB
 
 /// Patch a synthesized table with the fields a `TableDef` of the same name sets,
 /// keeping the rest of the synthesis. The table body is deep-merged over the
-/// synthesized spec (see [`crate::openapi::deep_merge`]).
+/// synthesized spec (see [`pawrly_schema::deep_merge`]).
 fn merge_table_def(
     base: &HttpTableSpec,
     t: &pawrly_core::TableDef,
@@ -235,7 +235,7 @@ fn merge_table_def(
                 .or_insert_with(|| serde_json::Value::String(desc.clone()));
         }
     }
-    crate::openapi::deep_merge(&mut value, &patch);
+    pawrly_schema::deep_merge(&mut value, &patch);
     serde_json::from_value(value).map_err(|e| {
         HttpBuildError::Config(ConfigError::Source(
             t.name.clone(),

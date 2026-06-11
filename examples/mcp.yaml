@@ -1,0 +1,17 @@
+# Pawrly MCP-driven sources.
+# yaml-language-server: $schema=../schemas/pawrly.schema.json
+#
+# `kind: mcp` connects to an external MCP server and exposes its tools as SQL
+# tables. This workspace keeps one MCP source per file under `mcp/`, spliced in
+# via `include:`. Each source introspects its server (`tools/list`) and, by
+# default (`expose: read_only`), auto-exposes the read-only tools; a `tables:`
+# entry patches a synthesized table or defines a new one.
+
+version: 1
+name: mcp-sources
+
+secrets:
+  - kind: env
+
+include:
+  - ./mcp/*.yaml      # one MCP source per file (github, linear)
