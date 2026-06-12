@@ -33,8 +33,8 @@ use serde_json::Value;
 
 use crate::paginate::{self, NextPage};
 use crate::source::{
-    BodyKind, HttpSource, HttpTableSpec, PaginationConfig, RateLimitPolicy, RequestBody,
-    Reshape, ResponseColumn, ResponseSpec, custom_body_object, schema_for,
+    BodyKind, HttpSource, HttpTableSpec, PaginationConfig, RateLimitPolicy, RequestBody, Reshape,
+    ResponseColumn, ResponseSpec, custom_body_object, schema_for,
 };
 
 #[derive(Debug)]
@@ -1112,7 +1112,9 @@ mod build_tests {
         });
         let rows = reshape_dict_entries(&v);
         assert_eq!(rows.len(), 2);
-        let primary = rows.iter().find(|r| r["_key"] == serde_json::json!("primary"));
+        let primary = rows
+            .iter()
+            .find(|r| r["_key"] == serde_json::json!("primary"));
         assert_eq!(primary.unwrap()["background"], serde_json::json!("#fff"));
     }
 
