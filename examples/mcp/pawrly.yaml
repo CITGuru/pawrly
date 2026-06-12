@@ -14,4 +14,5 @@ secrets:
   - kind: env
 
 include:
-  - ./mcp/*.yaml      # one MCP source per file (github, linear)
+  - ./linear.yaml      # one MCP source per file (github, linear)
+  - ./github.yaml      # one MCP source per file (github, linear)
