@@ -34,8 +34,12 @@ pub struct MaterializeDefaults {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct CacheDefaults {
-    /// Filesystem path used as the cache root. `~/.pawrly/cache` by default.
-    pub storage: PathBuf,
+    /// Filesystem path used as the cache root. When unset, it is derived from
+    /// the Pawrly home directory as `$PAWRLY_HOME/cache` (default
+    /// `~/.pawrly/cache`). A leading `~` in an explicit value expands to
+    /// `$HOME`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub storage: Option<PathBuf>,
     /// Default cache mode applied to tables that don't declare their own.
     #[serde(default)]
     pub mode: CachePolicy,
@@ -52,7 +56,7 @@ pub struct CacheDefaults {
 impl Default for CacheDefaults {
     fn default() -> Self {
         Self {
-            storage: PathBuf::from("~/.pawrly/cache"),
+            storage: None,
             mode: CachePolicy::None,
             namespace: None,
         }

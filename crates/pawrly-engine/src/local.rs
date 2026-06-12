@@ -36,6 +36,11 @@ pub struct LocalEngineConfig {
     pub workspace_dir: PathBuf,
     /// DuckDB connection pool size. `None` defaults to `num_cpus::get()`.
     pub duckdb_pool_size: Option<usize>,
+    /// Pawrly home directory (`--home` / `$PAWRLY_HOME`). `None` resolves via
+    /// [`pawrly_core::resolve_home`] (env var, then `~/.pawrly`). Drives the
+    /// default cache storage root (`<home>/cache`) and marks the home-based
+    /// config as the `default` workspace.
+    pub home: Option<PathBuf>,
 }
 
 impl LocalEngineConfig {
@@ -116,16 +121,29 @@ impl LocalEngine {
             .map_err(|e| EngineError::Internal(format!("register default schema: {e}")))?;
         ctx.register_catalog(PAWRLY_CATALOG, catalog.clone());
 
-        // The cache root comes from `defaults.cache.storage` (default
-        // `~/.pawrly/cache`), NOT the workspace dir, so cached data lives under
-        // `$HOME` regardless of where the CLI is invoked from. `~` / `~/` is
-        // expanded against `$HOME`. A per-workspace namespace segment is then
-        // appended so different workspaces sharing the same storage root never
-        // collide on identical `schema.table` keys.
-        let storage = expand_tilde(&cfg.config.defaults.cache.storage);
+        // The cache root comes from `defaults.cache.storage` when set (with
+        // `~` / `~/` expanded against `$HOME`), otherwise `<home>/cache` under
+        // the resolved Pawrly home — NOT the workspace dir, so cached data
+        // lives under the home regardless of where the CLI is invoked from. A
+        // per-workspace namespace segment is then appended so different
+        // workspaces sharing the same storage root never collide on identical
+        // `schema.table` keys.
+        let home = pawrly_core::resolve_home(cfg.home.as_deref());
+        let storage = match (&cfg.config.defaults.cache.storage, &home) {
+            (Some(explicit), _) => expand_tilde(explicit),
+            (None, Some(h)) => h.join("cache"),
+            (None, None) => {
+                return Err(EngineError::Internal(
+                    "cannot resolve the cache storage root: set `defaults.cache.storage` \
+                     in pawrly.yaml, or set $PAWRLY_HOME or $HOME"
+                        .into(),
+                ));
+            }
+        };
         let namespace = cache_namespace(
             cfg.config.defaults.cache.namespace.as_deref(),
             &cfg.workspace_dir,
+            home.as_deref(),
         );
         let cache_root = storage.join(&namespace);
         let cache = Arc::new(
@@ -190,11 +208,21 @@ impl LocalEngine {
     /// The secret-resolution chain is built from the config's `secrets:` block
     /// (defaulting to the `auto` chain: env, keyring, then a `.env` file).
     pub async fn from_config_file(path: &std::path::Path) -> Result<Self, EngineError> {
+        Self::from_config_file_with_home(path, None).await
+    }
+
+    /// [`from_config_file`](Self::from_config_file) with an explicit Pawrly
+    /// home directory (the CLI threads `--home` / `$PAWRLY_HOME` through here).
+    pub async fn from_config_file_with_home(
+        path: &std::path::Path,
+        home: Option<PathBuf>,
+    ) -> Result<Self, EngineError> {
         let cfg =
             pawrly_config::load_auto(path).map_err(|e| EngineError::Internal(e.to_string()))?;
         // `workspace_dir` only anchors relative *source* paths to the config
-        // file's directory. The `.pawrly/` data dir is resolved separately from
-        // `defaults.cache.storage` (default `~/.pawrly`), not from here.
+        // file's directory. The Pawrly data dir is resolved separately from
+        // `defaults.cache.storage` / the home (default `~/.pawrly`), not from
+        // here.
         let workspace_dir = path
             .parent()
             .map(std::path::Path::to_path_buf)
@@ -204,6 +232,7 @@ impl LocalEngine {
                 config: cfg,
                 workspace_dir,
                 duckdb_pool_size: None,
+                home,
             },
             Some(path.to_path_buf()),
         )
@@ -225,6 +254,7 @@ impl LocalEngine {
             config: cfg,
             workspace_dir,
             duckdb_pool_size: None,
+            home: None,
         })
         .await
     }
@@ -341,11 +371,17 @@ impl LocalEngine {
 /// shared storage root).
 ///
 /// With an explicit `namespace` set in config, it is sanitized and used as-is
-/// (so users can pin a stable id or deliberately share a cache). Otherwise a
+/// (so users can pin a stable id or deliberately share a cache). The workspace
+/// rooted at the Pawrly home itself (`$PAWRLY_HOME/pawrly.yaml`) is the
+/// *default workspace* and gets the literal namespace `default`. Otherwise a
 /// stable id `<dirname>-<hash>` is derived from the canonicalized workspace
 /// path, so distinct workspaces never collide on identical `schema.table`
 /// names while the same workspace always maps to the same directory.
-fn cache_namespace(explicit: Option<&str>, workspace_dir: &std::path::Path) -> String {
+fn cache_namespace(
+    explicit: Option<&str>,
+    workspace_dir: &std::path::Path,
+    home: Option<&std::path::Path>,
+) -> String {
     if let Some(ns) = explicit {
         // Require a real alphanumeric character so a blank or all-whitespace
         // value (which would sanitize to e.g. `---`) falls back to the derived
@@ -358,6 +394,12 @@ fn cache_namespace(explicit: Option<&str>, workspace_dir: &std::path::Path) -> S
     // to the raw path if canonicalization fails (e.g. dir not yet created).
     let canonical =
         std::fs::canonicalize(workspace_dir).unwrap_or_else(|_| workspace_dir.to_path_buf());
+    if let Some(h) = home {
+        let home_canonical = std::fs::canonicalize(h).unwrap_or_else(|_| h.to_path_buf());
+        if canonical == home_canonical {
+            return "default".to_string();
+        }
+    }
     let hash = fnv1a_hex(canonical.as_os_str().as_encoded_bytes());
     let dirname = canonical
         .file_name()
@@ -397,8 +439,8 @@ fn fnv1a_hex(bytes: &[u8]) -> String {
 }
 
 /// Expand a leading `~` / `~/` in a path against `$HOME`. Any other path is
-/// returned unchanged. Used to resolve the cache storage root so the default
-/// `~/.pawrly/cache` lands under `$HOME`, not the workspace.
+/// returned unchanged. Used to resolve an explicit `defaults.cache.storage`
+/// value like `~/.pawrly/cache` so it lands under `$HOME`, not the workspace.
 fn expand_tilde(path: &std::path::Path) -> PathBuf {
     let s = path.to_string_lossy();
     if s == "~" {
@@ -420,26 +462,40 @@ mod cache_path_tests {
 
     #[test]
     fn explicit_namespace_is_sanitized_and_used() {
-        let ns = cache_namespace(Some("My Cache/v2"), Path::new("/whatever"));
+        let ns = cache_namespace(Some("My Cache/v2"), Path::new("/whatever"), None);
         assert_eq!(ns, "My-Cache-v2");
     }
 
     #[test]
     fn blank_explicit_namespace_falls_back_to_derived() {
         // An all-illegal-to-empty explicit value must not yield an empty segment.
-        let ns = cache_namespace(Some("   "), Path::new("/tmp"));
+        let ns = cache_namespace(Some("   "), Path::new("/tmp"), None);
         assert!(ns.contains('-') && !ns.starts_with('-'));
     }
 
     #[test]
     fn derived_namespace_is_stable_and_distinct() {
         // Same path → same id; different paths → different ids.
-        let a1 = cache_namespace(None, Path::new("/tmp/ws-a-does-not-exist"));
-        let a2 = cache_namespace(None, Path::new("/tmp/ws-a-does-not-exist"));
-        let b = cache_namespace(None, Path::new("/tmp/ws-b-does-not-exist"));
+        let a1 = cache_namespace(None, Path::new("/tmp/ws-a-does-not-exist"), None);
+        let a2 = cache_namespace(None, Path::new("/tmp/ws-a-does-not-exist"), None);
+        let b = cache_namespace(None, Path::new("/tmp/ws-b-does-not-exist"), None);
         assert_eq!(a1, a2, "same workspace path must map to the same namespace");
         assert_ne!(a1, b, "distinct workspaces must not collide");
         assert!(a1.starts_with("ws-a-does-not-exist-"));
+    }
+
+    #[test]
+    fn home_workspace_gets_default_namespace() {
+        // A workspace rooted at the Pawrly home itself is the default workspace.
+        let home = Path::new("/tmp/pawrly-home-does-not-exist");
+        let ns = cache_namespace(None, home, Some(home));
+        assert_eq!(ns, "default");
+        // An explicit namespace still wins over the default-workspace rule.
+        let pinned = cache_namespace(Some("pinned"), home, Some(home));
+        assert_eq!(pinned, "pinned");
+        // Other workspaces are unaffected by the home path.
+        let other = cache_namespace(None, Path::new("/tmp/ws-x-does-not-exist"), Some(home));
+        assert!(other.starts_with("ws-x-does-not-exist-"));
     }
 
     #[test]

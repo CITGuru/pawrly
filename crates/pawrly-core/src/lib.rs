@@ -7,6 +7,7 @@
 
 pub mod cache;
 pub mod error;
+pub mod home;
 pub mod model;
 pub mod optimizer;
 pub mod safety;
@@ -23,6 +24,7 @@ pub use cache::{CacheEntryInfo, CacheMode, CachePolicy, RefreshOutcome, VacuumRe
 pub use error::{
     ConfigError, ConfigErrors, EngineError, ErrorCode, PawrlyError, SafetyError, SourceError,
 };
+pub use home::resolve_home;
 pub use model::SourceKind;
 pub use optimizer::DynamicFilterCapable;
 pub use safety::SafetyPolicy;

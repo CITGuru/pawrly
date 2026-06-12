@@ -67,6 +67,7 @@ async fn lakehouse_kinds_dispatch_to_duckdb_offline() {
             config: cfg,
             workspace_dir: workspace.path().to_path_buf(),
             duckdb_pool_size: Some(1),
+            home: None,
         })
         .await;
         // If a build happens to have the extension cached, registration may
@@ -104,6 +105,7 @@ sources:
             config: cfg,
             workspace_dir: workspace.path().to_path_buf(),
             duckdb_pool_size: Some(1),
+            home: None,
         })
         .await;
         if let Err(e) = res {
@@ -152,6 +154,7 @@ sources:
         config: cfg,
         workspace_dir: workspace.path().to_path_buf(),
         duckdb_pool_size: None,
+        home: None,
     })
     .await
     .unwrap();
@@ -189,6 +192,7 @@ async fn duckdb_file_relative_path_and_count() {
         config: cfg,
         workspace_dir: workspace.path().to_path_buf(),
         duckdb_pool_size: None,
+        home: None,
     })
     .await
     .unwrap();

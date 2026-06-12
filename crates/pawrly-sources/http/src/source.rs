@@ -123,6 +123,52 @@ pub struct ParamSpec {
     /// keyed by operator token (`">="` -> `"since"`).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub emit: BTreeMap<String, String>,
+    /// Push a SQL `IN (a, b, c)` filter down as repeated query pairs
+    /// (`?key=a&key=b&key=c`) instead of post-filtering. Equality still emits a
+    /// single pair. Only honored for the query string (not path/body params).
+    #[serde(default)]
+    pub explode: bool,
+    /// Compute this param's value (from the clock or another param) when the
+    /// query doesn't supply it — a dynamic default. See [`Derive`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub derive: Option<Derive>,
+}
+
+/// How a [`ParamSpec`] computes its value when the query doesn't supply one.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Derive {
+    /// Epoch seconds `now - seconds` — a relative time-window default.
+    Ago { seconds: u64 },
+    /// Split the `from` param's value by `separator` and take `part` (0-based).
+    Split {
+        from: String,
+        separator: String,
+        #[serde(default)]
+        part: usize,
+    },
+}
+
+impl Derive {
+    /// Resolve the derived value. `now_epoch` is the current Unix time in
+    /// seconds (passed in so the logic stays testable).
+    #[must_use]
+    pub fn resolve(&self, params: &BTreeMap<String, String>, now_epoch: i64) -> Option<String> {
+        match self {
+            Self::Ago { seconds } => {
+                Some((now_epoch - i64::try_from(*seconds).unwrap_or(i64::MAX)).to_string())
+            }
+            Self::Split {
+                from,
+                separator,
+                part,
+            } => params
+                .get(from)?
+                .split(separator.as_str())
+                .nth(*part)
+                .map(str::to_string),
+        }
+    }
 }
 
 fn default_type() -> String {
@@ -185,6 +231,16 @@ pub enum PaginationConfig {
         size_param: String,
         /// Page size (also the offset increment).
         size: u32,
+    },
+    /// Cursor carried in the request *body* rather than the query string (GraphQL
+    /// `variables.after`, Notion `start_cursor`, …): read the next cursor from the
+    /// response body at `next_path`, then inject it into the next request's JSON
+    /// body at `cursor_path`. Stop when the response cursor is absent or empty.
+    BodyCursor {
+        /// `$.a.b` path in the request JSON body where the cursor is written.
+        cursor_path: String,
+        /// `$.a.b` path in the response body the next cursor is read from.
+        next_path: String,
     },
 }
 
@@ -348,6 +404,28 @@ pub struct ResponseSpec {
     /// instead of silently parsing them as rows.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<ResponseErrorSpec>,
+    /// Optionally reshape the value at `path` into rows before column extraction
+    /// (for payloads that aren't already a flat array). See [`Reshape`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reshape: Option<Reshape>,
+}
+
+/// How to turn a non-array response payload into rows.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Reshape {
+    /// The value at `path` is an object/map; emit one row per entry — the entry
+    /// value with its key added as `_key`.
+    DictEntries,
+    /// Flatten `{ <series>: [{ …, <points>: [[t, v], …] }] }` into one row per
+    /// point: the series fields, plus the point's two values under `timestamp`
+    /// and `value`.
+    SeriesPoints {
+        series: String,
+        points: String,
+        timestamp: String,
+        value: String,
+    },
 }
 
 fn default_response_path() -> String {
@@ -419,6 +497,10 @@ pub struct ResponseColumn {
     /// Optional: pull from a JSONPath inside each row, or `param` to inject a request param.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
+    /// Optional computed expression, evaluated per row. Takes precedence over
+    /// `source` when present (for columns a plain JSONPath can't express).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expr: Option<crate::expr::ColumnExpr>,
 }
 
 /// In-memory shared state for an HTTP source.
@@ -601,6 +683,29 @@ pub fn parse_arrow_type(s: &str) -> DataType {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn derive_ago() {
+        let d = Derive::Ago { seconds: 3600 };
+        assert_eq!(
+            d.resolve(&BTreeMap::new(), 1_000_000).as_deref(),
+            Some("996400")
+        );
+    }
+
+    #[test]
+    fn derive_split_takes_part() {
+        let d = Derive::Split {
+            from: "issue".into(),
+            separator: "-".into(),
+            part: 1,
+        };
+        let mut params = BTreeMap::new();
+        params.insert("issue".into(), "ENG-123".into());
+        assert_eq!(d.resolve(&params, 0).as_deref(), Some("123"));
+        // Missing source param -> no value.
+        assert_eq!(d.resolve(&BTreeMap::new(), 0), None);
+    }
 
     #[test]
     fn parses_arrow_types() {

@@ -1,6 +1,8 @@
 //! `pawrly serve` — run the gRPC daemon.
 //!
-//! Serves the placeholder/mock engine, or a `LocalEngine` when given a config.
+//! Serves a `LocalEngine` over the discovered workspace manifest (`--config`,
+//! `$PAWRLY_CONFIG`, `./pawrly.yaml`, or `<home>/pawrly.yaml`), falling back to
+//! the engine-less placeholder when no manifest exists anywhere.
 
 use std::path::PathBuf;
 
@@ -43,14 +45,20 @@ pub struct Args {
 }
 
 pub async fn run(home: Option<PathBuf>, config: Option<PathBuf>, args: Args) -> anyhow::Result<()> {
+    // With no explicit --config, run the same manifest discovery as the rest
+    // of the CLI ($PAWRLY_CONFIG → ./pawrly.yaml → <home>/pawrly.yaml), so the
+    // daemon serves the default workspace by default. Only with no manifest
+    // anywhere does it fall back to the engine-less placeholder.
+    let config = config.or_else(|| crate::engine::default_config_path(home.as_deref()));
+
     // Resolve the bearer token before the config path is consumed below.
     let auth_token = match &args.bearer_token_from {
         Some(name) => Some(resolve_bearer_token(name, config.as_deref())?),
         None => None,
     };
 
-    let engine = if config.is_some() {
-        build_local(config).await?
+    let engine = if config.as_deref().is_some_and(std::path::Path::exists) {
+        build_local(config, home.clone()).await?
     } else {
         local_engine_placeholder().await?
     };
@@ -119,14 +127,8 @@ pub async fn run(home: Option<PathBuf>, config: Option<PathBuf>, args: Args) -> 
 }
 
 fn default_socket_path(home: Option<&std::path::Path>) -> anyhow::Result<PathBuf> {
-    let h = home
-        .map(|p| p.to_path_buf())
-        .or_else(|| {
-            std::env::var_os("HOME")
-                .map(PathBuf::from)
-                .map(|h| h.join(".pawrly"))
-        })
-        .ok_or_else(|| anyhow::anyhow!("could not resolve $PAWRLY_HOME (no $HOME)"))?;
+    let h = pawrly_core::resolve_home(home)
+        .ok_or_else(|| anyhow::anyhow!("could not resolve the Pawrly home; set $PAWRLY_HOME"))?;
     Ok(h.join("sockets").join("pawrly.sock"))
 }
 

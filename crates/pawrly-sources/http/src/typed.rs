@@ -4,8 +4,8 @@
 //! - Filter pushdown is done by lifting `WHERE col = literal` filters that
 //!   match a declared parameter and substituting them into the URL path /
 //!   query string.
-//! - Pagination follows the table's `PaginationConfig` (link header, cursor,
-//!   page, or offset); absent config means a single-page fetch.
+//! - Pagination follows the table's `PaginationConfig`; absent config means a
+//!   single-page fetch.
 //! - Required params must appear as `WHERE col = value` filters; otherwise
 //!   the scan returns a clear error.
 
@@ -33,8 +33,8 @@ use serde_json::Value;
 
 use crate::paginate::{self, NextPage};
 use crate::source::{
-    BodyKind, HttpSource, HttpTableSpec, RateLimitPolicy, RequestBody, ResponseColumn,
-    custom_body_object, schema_for,
+    BodyKind, HttpSource, HttpTableSpec, PaginationConfig, RateLimitPolicy, RequestBody, Reshape,
+    ResponseColumn, ResponseSpec, custom_body_object, schema_for,
 };
 
 #[derive(Debug)]
@@ -74,8 +74,13 @@ impl HttpTableProvider {
     }
 
     /// Whether a filter can be pushed into the request: an equality on a
-    /// declared param, or a comparison the param's `accepts`/`emit` covers.
+    /// declared param, a comparison the param's `accepts`/`emit` covers, or an
+    /// `IN (...)` on an `explode` param.
     fn can_push_down(&self, expr: &Expr) -> bool {
+        // `col IN (...)` pushes down exactly when the param opts into explode.
+        if let Some((col, _)) = extract_in_list(expr) {
+            return self.spec.params.iter().any(|p| p.name == col && p.explode);
+        }
         let Some((col, op, _)) = extract_cmp(expr) else {
             return false;
         };
@@ -180,9 +185,37 @@ impl TableProvider for HttpTableProvider {
                 params.insert(p.name.clone(), default.clone());
             }
         }
+        // Derived params: compute from the clock or another (already bound) param
+        // when the query didn't supply a value.
+        let now_epoch = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
+        let mut derived: Vec<(String, String)> = Vec::new();
+        for p in &self.spec.params {
+            if params.contains_key(&p.name) {
+                continue;
+            }
+            if let Some(d) = &p.derive
+                && let Some(v) = d.resolve(&params, now_epoch)
+            {
+                derived.push((p.name.clone(), v));
+            }
+        }
+        params.extend(derived);
+        // `IN (...)` filters on explode params -> repeated query pairs.
+        let mut explode_params: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for f in filters {
+            let Some((col, vals)) = extract_in_list(f) else {
+                continue;
+            };
+            if self.spec.params.iter().any(|p| p.name == col && p.explode) {
+                explode_params.insert(col, vals);
+            }
+        }
         // Required
         for p in &self.spec.params {
-            if p.required && !params.contains_key(&p.name) {
+            if p.required && !params.contains_key(&p.name) && !explode_params.contains_key(&p.name)
+            {
                 return Err(DataFusionError::Plan(format!(
                     "table `{}` requires filter `{} = ...` (PAWRLY_SAFETY_REQUIRED_FILTER)",
                     self.spec.name, p.name
@@ -193,6 +226,15 @@ impl TableProvider for HttpTableProvider {
         // Pick the request shape (endpoint/method/body) for this scan.
         let (endpoint, method_str, body) = self.select_request(&params);
         let method = method_str.parse().unwrap_or(reqwest::Method::GET);
+        let body_template = body.map(|b| b.template.as_str());
+
+        // Body-cursor pagination injects the cursor into the request body at this
+        // path; `body_cursor` carries the value for the upcoming page.
+        let body_cursor_path = match &self.spec.pagination {
+            Some(PaginationConfig::BodyCursor { cursor_path, .. }) => Some(cursor_path.as_str()),
+            _ => None,
+        };
+        let mut body_cursor: Option<String> = None;
 
         // Paginated fetch loop. `next_params`/`next_url` carry the target for the
         // upcoming request (initially the table endpoint + params). Each
@@ -235,7 +277,13 @@ impl TableProvider for HttpTableProvider {
 
             let url = match &next_url {
                 Some(u) => u.clone(),
-                None => build_url(&self.source.base_url, endpoint, &next_params)?,
+                None => build_url(
+                    &self.source.base_url,
+                    endpoint,
+                    &next_params,
+                    body_template,
+                    &explode_params,
+                )?,
             };
 
             let mut req = self.source.client.request(method.clone(), url);
@@ -269,7 +317,14 @@ impl TableProvider for HttpTableProvider {
             match (body, auth_body.is_empty()) {
                 // Table body only — render and attach as declared.
                 (Some(tbody), true) => {
-                    let rendered = render_template(&tbody.template, &next_params);
+                    let mut rendered = render_template(&tbody.template, &next_params);
+                    // Inject the body-cursor for the next page, if any.
+                    if let (Some(cursor), Some(path)) = (&body_cursor, body_cursor_path)
+                        && let Ok(mut v) = serde_json::from_str::<Value>(&rendered)
+                        && paginate::set_json_at_path(&mut v, path, Value::String(cursor.clone()))
+                    {
+                        rendered = v.to_string();
+                    }
                     if !self.has_content_type() {
                         let content_type = match tbody.kind {
                             BodyKind::Json => "application/json",
@@ -296,6 +351,9 @@ impl TableProvider for HttpTableProvider {
                         )
                     })?;
                     obj.extend(custom_body_object(auth_body));
+                    if let (Some(cursor), Some(path)) = (&body_cursor, body_cursor_path) {
+                        paginate::set_json_at_path(&mut value, path, Value::String(cursor.clone()));
+                    }
                     if !self.has_content_type() {
                         req = req.header(reqwest::header::CONTENT_TYPE, "application/json");
                     }
@@ -353,7 +411,7 @@ impl TableProvider for HttpTableProvider {
             }
 
             let page_start = all_rows.len();
-            all_rows.extend(extract_rows(&body, &self.spec.response.path)?);
+            all_rows.extend(extract_rows(&body, &self.spec.response)?);
 
             // Stop early once enough rows are collected to satisfy a LIMIT.
             if let Some(lim) = limit
@@ -379,6 +437,10 @@ impl TableProvider for HttpTableProvider {
                         DataFusionError::Plan(format!("bad pagination url `{u}`: {e}"))
                     })?;
                     next_url = Some(parsed);
+                }
+                Some(NextPage::BodyCursor(c)) => {
+                    body_cursor = Some(c);
+                    next_url = None;
                 }
                 None => break,
             }
@@ -592,6 +654,8 @@ fn build_url(
     base: &url::Url,
     endpoint: &str,
     params: &BTreeMap<String, String>,
+    body_template: Option<&str>,
+    explode: &BTreeMap<String, Vec<String>>,
 ) -> datafusion::common::Result<url::Url> {
     let mut path = endpoint.to_string();
     let mut query_params: Vec<(String, String)> = Vec::new();
@@ -599,7 +663,15 @@ fn build_url(
         let needle = format!("{{{k}}}");
         if path.contains(&needle) {
             path = path.replace(&needle, v);
+        } else if body_template.is_some_and(|t| t.contains(&needle)) {
+            // A param consumed by the request body is not also a query param.
         } else {
+            query_params.push((k.clone(), v.clone()));
+        }
+    }
+    // Explode `IN (...)` filters into repeated query pairs (`?k=a&k=b`).
+    for (k, vals) in explode {
+        for v in vals {
             query_params.push((k.clone(), v.clone()));
         }
     }
@@ -614,6 +686,28 @@ fn build_url(
         }
     }
     Ok(url)
+}
+
+/// Extract `column IN (lit, lit, …)` (non-negated, all literals) as the column
+/// name plus its values as strings. Returns `None` for anything else.
+fn extract_in_list(expr: &Expr) -> Option<(String, Vec<String>)> {
+    let Expr::InList(il) = expr else {
+        return None;
+    };
+    if il.negated {
+        return None;
+    }
+    let Expr::Column(c) = il.expr.as_ref() else {
+        return None;
+    };
+    let mut vals = Vec::with_capacity(il.list.len());
+    for item in &il.list {
+        let Expr::Literal(s, _) = item else {
+            return None;
+        };
+        vals.push(scalar_to_string(s)?);
+    }
+    Some((c.name.clone(), vals))
 }
 
 /// Wrap an error message as a `DataFusionError` that fails the scan.
@@ -646,23 +740,74 @@ fn detect_error(
     }
 }
 
-fn extract_rows(body: &Value, path: &str) -> datafusion::common::Result<Vec<Value>> {
-    if path == "$" {
-        return as_array(body);
+fn extract_rows(body: &Value, spec: &ResponseSpec) -> datafusion::common::Result<Vec<Value>> {
+    let Some(at) = paginate::json_at_path(body, &spec.path) else {
+        return Ok(Vec::new());
+    };
+    match &spec.reshape {
+        None => as_array(at),
+        Some(Reshape::DictEntries) => Ok(reshape_dict_entries(at)),
+        Some(Reshape::SeriesPoints {
+            series,
+            points,
+            timestamp,
+            value,
+        }) => Ok(reshape_series_points(at, series, points, timestamp, value)),
     }
-    // Simple `$.field.subfield` walker; no filters, slices, or wildcards.
-    let trimmed = path.trim_start_matches("$.");
-    let mut current = body;
-    for part in trimmed.split('.') {
-        if part.is_empty() {
+}
+
+/// One row per entry of the object at the response path; the entry value with
+/// its key added as `_key` (or `{_key, _value}` when the value isn't an object).
+fn reshape_dict_entries(v: &Value) -> Vec<Value> {
+    let Some(obj) = v.as_object() else {
+        return Vec::new();
+    };
+    obj.iter()
+        .map(|(k, val)| match val {
+            Value::Object(_) => {
+                let mut row = val.clone();
+                if let Some(m) = row.as_object_mut() {
+                    m.insert("_key".into(), Value::String(k.clone()));
+                }
+                row
+            }
+            _ => serde_json::json!({ "_key": k, "_value": val }),
+        })
+        .collect()
+}
+
+/// Flatten a `{ series: [{ …, points: [[t, v], …] }] }` payload into one row per
+/// point: the series fields (minus `points`) plus `timestamp`/`value`.
+fn reshape_series_points(
+    v: &Value,
+    series: &str,
+    points: &str,
+    timestamp: &str,
+    value: &str,
+) -> Vec<Value> {
+    let Some(arr) = v.get(series).and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for s in arr {
+        let Some(pts) = s.get(points).and_then(Value::as_array) else {
             continue;
-        }
-        let Some(next) = current.get(part) else {
-            return Ok(Vec::new());
         };
-        current = next;
+        for pt in pts {
+            let Some(pair) = pt.as_array() else { continue };
+            let (Some(t), Some(val)) = (pair.first(), pair.get(1)) else {
+                continue;
+            };
+            let mut row = s.clone();
+            if let Some(m) = row.as_object_mut() {
+                m.remove(points);
+                m.insert(timestamp.to_string(), t.clone());
+                m.insert(value.to_string(), val.clone());
+            }
+            out.push(row);
+        }
     }
-    as_array(current)
+    out
 }
 
 fn as_array(v: &Value) -> datafusion::common::Result<Vec<Value>> {
@@ -857,6 +1002,9 @@ fn pull_value(
     col: &ResponseColumn,
     params: &BTreeMap<String, String>,
 ) -> Option<Value> {
+    if let Some(expr) = &col.expr {
+        return expr.eval(row, params);
+    }
     match col.source.as_deref() {
         None => row.get(&col.name).cloned(),
         Some("param") => params.get(&col.name).cloned().map(Value::String),
@@ -874,5 +1022,128 @@ fn pull_value(
             Some(current.clone())
         }
         Some(other) => row.get(other).cloned(),
+    }
+}
+
+#[cfg(test)]
+mod build_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, reason = "tests")]
+
+    use super::*;
+    use std::collections::BTreeMap;
+
+    fn base() -> url::Url {
+        url::Url::parse("https://api.test/").unwrap()
+    }
+
+    #[test]
+    fn build_url_excludes_body_params() {
+        let mut params = BTreeMap::new();
+        params.insert("stream".to_string(), "logs".to_string());
+        params.insert("page".to_string(), "2".to_string());
+        // `stream` is consumed by the body template, so it must not leak into
+        // the query string; `page` (a real query param) stays.
+        let url = build_url(
+            &base(),
+            "/_search",
+            &params,
+            Some("{\"q\": \"{stream}\"}"),
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        assert_eq!(url.query(), Some("page=2"));
+    }
+
+    #[test]
+    fn build_url_fills_path_then_query() {
+        let mut params = BTreeMap::new();
+        params.insert("id".to_string(), "7".to_string());
+        params.insert("state".to_string(), "open".to_string());
+        let url = build_url(&base(), "/items/{id}", &params, None, &BTreeMap::new()).unwrap();
+        assert_eq!(url.path(), "/items/7");
+        assert_eq!(url.query(), Some("state=open"));
+    }
+
+    #[test]
+    fn build_url_explodes_in_list() {
+        let mut explode = BTreeMap::new();
+        explode.insert("status".to_string(), vec!["a".to_string(), "b".to_string()]);
+        let url = build_url(&base(), "/x", &BTreeMap::new(), None, &explode).unwrap();
+        assert_eq!(url.query(), Some("status=a&status=b"));
+    }
+
+    #[test]
+    fn build_batch_evaluates_expr_column() {
+        let col = ResponseColumn {
+            name: "title".into(),
+            r#type: "varchar".into(),
+            source: None,
+            expr: Some(
+                serde_json::from_value(serde_json::json!({
+                    "kind": "coalesce",
+                    "exprs": [
+                        {"kind": "path", "path": ["attributes", "title"]},
+                        {"kind": "path", "path": ["title"]}
+                    ]
+                }))
+                .unwrap(),
+            ),
+        };
+        let schema = Arc::new(Schema::new(vec![Field::new("title", DataType::Utf8, true)]));
+        let rows = vec![
+            serde_json::json!({ "attributes": { "title": "A" } }),
+            serde_json::json!({ "title": "B" }),
+        ];
+        let batch = build_batch(&schema, &[col], &rows, &BTreeMap::new()).unwrap();
+        let arr = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<arrow_array::StringArray>()
+            .unwrap();
+        assert_eq!(arr.value(0), "A");
+        assert_eq!(arr.value(1), "B");
+    }
+
+    #[test]
+    fn reshape_dict_entries_keys_to_rows() {
+        let v = serde_json::json!({
+            "primary": { "background": "#fff", "foreground": "#000" },
+            "secondary": { "background": "#eee" }
+        });
+        let rows = reshape_dict_entries(&v);
+        assert_eq!(rows.len(), 2);
+        let primary = rows
+            .iter()
+            .find(|r| r["_key"] == serde_json::json!("primary"));
+        assert_eq!(primary.unwrap()["background"], serde_json::json!("#fff"));
+    }
+
+    #[test]
+    fn reshape_series_points_explodes_pointlist() {
+        let v = serde_json::json!({
+            "series": [
+                { "metric": "cpu", "scope": "host:a", "pointlist": [[1000, 0.5], [2000, 0.7]] }
+            ]
+        });
+        let rows = reshape_series_points(&v, "series", "pointlist", "timestamp", "value");
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0]["metric"], serde_json::json!("cpu"));
+        assert_eq!(rows[0]["timestamp"], serde_json::json!(1000));
+        assert_eq!(rows[1]["value"], serde_json::json!(0.7));
+        assert!(rows[0].get("pointlist").is_none());
+    }
+
+    #[test]
+    fn extract_in_list_reads_literals() {
+        use datafusion::logical_expr::{col, lit};
+        let e = col("status").in_list(vec![lit("open"), lit("closed")], false);
+        let got = extract_in_list(&e);
+        assert_eq!(
+            got,
+            Some(("status".to_string(), vec!["open".into(), "closed".into()]))
+        );
+        // Negated IN does not push down.
+        let neg = col("status").in_list(vec![lit("open")], true);
+        assert_eq!(extract_in_list(&neg), None);
     }
 }

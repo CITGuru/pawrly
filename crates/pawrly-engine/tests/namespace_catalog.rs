@@ -72,6 +72,7 @@ async fn build_engine(workspace: &std::path::Path) -> Arc<dyn EngineService> {
         config: cfg_yaml(&orders_yaml(workspace)),
         workspace_dir: workspace.to_path_buf(),
         duckdb_pool_size: None,
+        home: None,
     })
     .await
     .unwrap();
@@ -133,6 +134,65 @@ async fn namespace_catalog_serves_cached_snapshot_directly() {
             .await
             .is_err(),
         "uncached table must not resolve"
+    );
+}
+
+/// No `storage:` / `namespace:` in config and `home` == the workspace dir: the
+/// default workspace. Storage must derive to `<home>/cache`, the namespace must
+/// be the literal `default`, and registering a catalog named `default` must not
+/// break unqualified resolution against the session's `pawrly.default` schema.
+#[tokio::test]
+async fn default_workspace_uses_home_cache_and_default_namespace() {
+    let home = TempDir::new().unwrap();
+    let parquet_path = fixtures_dir().join("orders.parquet");
+    let yaml = format!(
+        r#"version: 1
+sources:
+  - name: data
+    kind: file
+    config:
+      path: "{}"
+    cache:
+      mode: ttl
+      ttl: 1h
+    tables:
+      - name: orders
+        path: "{}"
+        format: parquet
+"#,
+        fixtures_dir().display(),
+        parquet_path.display(),
+    );
+    let engine = LocalEngine::new(LocalEngineConfig {
+        config: cfg_yaml(&yaml),
+        workspace_dir: home.path().to_path_buf(),
+        duckdb_pool_size: None,
+        home: Some(home.path().to_path_buf()),
+    })
+    .await
+    .unwrap();
+    let svc: Arc<dyn EngineService> = Arc::new(engine);
+
+    // Live query still resolves unqualified (`pawrly.default` schema intact).
+    let live = svc
+        .query_collect("SELECT COUNT(*) AS n FROM data.orders")
+        .await
+        .unwrap();
+    assert_eq!(count_of(&live), 5);
+
+    // The snapshot is addressable under the `default` namespace catalog.
+    let direct = svc
+        .query_collect("SELECT COUNT(*) AS n FROM default.data.orders")
+        .await
+        .unwrap();
+    assert_eq!(count_of(&direct), 5);
+
+    // The cache landed under `<home>/cache/default/`.
+    let cache_dir = home.path().join("cache").join("default");
+    assert!(
+        cache_dir.is_dir(),
+        "expected derived cache root at {}",
+        cache_dir.display()
     );
 }
 

@@ -24,7 +24,7 @@ pub async fn build_engine(
 ) -> anyhow::Result<Arc<dyn EngineService>> {
     if let Some(endpoint) = remote.clone() {
         if endpoint.eq_ignore_ascii_case("off") {
-            return build_local(config_path).await;
+            return build_local(config_path, home).await;
         }
         let ep = parse_endpoint(&endpoint)?;
         let client = RemoteEngineClient::connect(ep).await?;
@@ -32,7 +32,7 @@ pub async fn build_engine(
     }
 
     if no_remote {
-        return build_local(config_path).await;
+        return build_local(config_path, home).await;
     }
 
     if let Some(socket) = autodetect_socket(home.as_deref()) {
@@ -43,19 +43,26 @@ pub async fn build_engine(
         }
     }
 
-    build_local(config_path).await
+    build_local(config_path, home).await
 }
 
 /// Build an in-process `LocalEngine` from the resolved config path.
-pub async fn build_local(config_path: Option<PathBuf>) -> anyhow::Result<Arc<dyn EngineService>> {
-    let path = config_path.or_else(default_config_path);
+pub async fn build_local(
+    config_path: Option<PathBuf>,
+    home: Option<PathBuf>,
+) -> anyhow::Result<Arc<dyn EngineService>> {
+    let path = config_path.or_else(|| default_config_path(home.as_deref()));
     if let Some(p) = path
         && p.exists()
     {
-        let engine = LocalEngine::from_config_file(&p).await?;
+        let engine = LocalEngine::from_config_file_with_home(&p, home).await?;
         return Ok(Arc::new(engine));
     }
-    let workspace_dir = std::env::current_dir()?;
+    // No manifest anywhere: an empty default workspace, rooted at the Pawrly
+    // home so its cache namespace is `default` (there are no relative source
+    // paths to anchor).
+    let workspace_dir =
+        pawrly_core::resolve_home(home.as_deref()).map_or_else(std::env::current_dir, Ok)?;
     let cfg = pawrly_config::Config {
         version: 1,
         name: "default".into(),
@@ -69,6 +76,7 @@ pub async fn build_local(config_path: Option<PathBuf>) -> anyhow::Result<Arc<dyn
         config: cfg,
         workspace_dir,
         duckdb_pool_size: None,
+        home,
     })
     .await?;
     Ok(Arc::new(engine))
@@ -81,7 +89,11 @@ pub async fn local_engine_placeholder() -> anyhow::Result<Arc<dyn EngineService>
     Ok(Arc::new(engine))
 }
 
-pub(crate) fn default_config_path() -> Option<PathBuf> {
+/// Discover the workspace manifest: `$PAWRLY_CONFIG` → `./pawrly.yaml` →
+/// `<home>/pawrly.yaml` (the *default workspace*, where `<home>` is `--home` /
+/// `$PAWRLY_HOME` / `~/.pawrly`). `--config` is handled by clap before this
+/// runs.
+pub(crate) fn default_config_path(home: Option<&std::path::Path>) -> Option<PathBuf> {
     if let Ok(p) = std::env::var("PAWRLY_CONFIG") {
         return Some(PathBuf::from(p));
     }
@@ -89,8 +101,7 @@ pub(crate) fn default_config_path() -> Option<PathBuf> {
     if cwd.exists() {
         return Some(cwd);
     }
-    let home = std::env::var_os("HOME").map(PathBuf::from)?;
-    let h = home.join(".pawrly").join("pawrly.yaml");
+    let h = pawrly_core::resolve_home(home)?.join("pawrly.yaml");
     if h.exists() { Some(h) } else { None }
 }
 
@@ -138,12 +149,9 @@ fn tls_config_from_env() -> TlsConfig {
 }
 
 fn autodetect_socket(home: Option<&std::path::Path>) -> Option<PathBuf> {
-    let home_dir = home.map(|p| p.to_path_buf()).or_else(|| {
-        std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .map(|h| h.join(".pawrly"))
-    })?;
-    let candidate = home_dir.join("sockets").join("pawrly.sock");
+    let candidate = pawrly_core::resolve_home(home)?
+        .join("sockets")
+        .join("pawrly.sock");
     if candidate.exists() {
         Some(candidate)
     } else {

@@ -3363,6 +3363,7 @@ dependencies = [
  "arrow-json",
  "arrow-schema",
  "async-trait",
+ "base64",
  "chrono",
  "datafusion",
  "futures",

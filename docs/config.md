@@ -1,6 +1,15 @@
 # Configuration
 
-A workspace is described by a single YAML file, `pawrly.yaml`. By default Pawrly looks for it in the current directory (override with `--config <path>` or the `PAWRLY_CONFIG` environment variable).
+A workspace is described by a single YAML file, `pawrly.yaml`. The directory holding that file *is* the workspace: relative paths in the config (`include:`, `from:`, file-source `path`s) resolve against it.
+
+Pawrly discovers the manifest in this order — first hit wins, nothing merges:
+
+1. `--config <path>`
+2. the `PAWRLY_CONFIG` environment variable
+3. `./pawrly.yaml` in the current directory
+4. `$PAWRLY_HOME/pawrly.yaml` — the **default workspace**
+
+`PAWRLY_HOME` (or `--home`) is Pawrly's data directory, `~/.pawrly` by default. Besides the default-workspace manifest it holds the cache root (`cache/`, see [Storage location](#storage-location)) and the daemon socket (`sockets/pawrly.sock`). `pawrly serve` follows the same discovery, so a daemon started with no `--config` serves the default workspace.
 
 A JSON Schema for the file ships in `schemas/pawrly.schema.json`. Wire it into your editor for completion and inline validation:
 
@@ -113,12 +122,12 @@ Modes:
 
 ### Storage location
 
-The cache writes Parquet plus a JSON manifest under `defaults.cache.storage` (default `~/.pawrly/cache`). `~` expands to `$HOME`, so cached data lives under your home directory — **anchored at `$HOME`, not the current directory or the workspace**, regardless of where you run `pawrly` from.
+The cache writes Parquet plus a JSON manifest under `defaults.cache.storage`. When unset, the root derives from the Pawrly home as `$PAWRLY_HOME/cache` (default `~/.pawrly/cache`) — **anchored at the home, not the current directory or the workspace**, regardless of where you run `pawrly` from. An explicit value may use a leading `~`, which expands to `$HOME`.
 
 ```yaml
 defaults:
   cache:
-    storage: ~/.pawrly/cache   # cache root (default)
+    storage: ~/.pawrly/cache   # optional; default $PAWRLY_HOME/cache
     namespace: my-project      # optional; isolates this workspace (see below)
 ```
 
@@ -128,7 +137,7 @@ Because `storage` is shared across every workspace on the machine, Pawrly insert
 <storage>/<namespace>/data/<source>/<table>/part-000000.parquet
 ```
 
-- **Default (automatic).** With `namespace` unset, it's derived as `<dirname>-<hash>` from the workspace's canonical absolute path. The same workspace always maps to the same directory; distinct workspaces never collide. Moving or renaming the workspace directory changes the id, so its cache starts cold.
+- **Default (automatic).** With `namespace` unset, it's derived as `<dirname>-<hash>` from the workspace's canonical absolute path. The same workspace always maps to the same directory; distinct workspaces never collide. Moving or renaming the workspace directory changes the id, so its cache starts cold. The **default workspace** (the manifest at `$PAWRLY_HOME/pawrly.yaml`) gets the literal namespace `default` instead.
 - **Override.** Set `defaults.cache.namespace` to pin a stable namespace (e.g. so the cache survives moving the directory) or to deliberately **share** one cache across workspaces by giving them the same value. A blank value falls back to the derived id.
 
 The cache is restart-safe and concurrency-safe. Inspect and manage it with the [`pawrly cache`](./cli.md#pawrly-cache) commands.

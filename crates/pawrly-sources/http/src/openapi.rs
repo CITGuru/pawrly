@@ -361,6 +361,8 @@ fn build_params(
                     .map(scalar_to_string),
                 accepts: Vec::new(),
                 emit: BTreeMap::new(),
+                explode: false,
+                derive: None,
             }
         })
         .collect()
@@ -387,6 +389,7 @@ fn build_response(
         schema: columns,
         allow_404_empty: false,
         error: None,
+        reshape: None,
     }
 }
 
@@ -478,6 +481,7 @@ fn object_columns(
             name: name.clone(),
             r#type: map_column_type(&deref(doc, prop)),
             source: None,
+            expr: None,
         })
         .collect();
     columns.sort_by(|a, b| a.name.cmp(&b.name));
@@ -489,6 +493,7 @@ fn json_column(name: &str) -> ResponseColumn {
         name: name.to_string(),
         r#type: "json".into(),
         source: None,
+        expr: None,
     }
 }
 
@@ -498,6 +503,7 @@ fn single_json_response() -> ResponseSpec {
         schema: vec![json_column("value")],
         allow_404_empty: false,
         error: None,
+        reshape: None,
     }
 }
 
@@ -789,6 +795,8 @@ mod tests {
                 default: None,
                 accepts: vec![],
                 emit: BTreeMap::new(),
+                explode: false,
+                derive: None,
             },
             ParamSpec {
                 name: "per_page".into(),
@@ -797,6 +805,8 @@ mod tests {
                 default: None,
                 accepts: vec![],
                 emit: BTreeMap::new(),
+                explode: false,
+                derive: None,
             },
         ];
         let pg = infer_pagination(&params, &BTreeSet::new());
@@ -815,6 +825,8 @@ mod tests {
                 default: None,
                 accepts: vec![],
                 emit: BTreeMap::new(),
+                explode: false,
+                derive: None,
             },
             ParamSpec {
                 name: "limit".into(),
@@ -823,6 +835,8 @@ mod tests {
                 default: None,
                 accepts: vec![],
                 emit: BTreeMap::new(),
+                explode: false,
+                derive: None,
             },
         ];
         assert!(matches!(
@@ -840,6 +854,8 @@ mod tests {
             default: None,
             accepts: vec![],
             emit: BTreeMap::new(),
+            explode: false,
+            derive: None,
         }];
         assert!(infer_pagination(&params, &BTreeSet::new()).is_none());
         let fields: BTreeSet<String> = ["next_page_token".to_string()].into_iter().collect();
@@ -857,6 +873,8 @@ mod tests {
             default: None,
             accepts: vec![],
             emit: BTreeMap::new(),
+            explode: false,
+            derive: None,
         }];
         assert!(infer_pagination(&params, &BTreeSet::new()).is_none());
     }
@@ -870,6 +888,8 @@ mod tests {
             default: None,
             accepts: vec![],
             emit: BTreeMap::new(),
+            explode: false,
+            derive: None,
         }];
         assert!(infer_pagination(&params, &BTreeSet::new()).is_none());
         let fields: BTreeSet<String> = ["data".into(), "has_more".into()].into_iter().collect();
