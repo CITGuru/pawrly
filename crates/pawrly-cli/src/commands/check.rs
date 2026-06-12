@@ -25,7 +25,7 @@ pub async fn run(
     // through whichever engine the global flags select (local or daemon).
     let path = config
         .clone()
-        .or_else(crate::engine::default_config_path)
+        .or_else(|| crate::engine::default_config_path(home.as_deref()))
         .filter(|p| p.exists())
         .ok_or_else(|| anyhow::anyhow!("no pawrly.yaml found; pass --config"))?;
     let cfg = pawrly_config::load_auto(&path)?;

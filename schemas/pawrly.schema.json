@@ -13,8 +13,7 @@
         "cache": {
           "mode": {
             "mode": "none"
-          },
-          "storage": "~/.pawrly/cache"
+          }
         },
         "engine": {
           "duckdb_pool_size": 8,
@@ -115,9 +114,11 @@
           ]
         },
         "storage": {
-          "description": "Filesystem path used as the cache root. `~/.pawrly/cache` by default.",
-          "default": "~/.pawrly/cache",
-          "type": "string"
+          "description": "Filesystem path used as the cache root. When unset, it is derived from the Pawrly home directory as `$PAWRLY_HOME/cache` (default `~/.pawrly/cache`). A leading `~` in an explicit value expands to `$HOME`.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       }
     },
@@ -225,8 +226,7 @@
           "default": {
             "mode": {
               "mode": "none"
-            },
-            "storage": "~/.pawrly/cache"
+            }
           },
           "allOf": [
             {
@@ -1016,6 +1016,7 @@
       "enum": [
         "http",
         "file",
+        "mcp",
         "sqlite",
         "postgres",
         "mysql",

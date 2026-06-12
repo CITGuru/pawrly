@@ -53,6 +53,7 @@ sources:
         config: cfg,
         workspace_dir: dir.clone(),
         duckdb_pool_size: None,
+        home: None,
     })
     .await
     .expect("engine");
@@ -109,6 +110,7 @@ sources:
         config: cfg,
         workspace_dir: dir.clone(),
         duckdb_pool_size: None,
+        home: None,
     })
     .await
     .expect("engine");
@@ -151,6 +153,7 @@ sources:
         config: cfg,
         workspace_dir: dir.clone(),
         duckdb_pool_size: None,
+        home: None,
     })
     .await
     .expect("engine");
@@ -189,6 +192,7 @@ sources:
         config: cfg_yaml(&yaml),
         workspace_dir: dir.clone(),
         duckdb_pool_size: None,
+        home: None,
     })
     .await
     .expect("engine");
@@ -342,6 +346,7 @@ sources:
         config: cfg,
         workspace_dir: dir.clone(),
         duckdb_pool_size: None,
+        home: None,
     })
     .await
     .expect("engine");

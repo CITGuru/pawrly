@@ -63,6 +63,7 @@ async fn build_engine(workspace: &std::path::Path) -> Arc<dyn EngineService> {
         config: cfg_yaml(&orders_yaml(workspace)),
         workspace_dir: workspace.to_path_buf(),
         duckdb_pool_size: None,
+        home: None,
     })
     .await
     .unwrap();
@@ -123,6 +124,7 @@ sources:
             config: cfg_yaml(&yaml),
             workspace_dir: workspace.path().to_path_buf(),
             duckdb_pool_size: None,
+            home: None,
         })
         .await
         .unwrap();
@@ -164,6 +166,7 @@ sources:
         config: cfg_yaml(&yaml),
         workspace_dir: workspace.path().to_path_buf(),
         duckdb_pool_size: None,
+        home: None,
     })
     .await
     .unwrap();

@@ -62,6 +62,7 @@ semantic:
         config: cfg,
         workspace_dir: dir,
         duckdb_pool_size: None,
+        home: None,
     })
     .await
     .expect("engine");
@@ -126,6 +127,7 @@ semantic:
         config: cfg,
         workspace_dir: dir,
         duckdb_pool_size: None,
+        home: None,
     })
     .await
     .expect("engine");
@@ -342,6 +344,7 @@ semantic:
         config: cfg,
         workspace_dir: dir,
         duckdb_pool_size: None,
+        home: None,
     })
     .await
     .expect("engine");
@@ -396,6 +399,7 @@ semantic:
         config: cfg,
         workspace_dir: dir,
         duckdb_pool_size: None,
+        home: None,
     })
     .await
     .expect("engine");
@@ -645,6 +649,7 @@ semantic:
         config: cfg,
         workspace_dir: dir,
         duckdb_pool_size: None,
+        home: None,
     })
     .await
     .expect("engine");
