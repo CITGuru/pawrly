@@ -522,7 +522,7 @@ Source headers go on first; a table's own `headers` are merged on top and overri
 
 Each table's request is built from these flat fields:
 
-- **endpoint** (required) — path appended to `base_url`. May carry a query string and `{param}` placeholders; a param whose name matches a `{placeholder}` fills the URL **path**, the rest become query parameters.
+- **endpoint** (required) — path appended to `base_url`. May carry a query string and `{param}` placeholders; a param whose name matches a `{placeholder}` fills the URL **path**. Remaining params become query parameters — except those consumed by the body `template`, which are sent in the body only, not duplicated onto the query string.
 - **method** — defaults to `GET`.
 - **headers** — a per-table map of extra request headers. Constant headers shared by every table (e.g. `Accept`, an API-version header) are better set once at the source level via `config.headers` (see below); per-table `headers` are merged *on top* and win on a key collision.
 - **body** — for POST/PUT/GraphQL: `kind` (`json`, the default, sets `Content-Type: application/json`; or `form` for `application/x-www-form-urlencoded`) and `template` (body text with `{param}` placeholders; other braces — JSON/GraphQL syntax — are left untouched).
@@ -546,7 +546,7 @@ Each table's request is built from these flat fields:
 
 #### Query parameters
 
-`params` declares the columns a table accepts as filters. Each is `{ name, type (default varchar), required (default false), default, accepts, emit }`:
+`params` declares the columns a table accepts as filters. Each is `{ name, type (default varchar), required (default false), default, accepts, emit, explode, derive }`:
 
 - `required: true` — the param must appear as a SQL filter, or the scan fails with a clear error (rather than fetching an unbounded result).
 - `default` — value used when the user doesn't filter on it.
@@ -560,6 +560,17 @@ Each table's request is built from these flat fields:
             emit: { ">=": since, "<=": until }   # WHERE created >= X → ?since=X
 ```
 
+- **`explode`** — `explode: true` pushes a SQL `IN (a, b, c)` filter down as repeated query pairs (`?key=a&key=b&key=c`) instead of post-filtering. Equality still emits a single pair; a non-`explode` `IN` is filtered in-engine as before. Only honored for the query string (not path/body params).
+- **`derive`** — compute the param's value when the query doesn't supply one (a dynamic default), tagged by `kind`:
+  - `ago` — `{ kind: ago, seconds: N }` → epoch seconds `now - N` (a relative time window, e.g. "last hour").
+  - `split` — `{ kind: split, from: <other param>, separator: "-", part: 0 }` → a `part` (0-based) of another bound param's value split by `separator`. Useful to derive request fields from a composite filter (e.g. an issue key `ENG-123` → team `ENG` + number `123`). A derived param that feeds a body template stays out of the query string.
+
+```yaml
+        params:
+          - { name: from,   type: bigint, derive: { kind: ago, seconds: 3600 } }
+          - { name: status, explode: true }              # WHERE status IN ('open','closed') → ?status=open&status=closed
+```
+
 A param can also be surfaced as an output column with `source: param` on a `response.schema` entry (see below).
 
 #### Response
@@ -567,9 +578,11 @@ A param can also be surfaced as an output column with `source: param` on a `resp
 `response` describes how to turn the JSON payload into rows:
 
 - `path` — JSONPath to the array of rows. `$` (the default) means the body *is* the array; `$.data` digs into a wrapper object.
-- `schema` — the columns to extract per row, each `{ name, type, source? }`:
+- `reshape` — turn a payload that **isn't** a flat array at `path` into rows before column extraction. See [Reshaping the response](#reshaping-the-response).
+- `schema` — the columns to extract per row, each `{ name, type, source?, expr? }`:
   - `type` ∈ `varchar`/`string`/`text`, `bigint`/`int64`, `int`/`int32`, `double`, `float`, `bool`/`boolean`, `date`, `timestamp`, `timestamptz` (ISO-8601 / RFC 3339 strings are parsed), and `json` (a nested object/array kept as raw JSON text).
   - `source` — defaults to the row's top-level field of the same name. Set `$.nested.field` to read a different path, `$` to capture the whole row element (usually into a `json` column), or `param` to inject a request parameter as a column.
+  - `expr` — a computed expression evaluated per row, for columns a single path can't express. Takes precedence over `source` when set. See [Computed columns](#computed-columns).
 - `allow_404_empty` — treat a `404` as an empty result set instead of an error.
 - `error` — surface API failures as a clear scan error: `status` (a list of codes or matchers like `">=400"`, `"5xx"`, `"<500"`) and/or `path` (a JSONPath to an error message inside a `200`-with-error body).
 
@@ -587,6 +600,78 @@ A param can also be surfaced as an output column with `source: param` on a `resp
             path: $.message
 ```
 
+#### Computed columns
+
+When a column needs more than a single JSONPath, give it an `expr` instead of a `source`. An `expr` is a small tree, each node tagged by `kind`, evaluated against each row (plus the bound request params). A missing path, a shape mismatch, or a failed transform yields `NULL` — never a scan error.
+
+
+| `kind`         | Fields                                                    | Result                                                                            |
+| -------------- | -------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| `path`         | `path: [a, b]`                                           | Walk object keys `a.b` from the row.                                              |
+| `coalesce`     | `exprs: [...]`                                            | First non-null sub-expression.                                                    |
+| `literal`      | `value`                                                  | A constant value.                                                                 |
+| `replace`      | `expr`, `from`, `to`                                     | Find/replace on the string produced by `expr`.                                    |
+| `current_row`  | —                                                        | The whole row element (usually into a `json` column).                            |
+| `null`         | —                                                        | Always null.                                                                      |
+| `from_filter`  | `filter`                                                 | Inject a bound request param's value.                                             |
+| `join`         | `path`                                                   | Join the array at `path` into `"a,b,c"` (objects as compact JSON).               |
+| `map_join`     | `path`, `item_path`                                      | Take `item_path` of each array element, then join.                               |
+| `first_of`     | `path`, `item_path`                                      | `item_path` of the **first** array element (keeps its type).                     |
+| `lookup`       | `path`, `key`, `key_field?`, `value_field?`             | In `[{key, value}]`, the `value_field` whose `key_field` equals `key`. The fields default to `key`/`value`. |
+| `lookup_join`  | `path`, `key`, `key_field?`, `value_field?`             | Like `lookup` but joins every matching value.                                    |
+| `pick`         | `path`, `by`, `item_path`                               | Index the object at `path` by the bound param `by`, then take `item_path`.       |
+| `to_timestamp` | `unit` (`seconds`/`millis`), `expr`                     | Convert the epoch number from `expr` to an RFC 3339 string (a string passes through). |
+| `from_base64`  | `expr`                                                   | Base64-decode the string from `expr` into UTF-8 text.                            |
+| `if_present`   | `check`, `then_value`                                    | `then_value` when `check` is non-null, else null.                               |
+
+
+```yaml
+        schema:
+          # title from `attributes.title`, falling back to `title`
+          - name: title
+            type: varchar
+            expr:
+              kind: coalesce
+              exprs:
+                - { kind: path, path: [attributes, title] }
+                - { kind: path, path: [title] }
+          # array of label objects -> "bug,p1"
+          - { name: labels, type: varchar,   expr: { kind: map_join, path: [labels], item_path: [name] } }
+          # epoch seconds -> a real timestamp
+          - { name: created, type: timestamp, expr: { kind: to_timestamp, unit: seconds, expr: { kind: path, path: [created_at] } } }
+```
+
+#### Reshaping the response
+
+`response.path` normally points at an **array** of rows. `response.reshape` turns the value at `path` into rows when it isn't one — applied before column extraction. Tagged by `kind`:
+
+- **`dict_entries`** — the value at `path` is an **object/map**; each entry becomes a row: the entry value with its key added as `_key` (or `{_key, _value}` when the value isn't an object). Read the key with `source: $._key`.
+
+```yaml
+      - name: calendar_colors
+        endpoint: /colors
+        response:
+          path: $.calendar
+          reshape: { kind: dict_entries }
+          schema:
+            - { name: id,         type: varchar, source: $._key }
+            - { name: background, type: varchar }
+```
+
+- **`series_points`** — flatten `{ <series>: [ { …, <points>: [[t, v], …] } ] }` into one row per point: each series object (minus its points field) plus the point's two values, written under the `timestamp` and `value` column names. Fields: `series`, `points`, `timestamp`, `value`.
+
+```yaml
+      - name: metrics
+        endpoint: /api/v1/query
+        response:
+          path: $
+          reshape: { kind: series_points, series: series, points: pointlist, timestamp: timestamp, value: value }
+          schema:
+            - { name: metric,    type: varchar }   # carried from each series object
+            - { name: timestamp, type: bigint }    # point[0]
+            - { name: value,     type: double }    # point[1]
+```
+
 #### Pagination
 
 Set `pagination` to keep fetching pages; absent means a single request. A SQL `LIMIT` stops pagination early once enough rows are collected, and `safety.max_pages` caps the loop. The strategy is tagged by `type`:
@@ -596,6 +681,7 @@ Set `pagination` to keep fetching pages; absent means a single request. A SQL `L
 | ------------- | ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `link_header` | —                                                    | Follows the RFC 5988 `Link:` header's `rel="next"` URL until absent.                                                                                    |
 | `cursor`      | `next_path`, `param`                                 | Reads an opaque cursor from the body at `next_path` (`$.a.b`) and echoes it back as the `param` query parameter; stops when the cursor is absent/empty. |
+| `body_cursor` | `cursor_path`, `next_path`                           | Reads the next cursor from the body at `next_path` and writes it into the next request's JSON **body** at `cursor_path` (GraphQL `variables.after`, Notion `start_cursor`); stops when the cursor is absent/empty or a page is empty. |
 | `row_cursor`  | `param`, `field` (default `id`), `more_path?`        | Sends `param` = the last row's `field` (e.g. `starting_after=<last id>`); stops when `more_path` (a `$.a.b` boolean) is `false`, else on an empty page. |
 | `page`        | `param`, `start` (default 1), `size_param?`, `size?` | Increments the page number in `param` until a page returns zero rows; optionally sends a page size via `size_param`/`size`.                             |
 | `offset`      | `param`, `size_param`, `size`                        | Increments `param` by `size` each page until a short page (fewer than `size` rows).                                                                     |
