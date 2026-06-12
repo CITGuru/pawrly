@@ -479,6 +479,7 @@ fn object_columns(
             name: name.clone(),
             r#type: map_column_type(&deref(doc, prop)),
             source: None,
+            expr: None,
         })
         .collect();
     columns.sort_by(|a, b| a.name.cmp(&b.name));
@@ -490,6 +491,7 @@ fn json_column(name: &str) -> ResponseColumn {
         name: name.to_string(),
         r#type: "json".into(),
         source: None,
+        expr: None,
     }
 }
 

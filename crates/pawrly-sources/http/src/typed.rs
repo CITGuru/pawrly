@@ -934,6 +934,9 @@ fn pull_value(
     col: &ResponseColumn,
     params: &BTreeMap<String, String>,
 ) -> Option<Value> {
+    if let Some(expr) = &col.expr {
+        return expr.eval(row, params);
+    }
     match col.source.as_deref() {
         None => row.get(&col.name).cloned(),
         Some("param") => params.get(&col.name).cloned().map(Value::String),
@@ -999,6 +1002,38 @@ mod build_tests {
         explode.insert("status".to_string(), vec!["a".to_string(), "b".to_string()]);
         let url = build_url(&base(), "/x", &BTreeMap::new(), None, &explode).unwrap();
         assert_eq!(url.query(), Some("status=a&status=b"));
+    }
+
+    #[test]
+    fn build_batch_evaluates_expr_column() {
+        let col = ResponseColumn {
+            name: "title".into(),
+            r#type: "varchar".into(),
+            source: None,
+            expr: Some(
+                serde_json::from_value(serde_json::json!({
+                    "kind": "coalesce",
+                    "exprs": [
+                        {"kind": "path", "path": ["attributes", "title"]},
+                        {"kind": "path", "path": ["title"]}
+                    ]
+                }))
+                .unwrap(),
+            ),
+        };
+        let schema = Arc::new(Schema::new(vec![Field::new("title", DataType::Utf8, true)]));
+        let rows = vec![
+            serde_json::json!({ "attributes": { "title": "A" } }),
+            serde_json::json!({ "title": "B" }),
+        ];
+        let batch = build_batch(&schema, &[col], &rows, &BTreeMap::new()).unwrap();
+        let arr = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<arrow_array::StringArray>()
+            .unwrap();
+        assert_eq!(arr.value(0), "A");
+        assert_eq!(arr.value(1), "B");
     }
 
     #[test]

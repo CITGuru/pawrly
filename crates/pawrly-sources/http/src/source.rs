@@ -434,6 +434,10 @@ pub struct ResponseColumn {
     /// Optional: pull from a JSONPath inside each row, or `param` to inject a request param.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
+    /// Optional computed expression, evaluated per row. Takes precedence over
+    /// `source` when present (for columns a plain JSONPath can't express).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expr: Option<crate::expr::ColumnExpr>,
 }
 
 /// In-memory shared state for an HTTP source.
