@@ -123,6 +123,11 @@ pub struct ParamSpec {
     /// keyed by operator token (`">="` -> `"since"`).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub emit: BTreeMap<String, String>,
+    /// Push a SQL `IN (a, b, c)` filter down as repeated query pairs
+    /// (`?key=a&key=b&key=c`) instead of post-filtering. Equality still emits a
+    /// single pair. Only honored for the query string (not path/body params).
+    #[serde(default)]
+    pub explode: bool,
 }
 
 fn default_type() -> String {
@@ -185,6 +190,16 @@ pub enum PaginationConfig {
         size_param: String,
         /// Page size (also the offset increment).
         size: u32,
+    },
+    /// Cursor carried in the request *body* rather than the query string (GraphQL
+    /// `variables.after`, Notion `start_cursor`, …): read the next cursor from the
+    /// response body at `next_path`, then inject it into the next request's JSON
+    /// body at `cursor_path`. Stop when the response cursor is absent or empty.
+    BodyCursor {
+        /// `$.a.b` path in the request JSON body where the cursor is written.
+        cursor_path: String,
+        /// `$.a.b` path in the response body the next cursor is read from.
+        next_path: String,
     },
 }
 

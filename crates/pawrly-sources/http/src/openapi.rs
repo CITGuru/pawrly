@@ -361,6 +361,7 @@ fn build_params(
                     .map(scalar_to_string),
                 accepts: Vec::new(),
                 emit: BTreeMap::new(),
+                explode: false,
             }
         })
         .collect()
@@ -789,6 +790,7 @@ mod tests {
                 default: None,
                 accepts: vec![],
                 emit: BTreeMap::new(),
+                explode: false,
             },
             ParamSpec {
                 name: "per_page".into(),
@@ -797,6 +799,7 @@ mod tests {
                 default: None,
                 accepts: vec![],
                 emit: BTreeMap::new(),
+                explode: false,
             },
         ];
         let pg = infer_pagination(&params, &BTreeSet::new());
@@ -815,6 +818,7 @@ mod tests {
                 default: None,
                 accepts: vec![],
                 emit: BTreeMap::new(),
+                explode: false,
             },
             ParamSpec {
                 name: "limit".into(),
@@ -823,6 +827,7 @@ mod tests {
                 default: None,
                 accepts: vec![],
                 emit: BTreeMap::new(),
+                explode: false,
             },
         ];
         assert!(matches!(
@@ -840,6 +845,7 @@ mod tests {
             default: None,
             accepts: vec![],
             emit: BTreeMap::new(),
+            explode: false,
         }];
         assert!(infer_pagination(&params, &BTreeSet::new()).is_none());
         let fields: BTreeSet<String> = ["next_page_token".to_string()].into_iter().collect();
@@ -857,6 +863,7 @@ mod tests {
             default: None,
             accepts: vec![],
             emit: BTreeMap::new(),
+            explode: false,
         }];
         assert!(infer_pagination(&params, &BTreeSet::new()).is_none());
     }
@@ -870,6 +877,7 @@ mod tests {
             default: None,
             accepts: vec![],
             emit: BTreeMap::new(),
+            explode: false,
         }];
         assert!(infer_pagination(&params, &BTreeSet::new()).is_none());
         let fields: BTreeSet<String> = ["data".into(), "has_more".into()].into_iter().collect();

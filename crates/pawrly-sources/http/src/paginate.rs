@@ -17,6 +17,39 @@ pub enum NextPage {
     Params(BTreeMap<String, String>),
     /// Follow an absolute URL verbatim (used by `Link` header pagination).
     Url(String),
+    /// Re-issue against the table endpoint, injecting this cursor into the
+    /// request body at the configured path (used by body-cursor pagination).
+    BodyCursor(String),
+}
+
+/// Set the value at a `$.a.b` path inside a JSON object, creating intermediate
+/// objects as needed. Returns `false` if a non-object blocks the path (the body
+/// is then left unchanged). `$` replaces the whole value.
+pub fn set_json_at_path(root: &mut Value, path: &str, leaf: Value) -> bool {
+    let trimmed = path.trim_start_matches("$.").trim_start_matches('$');
+    let parts: Vec<&str> = trimmed.split('.').filter(|p| !p.is_empty()).collect();
+    if parts.is_empty() {
+        *root = leaf;
+        return true;
+    }
+    let mut cur = root;
+    for part in &parts[..parts.len() - 1] {
+        match cur.as_object_mut() {
+            Some(obj) => {
+                cur = obj
+                    .entry((*part).to_string())
+                    .or_insert_with(|| Value::Object(serde_json::Map::new()));
+            }
+            None => return false,
+        }
+    }
+    match (cur.as_object_mut(), parts.last()) {
+        (Some(obj), Some(last)) => {
+            obj.insert((*last).to_string(), leaf);
+            true
+        }
+        _ => false,
+    }
 }
 
 /// Walk a `$.a.b` path into a JSON body and return the leaf value, if present.
@@ -126,6 +159,7 @@ pub fn seed_initial(config: &PaginationConfig, params: &mut BTreeMap<String, Str
         }
         PaginationConfig::Cursor { .. }
         | PaginationConfig::RowCursor { .. }
+        | PaginationConfig::BodyCursor { .. }
         | PaginationConfig::LinkHeader => {}
     }
 }
@@ -203,6 +237,14 @@ pub fn next_page(
             next.insert(size_param.clone(), size.to_string());
             Some(NextPage::Params(next))
         }
+        PaginationConfig::BodyCursor { next_path, .. } => {
+            // Stop on an empty page or when no further cursor is offered.
+            if rows.is_empty() {
+                return None;
+            }
+            let cursor = cursor_at_path(body, next_path)?;
+            Some(NextPage::BodyCursor(cursor))
+        }
     }
 }
 
@@ -217,6 +259,50 @@ mod tests {
         let mut h = HeaderMap::new();
         h.insert(LINK, HeaderValue::from_str(value).unwrap());
         h
+    }
+
+    #[test]
+    fn set_json_at_path_inserts_and_creates() {
+        let mut v = serde_json::json!({ "variables": { "first": 100 } });
+        assert!(set_json_at_path(
+            &mut v,
+            "$.variables.after",
+            Value::String("CUR".into())
+        ));
+        assert_eq!(v["variables"]["after"], serde_json::json!("CUR"));
+        assert_eq!(v["variables"]["first"], serde_json::json!(100));
+
+        let mut w = serde_json::json!({});
+        assert!(set_json_at_path(&mut w, "$.a.b", Value::String("x".into())));
+        assert_eq!(w["a"]["b"], serde_json::json!("x"));
+
+        // A non-object blocking the path is rejected, leaving the value intact.
+        let mut blocked = serde_json::json!({ "a": 1 });
+        assert!(!set_json_at_path(&mut blocked, "$.a.b", Value::Bool(true)));
+        assert_eq!(blocked["a"], serde_json::json!(1));
+    }
+
+    #[test]
+    fn body_cursor_advances_then_stops() {
+        let cfg = PaginationConfig::BodyCursor {
+            cursor_path: "$.variables.after".into(),
+            next_path: "$.data.teams.pageInfo.endCursor".into(),
+        };
+        let params = BTreeMap::new();
+        let headers = HeaderMap::new();
+        let rows = vec![serde_json::json!({ "id": "a" })];
+        let body =
+            serde_json::json!({ "data": { "teams": { "pageInfo": { "endCursor": "CUR" } } } });
+
+        match next_page(&cfg, &params, &body, &headers, &rows, 0) {
+            Some(NextPage::BodyCursor(c)) => assert_eq!(c, "CUR"),
+            _ => panic!("expected a body cursor"),
+        }
+        // Empty cursor -> stop.
+        let empty = serde_json::json!({ "data": { "teams": { "pageInfo": { "endCursor": "" } } } });
+        assert!(next_page(&cfg, &params, &empty, &headers, &rows, 1).is_none());
+        // Empty page -> stop regardless of cursor.
+        assert!(next_page(&cfg, &params, &body, &headers, &[], 1).is_none());
     }
 
     #[test]
