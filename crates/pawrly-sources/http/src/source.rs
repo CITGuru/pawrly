@@ -128,6 +128,47 @@ pub struct ParamSpec {
     /// single pair. Only honored for the query string (not path/body params).
     #[serde(default)]
     pub explode: bool,
+    /// Compute this param's value (from the clock or another param) when the
+    /// query doesn't supply it — a dynamic default. See [`Derive`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub derive: Option<Derive>,
+}
+
+/// How a [`ParamSpec`] computes its value when the query doesn't supply one.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Derive {
+    /// Epoch seconds `now - seconds` — a relative time-window default.
+    Ago { seconds: u64 },
+    /// Split the `from` param's value by `separator` and take `part` (0-based).
+    Split {
+        from: String,
+        separator: String,
+        #[serde(default)]
+        part: usize,
+    },
+}
+
+impl Derive {
+    /// Resolve the derived value. `now_epoch` is the current Unix time in
+    /// seconds (passed in so the logic stays testable).
+    #[must_use]
+    pub fn resolve(&self, params: &BTreeMap<String, String>, now_epoch: i64) -> Option<String> {
+        match self {
+            Self::Ago { seconds } => {
+                Some((now_epoch - i64::try_from(*seconds).unwrap_or(i64::MAX)).to_string())
+            }
+            Self::Split {
+                from,
+                separator,
+                part,
+            } => params
+                .get(from)?
+                .split(separator.as_str())
+                .nth(*part)
+                .map(str::to_string),
+        }
+    }
 }
 
 fn default_type() -> String {
@@ -620,6 +661,29 @@ pub fn parse_arrow_type(s: &str) -> DataType {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn derive_ago() {
+        let d = Derive::Ago { seconds: 3600 };
+        assert_eq!(
+            d.resolve(&BTreeMap::new(), 1_000_000).as_deref(),
+            Some("996400")
+        );
+    }
+
+    #[test]
+    fn derive_split_takes_part() {
+        let d = Derive::Split {
+            from: "issue".into(),
+            separator: "-".into(),
+            part: 1,
+        };
+        let mut params = BTreeMap::new();
+        params.insert("issue".into(), "ENG-123".into());
+        assert_eq!(d.resolve(&params, 0).as_deref(), Some("123"));
+        // Missing source param -> no value.
+        assert_eq!(d.resolve(&BTreeMap::new(), 0), None);
+    }
 
     #[test]
     fn parses_arrow_types() {

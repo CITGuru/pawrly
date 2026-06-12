@@ -185,6 +185,23 @@ impl TableProvider for HttpTableProvider {
                 params.insert(p.name.clone(), default.clone());
             }
         }
+        // Derived params: compute from the clock or another (already bound) param
+        // when the query didn't supply a value.
+        let now_epoch = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
+        let mut derived: Vec<(String, String)> = Vec::new();
+        for p in &self.spec.params {
+            if params.contains_key(&p.name) {
+                continue;
+            }
+            if let Some(d) = &p.derive
+                && let Some(v) = d.resolve(&params, now_epoch)
+            {
+                derived.push((p.name.clone(), v));
+            }
+        }
+        params.extend(derived);
         // `IN (...)` filters on explode params -> repeated query pairs.
         let mut explode_params: BTreeMap<String, Vec<String>> = BTreeMap::new();
         for f in filters {
