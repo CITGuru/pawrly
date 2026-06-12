@@ -389,6 +389,7 @@ fn build_response(
         schema: columns,
         allow_404_empty: false,
         error: None,
+        reshape: None,
     }
 }
 
@@ -502,6 +503,7 @@ fn single_json_response() -> ResponseSpec {
         schema: vec![json_column("value")],
         allow_404_empty: false,
         error: None,
+        reshape: None,
     }
 }
 

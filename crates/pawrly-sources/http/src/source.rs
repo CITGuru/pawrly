@@ -404,6 +404,28 @@ pub struct ResponseSpec {
     /// instead of silently parsing them as rows.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<ResponseErrorSpec>,
+    /// Optionally reshape the value at `path` into rows before column extraction
+    /// (for payloads that aren't already a flat array). See [`Reshape`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reshape: Option<Reshape>,
+}
+
+/// How to turn a non-array response payload into rows.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Reshape {
+    /// The value at `path` is an object/map; emit one row per entry — the entry
+    /// value with its key added as `_key`.
+    DictEntries,
+    /// Flatten `{ <series>: [{ …, <points>: [[t, v], …] }] }` into one row per
+    /// point: the series fields, plus the point's two values under `timestamp`
+    /// and `value`.
+    SeriesPoints {
+        series: String,
+        points: String,
+        timestamp: String,
+        value: String,
+    },
 }
 
 fn default_response_path() -> String {

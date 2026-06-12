@@ -34,7 +34,7 @@ use serde_json::Value;
 use crate::paginate::{self, NextPage};
 use crate::source::{
     BodyKind, HttpSource, HttpTableSpec, PaginationConfig, RateLimitPolicy, RequestBody,
-    ResponseColumn, custom_body_object, schema_for,
+    Reshape, ResponseColumn, ResponseSpec, custom_body_object, schema_for,
 };
 
 #[derive(Debug)]
@@ -411,7 +411,7 @@ impl TableProvider for HttpTableProvider {
             }
 
             let page_start = all_rows.len();
-            all_rows.extend(extract_rows(&body, &self.spec.response.path)?);
+            all_rows.extend(extract_rows(&body, &self.spec.response)?);
 
             // Stop early once enough rows are collected to satisfy a LIMIT.
             if let Some(lim) = limit
@@ -740,23 +740,74 @@ fn detect_error(
     }
 }
 
-fn extract_rows(body: &Value, path: &str) -> datafusion::common::Result<Vec<Value>> {
-    if path == "$" {
-        return as_array(body);
+fn extract_rows(body: &Value, spec: &ResponseSpec) -> datafusion::common::Result<Vec<Value>> {
+    let Some(at) = paginate::json_at_path(body, &spec.path) else {
+        return Ok(Vec::new());
+    };
+    match &spec.reshape {
+        None => as_array(at),
+        Some(Reshape::DictEntries) => Ok(reshape_dict_entries(at)),
+        Some(Reshape::SeriesPoints {
+            series,
+            points,
+            timestamp,
+            value,
+        }) => Ok(reshape_series_points(at, series, points, timestamp, value)),
     }
-    // Simple `$.field.subfield` walker; no filters, slices, or wildcards.
-    let trimmed = path.trim_start_matches("$.");
-    let mut current = body;
-    for part in trimmed.split('.') {
-        if part.is_empty() {
+}
+
+/// One row per entry of the object at the response path; the entry value with
+/// its key added as `_key` (or `{_key, _value}` when the value isn't an object).
+fn reshape_dict_entries(v: &Value) -> Vec<Value> {
+    let Some(obj) = v.as_object() else {
+        return Vec::new();
+    };
+    obj.iter()
+        .map(|(k, val)| match val {
+            Value::Object(_) => {
+                let mut row = val.clone();
+                if let Some(m) = row.as_object_mut() {
+                    m.insert("_key".into(), Value::String(k.clone()));
+                }
+                row
+            }
+            _ => serde_json::json!({ "_key": k, "_value": val }),
+        })
+        .collect()
+}
+
+/// Flatten a `{ series: [{ …, points: [[t, v], …] }] }` payload into one row per
+/// point: the series fields (minus `points`) plus `timestamp`/`value`.
+fn reshape_series_points(
+    v: &Value,
+    series: &str,
+    points: &str,
+    timestamp: &str,
+    value: &str,
+) -> Vec<Value> {
+    let Some(arr) = v.get(series).and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for s in arr {
+        let Some(pts) = s.get(points).and_then(Value::as_array) else {
             continue;
-        }
-        let Some(next) = current.get(part) else {
-            return Ok(Vec::new());
         };
-        current = next;
+        for pt in pts {
+            let Some(pair) = pt.as_array() else { continue };
+            let (Some(t), Some(val)) = (pair.first(), pair.get(1)) else {
+                continue;
+            };
+            let mut row = s.clone();
+            if let Some(m) = row.as_object_mut() {
+                m.remove(points);
+                m.insert(timestamp.to_string(), t.clone());
+                m.insert(value.to_string(), val.clone());
+            }
+            out.push(row);
+        }
     }
-    as_array(current)
+    out
 }
 
 fn as_array(v: &Value) -> datafusion::common::Result<Vec<Value>> {
@@ -1051,6 +1102,33 @@ mod build_tests {
             .unwrap();
         assert_eq!(arr.value(0), "A");
         assert_eq!(arr.value(1), "B");
+    }
+
+    #[test]
+    fn reshape_dict_entries_keys_to_rows() {
+        let v = serde_json::json!({
+            "primary": { "background": "#fff", "foreground": "#000" },
+            "secondary": { "background": "#eee" }
+        });
+        let rows = reshape_dict_entries(&v);
+        assert_eq!(rows.len(), 2);
+        let primary = rows.iter().find(|r| r["_key"] == serde_json::json!("primary"));
+        assert_eq!(primary.unwrap()["background"], serde_json::json!("#fff"));
+    }
+
+    #[test]
+    fn reshape_series_points_explodes_pointlist() {
+        let v = serde_json::json!({
+            "series": [
+                { "metric": "cpu", "scope": "host:a", "pointlist": [[1000, 0.5], [2000, 0.7]] }
+            ]
+        });
+        let rows = reshape_series_points(&v, "series", "pointlist", "timestamp", "value");
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0]["metric"], serde_json::json!("cpu"));
+        assert_eq!(rows[0]["timestamp"], serde_json::json!(1000));
+        assert_eq!(rows[1]["value"], serde_json::json!(0.7));
+        assert!(rows[0].get("pointlist").is_none());
     }
 
     #[test]
