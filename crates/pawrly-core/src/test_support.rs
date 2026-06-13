@@ -91,6 +91,32 @@ impl MockEngine {
         self
     }
 
+    /// Register a fake table carrying a description (for catalog-search tests).
+    pub fn add_table_with_description(
+        &self,
+        name: TableName,
+        kind: SourceKind,
+        description: impl Into<String>,
+    ) -> &Self {
+        let info = TableInfo {
+            name: name.clone(),
+            kind,
+            description: Some(description.into()),
+            row_count_estimate: None,
+            cached: false,
+            required_filters: Vec::new(),
+        };
+        let desc = TableDescription {
+            table: info.clone(),
+            columns: Vec::new(),
+            pushable_filter_columns: Vec::new(),
+            examples: Vec::new(),
+            wiki: None,
+        };
+        self.inner.lock().tables.insert(name, (info, desc));
+        self
+    }
+
     /// Pre-stage a canned response for queries whose SQL contains `needle`.
     /// Lookups use `contains` so tests can match a fragment without having
     /// to reproduce the full SQL string.

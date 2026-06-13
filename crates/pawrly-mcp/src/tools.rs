@@ -22,6 +22,64 @@ pub fn list_tools() -> Vec<Value> {
             }
         }),
         json!({
+            "name": "search_tables",
+            "description": "Find tables by keyword across all sources (or one source). \
+                            Matches the query terms against table names and descriptions \
+                            (case-insensitive; every term must appear), ranked with \
+                            name matches ahead of description-only matches. Use this to \
+                            discover tables in large catalogs before `describe_table`. \
+                            Returns { tables, match_count, truncated }.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Keywords to match against table names and descriptions"
+                    },
+                    "source": { "type": "string", "description": "Limit to one source" },
+                    "limit": {
+                        "type": "integer",
+                        "default": 50,
+                        "description": "Maximum number of matches to return"
+                    }
+                },
+                "required": ["query"]
+            }
+        }),
+        json!({
+            "name": "list_columns",
+            "description": "List columns flattened to one row per column \
+                            ({ schema, table, column, type, nullable, required_filter, \
+                            description }). Scope with `table` (one table), `source` \
+                            (one source), and/or `name` (case-insensitive keyword over \
+                            column name and description) — use `name` to find which \
+                            tables expose a column like `created_at` or `email`. Returns \
+                            { columns, column_count, truncated }. Prefer scoping by \
+                            `source` or `table` on large catalogs.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "table": {
+                        "type": "string",
+                        "description": "Limit to one fully-qualified `<schema>.<table>`"
+                    },
+                    "source": {
+                        "type": "string",
+                        "description": "Limit to one source (ignored when `table` is given)"
+                    },
+                    "name": {
+                        "type": "string",
+                        "description": "Keyword filter over column name and description"
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "default": 500,
+                        "description": "Maximum number of columns to return"
+                    }
+                }
+            }
+        }),
+        json!({
             "name": "query",
             "description": "Run a SQL query and return rows as { columns, rows, row_count }.",
             "inputSchema": {
@@ -248,6 +306,152 @@ pub async fn call_tool(
                 .collect();
             Ok(json!({ "tables": rows }))
         }
+        "search_tables" => {
+            let query = args
+                .get("query")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| ToolError::BadArgs("`query` is required".into()))?;
+            let terms = search_terms(query);
+            if terms.is_empty() {
+                return Err(ToolError::BadArgs(
+                    "`query` must contain at least one term".into(),
+                ));
+            }
+            let limit = args
+                .get("limit")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(50) as usize;
+            // Search is built on `list_tables` so it works identically over a
+            // local engine or a remote daemon — no extra RPC surface.
+            let filter =
+                args.get("source")
+                    .and_then(|v| v.as_str())
+                    .map(|s| pawrly_core::TableFilter {
+                        source: Some(s.to_string()),
+                        name_glob: None,
+                    });
+            let tables = engine
+                .list_tables(filter)
+                .await
+                .map_err(|e| ToolError::Engine(e.to_string()))?;
+
+            let mut scored: Vec<(i32, pawrly_core::TableInfo)> = tables
+                .into_iter()
+                .filter_map(|t| {
+                    let qualified = format!("{}.{}", t.name.schema, t.name.table);
+                    let desc = t.description.as_deref().unwrap_or("");
+                    table_match_score(&terms, &qualified, &desc.to_lowercase()).map(|s| (s, t))
+                })
+                .collect();
+            // Best score first; ties broken by qualified name for stable output.
+            scored.sort_by(|a, b| {
+                b.0.cmp(&a.0)
+                    .then_with(|| a.1.name.schema.cmp(&b.1.name.schema))
+                    .then_with(|| a.1.name.table.cmp(&b.1.name.table))
+            });
+
+            let match_count = scored.len();
+            let truncated = match_count > limit;
+            let rows: Vec<Value> = scored
+                .into_iter()
+                .take(limit)
+                .map(|(score, t)| {
+                    json!({
+                        "schema": t.name.schema,
+                        "name": t.name.table,
+                        "kind": t.kind.to_string(),
+                        "description": t.description,
+                        "required_filters": t.required_filters,
+                        "score": score,
+                    })
+                })
+                .collect();
+            Ok(json!({
+                "tables": rows,
+                "match_count": match_count,
+                "truncated": truncated,
+            }))
+        }
+        "list_columns" => {
+            let name_filter = args
+                .get("name")
+                .and_then(|v| v.as_str())
+                .map(str::to_lowercase);
+            let limit = args
+                .get("limit")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(500) as usize;
+
+            // Resolve the target tables: one explicit table, or every table in
+            // scope (via `list_tables`, so this works on a remote engine too).
+            let targets: Vec<pawrly_core::TableName> = if let Some(tbl) =
+                args.get("table").and_then(|v| v.as_str())
+            {
+                vec![pawrly_core::TableName::parse(tbl).ok_or_else(|| {
+                    ToolError::BadArgs(format!("`table` must be `<schema>.<table>`, got `{tbl}`"))
+                })?]
+            } else {
+                let filter =
+                    args.get("source")
+                        .and_then(|v| v.as_str())
+                        .map(|s| pawrly_core::TableFilter {
+                            source: Some(s.to_string()),
+                            name_glob: None,
+                        });
+                engine
+                    .list_tables(filter)
+                    .await
+                    .map_err(|e| ToolError::Engine(e.to_string()))?
+                    .into_iter()
+                    .map(|t| t.name)
+                    .collect()
+            };
+
+            let mut rows: Vec<Value> = Vec::new();
+            let mut truncated = false;
+            'outer: for table in &targets {
+                let desc = engine
+                    .describe_table(table)
+                    .await
+                    .map_err(|e| ToolError::Engine(e.to_string()))?;
+                let required: std::collections::HashSet<&str> = desc
+                    .table
+                    .required_filters
+                    .iter()
+                    .map(String::as_str)
+                    .collect();
+                for col in &desc.columns {
+                    if let Some(needle) = &name_filter {
+                        let in_name = col.name.to_lowercase().contains(needle);
+                        let in_desc = col
+                            .description
+                            .as_deref()
+                            .is_some_and(|d| d.to_lowercase().contains(needle));
+                        if !in_name && !in_desc {
+                            continue;
+                        }
+                    }
+                    if rows.len() >= limit {
+                        truncated = true;
+                        break 'outer;
+                    }
+                    rows.push(json!({
+                        "schema": table.schema,
+                        "table": table.table,
+                        "column": col.name,
+                        "type": col.data_type,
+                        "nullable": col.nullable,
+                        "required_filter": required.contains(col.name.as_str()),
+                        "description": col.description,
+                    }));
+                }
+            }
+            Ok(json!({
+                "columns": rows,
+                "column_count": rows.len(),
+                "truncated": truncated,
+            }))
+        }
         "query" => {
             let sql = args
                 .get("sql")
@@ -417,6 +621,32 @@ pub async fn call_tool(
         }
         other => Err(ToolError::Unknown(other.to_string())),
     }
+}
+
+/// Tokenize a search query into distinct lowercased terms.
+fn search_terms(query: &str) -> Vec<String> {
+    let mut terms: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
+    terms.dedup();
+    terms
+}
+
+/// Score one table against the search terms (AND semantics). Returns `None`
+/// when any term is absent from both the qualified name and the description.
+/// A term hit in the name weighs more than one in the description only, so
+/// name matches rank ahead. `qualified` is matched case-insensitively;
+/// `desc_lower` must already be lowercased by the caller.
+fn table_match_score(terms: &[String], qualified: &str, desc_lower: &str) -> Option<i32> {
+    let name_lower = qualified.to_lowercase();
+    let mut score = 0i32;
+    for term in terms {
+        let in_name = name_lower.contains(term);
+        let in_desc = desc_lower.contains(term);
+        if !in_name && !in_desc {
+            return None;
+        }
+        score += if in_name { 10 } else { 1 };
+    }
+    Some(score)
 }
 
 /// Parse the required `table` argument as a fully-qualified `<schema>.<table>`.
@@ -669,6 +899,232 @@ mod tests {
             }],
         );
         Arc::new(mock)
+    }
+
+    #[test]
+    fn search_tables_is_listed() {
+        let names: Vec<String> = list_tools()
+            .iter()
+            .filter_map(|t| t["name"].as_str().map(str::to_string))
+            .collect();
+        assert!(names.contains(&"search_tables".to_string()));
+    }
+
+    #[test]
+    fn table_match_score_requires_all_terms() {
+        let terms = vec!["pull".to_string(), "request".to_string()];
+        // Both terms present (one in name, one in description).
+        assert!(table_match_score(&terms, "gh.pull_requests", "request data").is_some());
+        // Second term missing everywhere → no match.
+        assert!(table_match_score(&terms, "gh.pulls", "open pulls").is_none());
+    }
+
+    #[test]
+    fn table_match_score_ranks_name_over_description() {
+        let terms = vec!["issue".to_string()];
+        let in_name = table_match_score(&terms, "gh.issues", "").unwrap();
+        let in_desc = table_match_score(&terms, "gh.tickets", "tracks an issue").unwrap();
+        assert!(in_name > in_desc, "name hit should outrank description hit");
+    }
+
+    /// A `MockEngine` with a small, searchable catalog.
+    fn searchable() -> Arc<dyn EngineService> {
+        use pawrly_core::{SourceKind, TableName};
+        let mock = MockEngine::new();
+        mock.add_source("gh", SourceKind::Http);
+        mock.add_table_with_description(
+            TableName::new("gh", "issues"),
+            SourceKind::Http,
+            "Issues opened against a repository",
+        );
+        mock.add_table_with_description(
+            TableName::new("gh", "pull_requests"),
+            SourceKind::Http,
+            "Pull requests with review state",
+        );
+        mock.add_table_with_description(
+            TableName::new("gh", "commits"),
+            SourceKind::Http,
+            "Commit history for a branch",
+        );
+        Arc::new(mock)
+    }
+
+    #[tokio::test]
+    async fn search_tables_ranks_and_filters() {
+        let out = call_tool(&searchable(), "search_tables", &json!({ "query": "issue" }))
+            .await
+            .unwrap();
+        let tables = out["tables"].as_array().unwrap();
+        // `issues` (name hit) and `pull_requests` has no "issue"; only `issues` matches.
+        assert_eq!(out["match_count"], 1);
+        assert_eq!(tables[0]["name"], "issues");
+        assert_eq!(out["truncated"], false);
+    }
+
+    #[tokio::test]
+    async fn search_tables_matches_descriptions() {
+        let out = call_tool(
+            &searchable(),
+            "search_tables",
+            &json!({ "query": "review" }),
+        )
+        .await
+        .unwrap();
+        let tables = out["tables"].as_array().unwrap();
+        assert_eq!(tables.len(), 1);
+        assert_eq!(tables[0]["name"], "pull_requests");
+    }
+
+    #[tokio::test]
+    async fn search_tables_honors_limit_and_reports_truncation() {
+        // Single common term hits all three tables' source schema prefix `gh`.
+        let out = call_tool(
+            &searchable(),
+            "search_tables",
+            &json!({ "query": "gh", "limit": 2 }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(out["match_count"], 3);
+        assert_eq!(out["truncated"], true);
+        assert_eq!(out["tables"].as_array().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn search_tables_requires_query() {
+        let err = call_tool(&searchable(), "search_tables", &json!({}))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ToolError::BadArgs(_)));
+        // Whitespace-only query has no terms.
+        let err = call_tool(&searchable(), "search_tables", &json!({ "query": "   " }))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ToolError::BadArgs(_)));
+    }
+
+    #[test]
+    fn list_columns_is_listed() {
+        let names: Vec<String> = list_tools()
+            .iter()
+            .filter_map(|t| t["name"].as_str().map(str::to_string))
+            .collect();
+        assert!(names.contains(&"list_columns".to_string()));
+    }
+
+    /// A `MockEngine` with two tables that share a `created_at` column.
+    fn with_columns() -> Arc<dyn EngineService> {
+        use pawrly_core::{ColumnSpec, SourceKind, TableName};
+        let col = |name: &str, ty: &str, desc: Option<&str>| ColumnSpec {
+            name: name.into(),
+            data_type: ty.into(),
+            nullable: true,
+            description: desc.map(Into::into),
+            is_filter_pushable: false,
+            is_required_filter: false,
+        };
+        let mock = MockEngine::new();
+        mock.add_source("gh", SourceKind::Http);
+        mock.add_table(
+            TableName::new("gh", "issues"),
+            SourceKind::Http,
+            vec![
+                col("number", "Int64", None),
+                col("title", "Utf8", Some("Issue title")),
+                col("created_at", "Timestamp", Some("When the issue was opened")),
+            ],
+        );
+        mock.add_table(
+            TableName::new("gh", "commits"),
+            SourceKind::Http,
+            vec![
+                col("sha", "Utf8", None),
+                col("created_at", "Timestamp", Some("Commit timestamp")),
+            ],
+        );
+        Arc::new(mock)
+    }
+
+    #[tokio::test]
+    async fn list_columns_for_one_table() {
+        let out = call_tool(
+            &with_columns(),
+            "list_columns",
+            &json!({ "table": "gh.issues" }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(out["column_count"], 3);
+        let cols = out["columns"].as_array().unwrap();
+        assert_eq!(cols[0]["schema"], "gh");
+        assert_eq!(cols[0]["table"], "issues");
+        assert_eq!(cols[0]["column"], "number");
+        assert_eq!(cols[0]["type"], "Int64");
+    }
+
+    #[tokio::test]
+    async fn list_columns_name_filter_spans_tables() {
+        let out = call_tool(
+            &with_columns(),
+            "list_columns",
+            &json!({ "name": "created_at" }),
+        )
+        .await
+        .unwrap();
+        // Both tables carry `created_at`.
+        assert_eq!(out["column_count"], 2);
+        for c in out["columns"].as_array().unwrap() {
+            assert_eq!(c["column"], "created_at");
+        }
+    }
+
+    #[tokio::test]
+    async fn list_columns_name_filter_matches_description() {
+        // "opened" appears only in issues.created_at's description.
+        let out = call_tool(
+            &with_columns(),
+            "list_columns",
+            &json!({ "name": "opened" }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(out["column_count"], 1);
+        assert_eq!(out["columns"][0]["table"], "issues");
+        assert_eq!(out["columns"][0]["column"], "created_at");
+    }
+
+    #[tokio::test]
+    async fn list_columns_source_scope() {
+        let out = call_tool(&with_columns(), "list_columns", &json!({ "source": "gh" }))
+            .await
+            .unwrap();
+        assert_eq!(out["column_count"], 5); // 3 + 2
+    }
+
+    #[tokio::test]
+    async fn list_columns_honors_limit() {
+        let out = call_tool(
+            &with_columns(),
+            "list_columns",
+            &json!({ "table": "gh.issues", "limit": 2 }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(out["column_count"], 2);
+        assert_eq!(out["truncated"], true);
+    }
+
+    #[tokio::test]
+    async fn list_columns_rejects_unqualified_table() {
+        let err = call_tool(
+            &with_columns(),
+            "list_columns",
+            &json!({ "table": "issues" }),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, ToolError::BadArgs(_)));
     }
 
     #[tokio::test]

@@ -59,19 +59,119 @@ The server exposes these tools:
 | `cancel_query` | `{ query_id }` | `{ cancelled }` — aborts an in-flight query with that id |
 | `list_sources` | `{}` | the configured sources, their kinds, status, and table counts |
 | `list_tables` | `{ source? }` | the tables across configured sources |
+| `search_tables` | `{ query, source?, limit? }` | tables whose name or description match the keywords, ranked; `{ tables, match_count, truncated }` |
+| `list_columns` | `{ table?, source?, name?, limit? }` | columns flattened one-per-row across tables; `name` greps column name/description; `{ columns, column_count, truncated }` |
 | `describe_table` | `{ table }` | one table's columns, descriptions, pushdown affordances, examples, and agent-facing `wiki` notes |
 | `get_schema` | `{ sources?, compact? }` | a compact catalog overview for grounding an LLM |
 | `refresh_table` | `{ table }` | forces a cache refresh; returns rows written, size, and expiry |
+| `materialize` | `{ name, sql? \| file? \| url?, format?, params? }` | persists a named, self-backed table; `{ name, file_path, row_count, size_bytes }` |
+| `drop_materialized` | `{ name }` | drops a materialized table; `{ dropped }` |
 | `list_semantic_models` | `{}` | the semantic models with dimension/measure counts |
 | `describe_semantic_model` | `{ name }` | one model's full spec — dimensions, measures, relationships |
 | `semantic_query` | a structured query (below) | `{ columns, rows, row_count, truncated }` |
 
 ### `query`
 
-Run raw SQL. `max_rows` (default 1000) caps the rows returned.
+Run raw SQL. `max_rows` (default 1000) caps the rows returned. Pass a `query_id` so a concurrent `cancel_query` can abort a long-running scan.
 
 ```json
 { "sql": "SELECT status, COUNT(*) FROM data.orders GROUP BY status", "max_rows": 100 }
+```
+
+### `cancel_query`
+
+Abort an in-flight `query` or `semantic_query` that was started with the same `query_id`. Returns `{ cancelled }` — `false` if no query with that id was running. The cancel arrives on a separate request, so it is effective over the HTTP transport (where a second connection can reach the server mid-query).
+
+```json
+{ "query_id": "report-42" }
+```
+
+### `list_sources`
+
+List every configured source with its kind, connection status, and table count. Takes no arguments.
+
+```json
+{}
+```
+
+### `list_tables`
+
+List tables across all sources, or limit to one with `source`. Each row carries the table's schema, name, kind, description, cache flag, and any required filters.
+
+```json
+{ "source": "github" }
+```
+
+### `search_tables`
+
+Keyword discovery for large catalogs. Matches the query terms against table names and descriptions (case-insensitive; every term must appear), ranking name hits ahead of description-only hits. Returns `{ tables, match_count, truncated }`. Reach for this before `describe_table` when a source has hundreds of tables.
+
+```json
+{ "query": "pull request review", "source": "github", "limit": 20 }
+```
+
+### `list_columns`
+
+List columns flattened to one row per column — the column-level counterpart to `list_tables`. Scope with `table` (one table), `source` (one source), and/or `name`, a case-insensitive keyword over column name and description. Use `name` to find which tables expose a column like `created_at` or `email`. Returns `{ columns, column_count, truncated }`.
+
+```json
+{ "name": "created_at", "source": "github" }
+```
+
+### `describe_table`
+
+Full detail for one fully-qualified `<schema>.<table>`: column schema, pushdown affordances, example queries, and agent-facing `wiki` usage notes.
+
+```json
+{ "table": "github.pulls" }
+```
+
+### `get_schema`
+
+A compact catalog overview for grounding an LLM in one call — every schema, its tables, and a one-line column list per table. Limit to named sources, or set `compact: false` for fuller detail.
+
+```json
+{ "sources": ["github", "warehouse"], "compact": true }
+```
+
+### `refresh_table`
+
+Force an immediate cache refresh of a fully-qualified table. Only valid for tables with caching enabled; returns the rows written, size on disk, and next expiry.
+
+```json
+{ "table": "github.pulls" }
+```
+
+### `materialize`
+
+Persist data as a named, self-backed table queryable as `<namespace>.materialized.<name>` (see [materialize](./materialize.md)). Provide exactly one origin: `sql` (a query), `file` (a local CSV/Parquet/JSON path), or `url` (an http(s) file). Create-or-replace by name; the table is pinned and never auto-evicted. Returns `{ name, file_path, row_count, size_bytes }`.
+
+```json
+{ "name": "top_customers", "sql": "SELECT * FROM data.customers ORDER BY revenue DESC LIMIT 100" }
+```
+
+### `drop_materialized`
+
+Drop a materialized table by name. Returns `{ dropped }` — `false` if no such table existed.
+
+```json
+{ "name": "top_customers" }
+```
+
+### `list_semantic_models`
+
+List the [semantic-layer](./semantic.md) models with their dimension and measure counts. Takes no arguments.
+
+```json
+{}
+```
+
+### `describe_semantic_model`
+
+Full spec for one model: its dimensions, measures, relationships, named segments (reusable filter sets you can pass in `segments`), and any required filters to satisfy up front.
+
+```json
+{ "name": "orders" }
 ```
 
 ### `semantic_query`
