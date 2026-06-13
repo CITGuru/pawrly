@@ -384,26 +384,28 @@ pub async fn call_tool(
 
             // Resolve the target tables: one explicit table, or every table in
             // scope (via `list_tables`, so this works on a remote engine too).
-            let targets: Vec<pawrly_core::TableName> =
-                if let Some(tbl) = args.get("table").and_then(|v| v.as_str()) {
-                    vec![pawrly_core::TableName::parse(tbl).ok_or_else(|| {
-                        ToolError::BadArgs(format!("`table` must be `<schema>.<table>`, got `{tbl}`"))
-                    })?]
-                } else {
-                    let filter = args.get("source").and_then(|v| v.as_str()).map(|s| {
-                        pawrly_core::TableFilter {
+            let targets: Vec<pawrly_core::TableName> = if let Some(tbl) =
+                args.get("table").and_then(|v| v.as_str())
+            {
+                vec![pawrly_core::TableName::parse(tbl).ok_or_else(|| {
+                    ToolError::BadArgs(format!("`table` must be `<schema>.<table>`, got `{tbl}`"))
+                })?]
+            } else {
+                let filter =
+                    args.get("source")
+                        .and_then(|v| v.as_str())
+                        .map(|s| pawrly_core::TableFilter {
                             source: Some(s.to_string()),
                             name_glob: None,
-                        }
-                    });
-                    engine
-                        .list_tables(filter)
-                        .await
-                        .map_err(|e| ToolError::Engine(e.to_string()))?
-                        .into_iter()
-                        .map(|t| t.name)
-                        .collect()
-                };
+                        });
+                engine
+                    .list_tables(filter)
+                    .await
+                    .map_err(|e| ToolError::Engine(e.to_string()))?
+                    .into_iter()
+                    .map(|t| t.name)
+                    .collect()
+            };
 
             let mut rows: Vec<Value> = Vec::new();
             let mut truncated = false;
@@ -962,9 +964,13 @@ mod tests {
 
     #[tokio::test]
     async fn search_tables_matches_descriptions() {
-        let out = call_tool(&searchable(), "search_tables", &json!({ "query": "review" }))
-            .await
-            .unwrap();
+        let out = call_tool(
+            &searchable(),
+            "search_tables",
+            &json!({ "query": "review" }),
+        )
+        .await
+        .unwrap();
         let tables = out["tables"].as_array().unwrap();
         assert_eq!(tables.len(), 1);
         assert_eq!(tables[0]["name"], "pull_requests");
@@ -1042,9 +1048,13 @@ mod tests {
 
     #[tokio::test]
     async fn list_columns_for_one_table() {
-        let out = call_tool(&with_columns(), "list_columns", &json!({ "table": "gh.issues" }))
-            .await
-            .unwrap();
+        let out = call_tool(
+            &with_columns(),
+            "list_columns",
+            &json!({ "table": "gh.issues" }),
+        )
+        .await
+        .unwrap();
         assert_eq!(out["column_count"], 3);
         let cols = out["columns"].as_array().unwrap();
         assert_eq!(cols[0]["schema"], "gh");
@@ -1055,9 +1065,13 @@ mod tests {
 
     #[tokio::test]
     async fn list_columns_name_filter_spans_tables() {
-        let out = call_tool(&with_columns(), "list_columns", &json!({ "name": "created_at" }))
-            .await
-            .unwrap();
+        let out = call_tool(
+            &with_columns(),
+            "list_columns",
+            &json!({ "name": "created_at" }),
+        )
+        .await
+        .unwrap();
         // Both tables carry `created_at`.
         assert_eq!(out["column_count"], 2);
         for c in out["columns"].as_array().unwrap() {
@@ -1068,9 +1082,13 @@ mod tests {
     #[tokio::test]
     async fn list_columns_name_filter_matches_description() {
         // "opened" appears only in issues.created_at's description.
-        let out = call_tool(&with_columns(), "list_columns", &json!({ "name": "opened" }))
-            .await
-            .unwrap();
+        let out = call_tool(
+            &with_columns(),
+            "list_columns",
+            &json!({ "name": "opened" }),
+        )
+        .await
+        .unwrap();
         assert_eq!(out["column_count"], 1);
         assert_eq!(out["columns"][0]["table"], "issues");
         assert_eq!(out["columns"][0]["column"], "created_at");
@@ -1099,9 +1117,13 @@ mod tests {
 
     #[tokio::test]
     async fn list_columns_rejects_unqualified_table() {
-        let err = call_tool(&with_columns(), "list_columns", &json!({ "table": "issues" }))
-            .await
-            .unwrap_err();
+        let err = call_tool(
+            &with_columns(),
+            "list_columns",
+            &json!({ "table": "issues" }),
+        )
+        .await
+        .unwrap_err();
         assert!(matches!(err, ToolError::BadArgs(_)));
     }
 
