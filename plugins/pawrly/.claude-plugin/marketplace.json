@@ -1,0 +1,14 @@
+{
+    "name": "pawrly",
+    "owner": {
+        "name": "oyetoketoby",
+        "email": "oyetoketoby80@gmail.com"
+    },
+    "plugins": [
+        {
+            "name": "pawrly",
+            "source": "./",
+            "category": "productivity"
+        }
+    ]
+}
