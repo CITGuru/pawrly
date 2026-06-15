@@ -53,7 +53,7 @@ Tested on macOS (Apple Silicon and Intel) and Linux (x86_64). Should take under 
 
 Prerequisites:
 
-- **Rust** ≥ 1.85 with the 2024 edition (the workspace pins this via `[rust-toolchain.toml](./rust-toolchain.toml)`; `rustup` will install it automatically the first time you run `cargo`).
+- **Rust** ≥ 1.85 with the 2024 edition (the workspace pins this via [rust-toolchain.toml](./rust-toolchain.toml); `rustup` will install it automatically the first time you run `cargo`).
 - A C/C++ toolchain for DuckDB:
   - macOS: `xcode-select --install`
   - Debian/Ubuntu: `sudo apt-get install build-essential pkg-config libssl-dev cmake`
@@ -149,7 +149,7 @@ pawrly sql "
 
 You should see Acme on top with two orders totalling 619, then Initech at 300, then Globex at 29. To swap parquet in for either side, change the table's `format` to `parquet` and point `path` at a `.parquet` file — the SQL stays identical.
 
-For more sources — HTTP APIs, object storage, Postgres, DuckDB, Snowflake, Iceberg/Delta/DuckLake — see the worked examples in `[examples/pawrly.yaml](./examples/pawrly.yaml)` and the [sources reference](./docs/sources.md).
+For more sources — HTTP APIs, object storage, Postgres, DuckDB, Snowflake, Iceberg/Delta/DuckLake — see the worked examples in [examples/pawrly.yaml](./examples/pawrly.yaml) and the [sources reference](./docs/sources.md).
 
 #### Query an HTTP API — Stripe + Intercom
 
@@ -256,9 +256,9 @@ Same query, same result — local mode and daemon mode are identical-output by d
 
 ## What's in this repo
 
-- `[crates/](./crates)` — the Rust workspace.
-- `[examples/](./examples)` — reference configurations including the kitchen-sink workspace covering every source kind.
-- `[schemas/](./schemas)` — generated JSON Schema for `pawrly.yaml`. Wire this into your editor for completion + validation.
+- [crates/](./crates) — the Rust workspace.
+- [examples/](./examples) — reference configurations including the kitchen-sink workspace covering every source kind.
+- [schemas/](./schemas) — generated JSON Schema for `pawrly.yaml`. Wire this into your editor for completion + validation.
 
 ---
 
