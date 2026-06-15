@@ -14,7 +14,7 @@ pawrly [OPTIONS] <COMMAND>
 | `--home <PATH>` | Pawrly home directory (env: `PAWRLY_HOME`). |
 | `--remote <ENDPOINT>` | Talk to a daemon, e.g. `uds:///path/to/sock` or `tcp://host:port` (env: `PAWRLY_REMOTE`). `--remote off` forces in-process. |
 | `--no-remote` | Force in-process execution; never look for a daemon (env: `PAWRLY_NO_REMOTE`). |
-| `--log-level <LEVEL>` | Log verbosity (env: `PAWRLY_LOG`; `RUST_LOG` is also honored). |
+| `--log-level <LEVEL>` | Log verbosity: `error` \| `warn` \| `info` \| `debug` \| `trace` (default `info`; env: `PAWRLY_LOG`; `RUST_LOG` is also honored). |
 
 **Engine selection.** With neither `--remote` nor `--no-remote`, Pawrly auto-discovers a daemon over its Unix socket under `$PAWRLY_HOME` and falls back to in-process if none is healthy. For a TCP endpoint, a bearer token can be supplied via `PAWRLY_API_TOKEN`.
 
@@ -29,9 +29,11 @@ pawrly [OPTIONS] <COMMAND>
 | [`cache`](#pawrly-cache) | Inspect and manage the cache. |
 | [`config`](#pawrly-config) | Inspect the assembled config. |
 | [`init`](#pawrly-init) / [`validate`](#pawrly-validate) | Create / check a `pawrly.yaml`. |
+| [`materialize`](#pawrly-materialize) | Persist data as a named table. |
 | [`check`](#pawrly-check) | Run each source's `examples:` as live probes. |
-| [`serve`](#pawrly-serve) / `stop` / `status` | Run and manage the daemon. |
+| [`serve`](#pawrly-serve) / [`stop`](#pawrly-stop) / [`status`](#pawrly-status) | Run and manage the daemon. |
 | [`mcp-stdio`](#pawrly-mcp-stdio) | Run the MCP server over stdio. |
+| [`mcp-http`](#pawrly-mcp-http) | Run the MCP server over HTTP. |
 | `version` | Print the engine version and health. |
 
 ---
@@ -62,7 +64,7 @@ Browse and query the [semantic layer](./semantic.md).
 
 ```
 pawrly semantic list                       # list models (--json)
-pawrly semantic describe <MODEL>           # dimensions, measures, relationships, segments (--json)
+pawrly semantic describe <MODEL>           # dimensions, measures, relationships (--json adds segments)
 pawrly semantic query <MEASURE>...         # run a structured query
     --by <MEMBER>                          # group-by dimension (repeatable)
     --where '<MEMBER> <OP> <VALUE>'        # filter (repeatable)
@@ -88,22 +90,41 @@ pawrly semantic query orders.revenue --by orders.order_date.month --order-by ord
 List every registered table, or describe one.
 
 ```bash
-pawrly schema                 # all tables
-pawrly schema data.orders     # columns + types for one table
+pawrly schema                 # all tables (--json)
+pawrly schema data.orders     # columns + types for one table (--json)
 ```
+
+- `--json` — emit JSON instead of a table.
 
 ---
 
 ### `pawrly source`
 
-Manage the sources in your workspace.
+Manage the sources in your workspace. Mutating subcommands edit `pawrly.yaml` and propagate the change to the running engine.
 
 ```
-pawrly source add ...        # add a source (flag-driven; e.g. --name, --kind, --url, --token, --set k=v)
-pawrly source list           # list sources (annotated with the file each came from)
+pawrly source add <KIND> --name <NAME> [flags]   # add a source and append it to pawrly.yaml
+pawrly source list                               # list sources (annotated with the file each came from) (--json)
 pawrly source remove <NAME>
-pawrly source refresh <NAME> # re-discover a source's tables
-pawrly source test <NAME>    # check a source is reachable
+pawrly source refresh <NAME>                     # re-discover a source's tables
+pawrly source test <NAME>                        # check a source is reachable (exits 2 on failure)
+```
+
+For `source add`, `<KIND>` is positional and must be one of `file`, `http`, `sqlite`, `postgres`, `mysql`, `duckdb`, `snowflake`, `iceberg`, `ducklake`, `delta`. Flags:
+
+- `--name <NAME>` — logical source name, a valid SQL identifier (required).
+- `--description <TEXT>` — optional human-readable description.
+- `--path <PATH>` — file path / glob (kinds: `file`, `iceberg`, `delta`, …).
+- `--url <URL>` — base URL (HTTP-shaped sources).
+- `--token <TOKEN>` — auth token (HTTP-shaped); pass `${secret:NAME}` to indirect through the secret store.
+- `--dsn <DSN>` — DSN / URL for SQL-engine sources (`postgres`, `mysql`, `snowflake`, …).
+- `--set <KEY=VALUE>` — generic per-kind config field (repeatable). `VALUE` is parsed as JSON when possible, else a string. (Named `--set` to avoid colliding with the global `--config`.)
+- `--raw-table` — HTTP-shaped only: register a raw-HTTP table named after the source.
+
+```bash
+pawrly source add http --name gh --url https://api.github.com --token '${secret:GH_TOKEN}'
+pawrly source add file --name data --path './data/*.parquet'
+pawrly source add postgres --name pg --dsn '${secret:PG_DSN}'
 ```
 
 ---
@@ -115,7 +136,7 @@ Inspect and manage the per-table cache (see [Configuration → Caching](./config
 ```
 pawrly cache list                       # entries with mode, freshness, rows, size (--json)
 pawrly cache show <SOURCE>.<TABLE>       # detailed view of one entry
-pawrly cache refresh <SOURCE>.<TABLE>    # force a re-fetch + write-through
+pawrly cache refresh <SOURCE>.<TABLE>    # force a re-fetch + write-through (or pass a bare source name to refresh its catalog)
 pawrly cache invalidate <SOURCE>.<TABLE> # drop the entry and its files
 pawrly cache vacuum                      # reclaim expired entries, orphaned files, stale temp (--json)
 ```
@@ -165,9 +186,13 @@ pawrly config show --tree   # show which file each piece came from
 Write a starter `pawrly.yaml`.
 
 ```bash
-pawrly init            # writes ./pawrly.yaml
-pawrly init --force    # overwrite an existing file
+pawrly init                  # writes ./pawrly.yaml
+pawrly init path/to/file.yaml # write to a custom path
+pawrly init --force          # overwrite an existing file
 ```
+
+- `[PATH]` — where to write (default `./pawrly.yaml`).
+- `--force` — overwrite an existing file.
 
 ---
 
@@ -202,16 +227,50 @@ pawrly check --source gh
 Run the daemon. Subsequent CLI commands auto-discover it over its socket.
 
 ```
-pawrly serve [--config <PATH>] [--addr <HOST:PORT>] [--socket <PATH>]
+pawrly serve [--addr <ADDR>] [--socket <PATH>] [--bearer-token-from <NAME>]
+             [--tls-cert <PEM> --tls-key <PEM>] [--idle-timeout <DUR>] [--pid-file <PATH>]
 ```
 
-Use `pawrly status` to check a running daemon and `pawrly stop` to shut it down.
+- `--addr <ADDR>` — bind address; accepts `unix:///path` (or `uds://`) and `tcp://host:port`. Defaults to `unix://$PAWRLY_HOME/sockets/pawrly.sock`.
+- `--socket <PATH>` — override the UDS path directly; equivalent to `--addr unix://<path>`.
+- `--bearer-token-from <NAME>` — require a bearer token, resolved from the config's secret backend or an env var of the same name. Required for non-loopback TCP.
+- `--tls-cert <PEM>` / `--tls-key <PEM>` — serve TLS; both must be given together.
+- `--idle-timeout <DUR>` — shut down after idle (humantime, e.g. `30m`; `0` = never).
+- `--pid-file <PATH>` — write the daemon PID here.
+
+(The workspace config comes from the global `-c, --config`.)
 
 ```bash
 pawrly serve &
 pawrly status
 pawrly stop
 ```
+
+---
+
+### `pawrly stop`
+
+Signal a running daemon to shut down (Unix only).
+
+```
+pawrly stop [--pid-file <PATH>] [--force]
+```
+
+- `--pid-file <PATH>` — path to the daemon's PID file. Default: `$PAWRLY_HOME/sockets/pawrly.pid`.
+- `--force` — send `SIGKILL` instead of `SIGTERM`.
+
+---
+
+### `pawrly status`
+
+Probe a running daemon and print its health.
+
+```
+pawrly status [--endpoint <ENDPOINT>] [--json]
+```
+
+- `--endpoint <ENDPOINT>` — endpoint to probe. Defaults to the default UDS path under `$PAWRLY_HOME`.
+- `--json` — emit machine-readable JSON.
 
 ---
 
@@ -222,4 +281,22 @@ Run the [MCP server](./mcp.md) over stdio so an AI assistant can connect. Honors
 ```bash
 pawrly mcp-stdio
 pawrly mcp-stdio --remote uds:///path/to/pawrly.sock
+```
+
+---
+
+### `pawrly mcp-http`
+
+Run the [MCP server](./mcp.md) over HTTP, for assistants that connect over the network. Honors the global `--remote` / `--no-remote` flags.
+
+```
+pawrly mcp-http [--addr <HOST:PORT>] [--bearer-token-from <NAME>]
+```
+
+- `--addr <HOST:PORT>` — bind address (default `127.0.0.1:8090`). A non-loopback address requires `--bearer-token-from`.
+- `--bearer-token-from <NAME>` — require a bearer token, resolved from the config's secret backend or an env var of the same name; enforced on every request.
+
+```bash
+pawrly mcp-http
+pawrly mcp-http --addr 0.0.0.0:8090 --bearer-token-from PAWRLY_MCP_TOKEN
 ```

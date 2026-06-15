@@ -20,7 +20,40 @@ The same engine is reachable three ways: in-process (the default), over a local 
 
 ## Installation
 
-Pawrly is built from source with Cargo. Tested on macOS (Apple Silicon and Intel) and Linux (x86_64).
+Tested on macOS (Apple Silicon and Intel) and Linux (`x86_64`, `aarch64`).
+
+### Install a prebuilt binary (recommended)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/CITGuru/pawrly/main/scripts/install.sh | sh
+```
+
+This installs the `pawrly` binary to `~/.local/bin` (override with `PAWRLY_INSTALL_DIR`).
+It detects your OS/arch, verifies the SHA-256 checksum, and falls back to building
+from source with `cargo` if no prebuilt binary matches your platform.
+
+Pin a version or change where it lands:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/CITGuru/pawrly/main/scripts/install.sh \
+  | PAWRLY_VERSION=v0.1.0 PAWRLY_INSTALL_DIR=/usr/local/bin sh
+```
+
+On Windows (PowerShell):
+
+```powershell
+irm https://raw.githubusercontent.com/CITGuru/pawrly/main/scripts/install.ps1 | iex
+```
+
+With Cargo, straight from source:
+
+```bash
+cargo install --git https://github.com/CITGuru/pawrly pawrly-cli
+```
+
+### Build from source
+
+Build the full workspace with Cargo when you want to hack on Pawrly itself.
 
 ### Prerequisites
 
