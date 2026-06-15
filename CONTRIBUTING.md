@@ -98,6 +98,21 @@ scripts/check-pr-policy.sh --self-test      # built-in test of the author check
 | `tests/grpc_smoke`       | `add-tests`           |
 | `work/spike_hot_path`    | `wip/foo`             |
 
+## Cutting a release
+
+From a clean `main`:
+
+```bash
+scripts/release.sh 0.1.0            # bump, lock, commit, tag v0.1.0, push
+scripts/release.sh 0.1.0 --dry-run  # preview every action, mutate nothing
+```
+
+The script bumps the workspace version, refreshes `Cargo.lock`, runs
+`cargo check --workspace --locked` as a guard, then commits, tags `v<version>`,
+and pushes. The pushed tag triggers `.github/workflows/release.yml`, which builds
+the prebuilt binaries and publishes the GitHub Release that
+`scripts/install.sh` downloads from.
+
 ## Documentation discipline
 
 Reviews will request changes on PRs that violate any of these:
