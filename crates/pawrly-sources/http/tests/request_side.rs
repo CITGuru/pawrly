@@ -458,6 +458,227 @@ async fn table_headers_override_source_headers() {
     assert_eq!(rows, 1);
 }
 
+/// `rate_limit.requests_per_second` throttles request issuance: with rps=1 the
+/// second page must wait ~1s for the token bucket to refill. (Governor uses a
+/// real monotonic clock, so this measures real elapsed time with a safe margin.)
+#[tokio::test]
+async fn requests_per_second_limits_throughput() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/items"))
+        .and(query_param("page", "1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([ { "id": 1 } ])))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/items"))
+        .and(query_param("page", "2"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+        .mount(&server)
+        .await;
+
+    let (ctx, catalog) = build_ctx().await;
+    let def = SourceDef {
+        name: "api".into(),
+        kind: SourceKind::Http,
+        description: None,
+        wiki: None,
+        examples: Vec::new(),
+        config: json!({
+            "base_url": server.uri(),
+            "rate_limit": { "requests_per_second": 1 }
+        }),
+        cache: CachePolicy::None,
+        safety: None,
+        tables: vec![TableDef {
+            name: "items".into(),
+            description: None,
+            wiki: None,
+            config: json!({
+                "endpoint": "/items",
+                "pagination": { "type": "page", "param": "page", "start": 1 },
+                "response": { "path": "$", "schema": [ { "name": "id", "type": "bigint" } ] }
+            }),
+            cache: None,
+            safety: None,
+        }],
+        raw_table: false,
+        raw_table_safety: None,
+    };
+    register_http_source(&def, &ctx, catalog.as_ref())
+        .await
+        .expect("register");
+
+    let start = std::time::Instant::now();
+    let batches = ctx
+        .sql("SELECT id FROM api.items")
+        .await
+        .expect("plan")
+        .collect()
+        .await
+        .expect("execute");
+    let elapsed = start.elapsed();
+    let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+    assert_eq!(rows, 1, "page 1 (1 row) + page 2 (empty → stop)");
+    assert!(
+        elapsed >= std::time::Duration::from_millis(600),
+        "rps=1 should make the 2nd request wait for the bucket, waited {elapsed:?}"
+    );
+}
+
+/// A `derive: ago` param supplies a relative time-window default (`now - N`
+/// epoch seconds) when the query doesn't filter on it — the value lands in the
+/// request query string.
+#[tokio::test]
+async fn derive_ago_supplies_time_window_default() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/events"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+        .mount(&server)
+        .await;
+
+    let (ctx, catalog) = build_ctx().await;
+    let def = SourceDef {
+        name: "api".into(),
+        kind: SourceKind::Http,
+        description: None,
+        wiki: None,
+        examples: Vec::new(),
+        config: json!({ "base_url": server.uri() }),
+        cache: CachePolicy::None,
+        safety: None,
+        tables: vec![TableDef {
+            name: "events".into(),
+            description: None,
+            wiki: None,
+            config: json!({
+                "endpoint": "/events",
+                "params": [
+                    { "name": "since", "type": "bigint", "derive": { "kind": "ago", "seconds": 3600 } }
+                ],
+                "response": { "path": "$", "schema": [ { "name": "id", "type": "bigint" } ] }
+            }),
+            cache: None,
+            safety: None,
+        }],
+        raw_table: false,
+        raw_table_safety: None,
+    };
+    register_http_source(&def, &ctx, catalog.as_ref())
+        .await
+        .expect("register");
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let _ = ctx
+        .sql("SELECT id FROM api.events")
+        .await
+        .expect("plan")
+        .collect()
+        .await
+        .expect("execute");
+
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1);
+    let since: i64 = requests[0]
+        .url
+        .query_pairs()
+        .find(|(k, _)| k == "since")
+        .map(|(_, v)| v.parse().expect("since is an integer"))
+        .expect("since query param should be present");
+    let expected = now - 3600;
+    assert!(
+        (since - expected).abs() <= 60,
+        "since={since} should be ~now-3600 ({expected})"
+    );
+}
+
+/// When the API reports its quota is exhausted via `remaining`/`reset` headers,
+/// the next page waits until the reset time. Under a paused runtime the timer
+/// auto-advances, so the elapsed (virtual) time reflects the throttle without a
+/// real wall-clock wait.
+#[tokio::test(start_paused = true)]
+async fn rate_limit_headers_throttle_next_page() {
+    let server = MockServer::start().await;
+    let reset_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        + 50;
+    // Page 1: quota exhausted (remaining=0), reset 50s out. Page 2: empty → stop.
+    Mock::given(method("GET"))
+        .and(path("/items"))
+        .and(query_param("page", "1"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("x-ratelimit-remaining", "0")
+                .insert_header("x-ratelimit-reset", reset_at.to_string().as_str())
+                .set_body_json(json!([ { "id": 1 } ])),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/items"))
+        .and(query_param("page", "2"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+        .mount(&server)
+        .await;
+
+    let (ctx, catalog) = build_ctx().await;
+    let def = SourceDef {
+        name: "api".into(),
+        kind: SourceKind::Http,
+        description: None,
+        wiki: None,
+        examples: Vec::new(),
+        config: json!({
+            "base_url": server.uri(),
+            "rate_limit": {
+                "remaining_header": "x-ratelimit-remaining",
+                "reset_header": "x-ratelimit-reset"
+            }
+        }),
+        cache: CachePolicy::None,
+        safety: None,
+        tables: vec![TableDef {
+            name: "items".into(),
+            description: None,
+            wiki: None,
+            config: json!({
+                "endpoint": "/items",
+                "pagination": { "type": "page", "param": "page", "start": 1 },
+                "response": { "path": "$", "schema": [ { "name": "id", "type": "bigint" } ] }
+            }),
+            cache: None,
+            safety: None,
+        }],
+        raw_table: false,
+        raw_table_safety: None,
+    };
+    register_http_source(&def, &ctx, catalog.as_ref())
+        .await
+        .expect("register");
+
+    let start = tokio::time::Instant::now();
+    let batches = ctx
+        .sql("SELECT id FROM api.items")
+        .await
+        .expect("plan")
+        .collect()
+        .await
+        .expect("execute");
+    let elapsed = start.elapsed();
+    let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+    assert_eq!(rows, 1, "only page 1 carried a row");
+    assert!(
+        elapsed >= std::time::Duration::from_secs(40),
+        "the second page should wait for the reset window, waited {elapsed:?}"
+    );
+}
+
 /// A status listed in `rate_limit.extra_statuses` (here GitHub-style `403`) is
 /// retried like a 429 rather than surfaced as an error.
 #[tokio::test]

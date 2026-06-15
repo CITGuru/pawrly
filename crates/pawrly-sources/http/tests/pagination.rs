@@ -1,6 +1,6 @@
-//! Acceptance: typed HTTP table pagination (page, cursor, link header) plus
-//! `max_pages` safety enforcement. Mirrors the wiremock pattern in
-//! `github_typed.rs`.
+//! Acceptance: typed HTTP table pagination (page, offset, cursor, row cursor,
+//! body cursor, link header), `dict_entries` reshape across pages, and
+//! `max_pages` safety enforcement.
 
 #![allow(
     clippy::unwrap_used,
@@ -17,7 +17,7 @@ use datafusion::execution::context::SessionContext;
 use pawrly_core::{CachePolicy, SafetyPolicy, SourceDef, SourceKind, TableDef};
 use pawrly_sources_http::register_http_source;
 use serde_json::json;
-use wiremock::matchers::{method, path, query_param};
+use wiremock::matchers::{body_partial_json, method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 async fn build_ctx() -> (SessionContext, Arc<MemoryCatalogProvider>) {
@@ -221,6 +221,306 @@ async fn link_header_pagination_follows_rel_next() {
     let batches = df.collect().await.expect("execute");
     let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
     assert_eq!(rows, 3, "page 1 (2 rows) + linked page 2 (1 row)");
+}
+
+#[tokio::test]
+async fn offset_pagination_combines_pages() {
+    let server = MockServer::start().await;
+    // size=2: offset=0 → 2 rows, offset=2 → 2 rows, offset=4 → 1 row (short) → stop.
+    Mock::given(method("GET"))
+        .and(path("/facts"))
+        .and(query_param("offset", "0"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            { "fact": "a", "length": 1 }, { "fact": "b", "length": 2 }
+        ])))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/facts"))
+        .and(query_param("offset", "2"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            { "fact": "c", "length": 3 }, { "fact": "d", "length": 4 }
+        ])))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/facts"))
+        .and(query_param("offset", "4"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            { "fact": "e", "length": 5 }
+        ])))
+        .mount(&server)
+        .await;
+
+    let (ctx, catalog) = build_ctx().await;
+    let def = facts_def(
+        server.uri(),
+        json!({
+            "endpoint": "/facts",
+            "response": {
+                "path": "$",
+                "schema": [
+                    { "name": "fact",   "type": "varchar" },
+                    { "name": "length", "type": "bigint" }
+                ]
+            },
+            "pagination": { "type": "offset", "param": "offset", "size_param": "limit", "size": 2 }
+        }),
+        None,
+    );
+
+    register_http_source(&def, &ctx, catalog.as_ref())
+        .await
+        .expect("register");
+
+    let batches = ctx
+        .sql("SELECT fact FROM cats.facts")
+        .await
+        .expect("plan")
+        .collect()
+        .await
+        .expect("execute");
+    let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+    assert_eq!(rows, 5, "offset 0 (2) + 2 (2) + 4 (1, short → stop)");
+}
+
+#[tokio::test]
+async fn row_cursor_pagination_follows_last_id() {
+    let server = MockServer::start().await;
+    // Stripe-style: send `starting_after=<last id>`. Stop on an empty page.
+    // Mount most specific first so the no-cursor first page falls through last.
+    Mock::given(method("GET"))
+        .and(path("/facts"))
+        .and(query_param("starting_after", "3"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/facts"))
+        .and(query_param("starting_after", "2"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            { "id": 3, "fact": "c" }
+        ])))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/facts"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            { "id": 1, "fact": "a" }, { "id": 2, "fact": "b" }
+        ])))
+        .mount(&server)
+        .await;
+
+    let (ctx, catalog) = build_ctx().await;
+    let def = facts_def(
+        server.uri(),
+        json!({
+            "endpoint": "/facts",
+            "response": {
+                "path": "$",
+                "schema": [
+                    { "name": "id",   "type": "bigint" },
+                    { "name": "fact", "type": "varchar" }
+                ]
+            },
+            "pagination": { "type": "row_cursor", "param": "starting_after", "field": "id" }
+        }),
+        None,
+    );
+
+    register_http_source(&def, &ctx, catalog.as_ref())
+        .await
+        .expect("register");
+
+    let batches = ctx
+        .sql("SELECT id FROM cats.facts")
+        .await
+        .expect("plan")
+        .collect()
+        .await
+        .expect("execute");
+    let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+    assert_eq!(
+        rows, 3,
+        "page 1 (id 1,2) + starting_after=2 (id 3) + empty → stop"
+    );
+}
+
+#[tokio::test]
+async fn body_cursor_pagination_injects_into_body() {
+    let server = MockServer::start().await;
+    // GraphQL/Notion-style: the next cursor is written into the request JSON body
+    // at `variables.after`. Second page carries it; its response omits the cursor.
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(body_partial_json(
+            json!({ "variables": { "after": "CUR" } }),
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [ { "id": 3 } ],
+            "meta": { "end": "" }
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [ { "id": 1 }, { "id": 2 } ],
+            "meta": { "end": "CUR" }
+        })))
+        .mount(&server)
+        .await;
+
+    let (ctx, catalog) = build_ctx().await;
+    let def = facts_def(
+        server.uri(),
+        json!({
+            "endpoint": "/graphql",
+            "method": "POST",
+            "body": { "kind": "json", "template": "{\"variables\": {\"first\": 2}}" },
+            "response": {
+                "path": "$.data",
+                "schema": [ { "name": "id", "type": "bigint" } ]
+            },
+            "pagination": {
+                "type": "body_cursor",
+                "cursor_path": "$.variables.after",
+                "next_path": "$.meta.end"
+            }
+        }),
+        None,
+    );
+
+    register_http_source(&def, &ctx, catalog.as_ref())
+        .await
+        .expect("register");
+
+    let batches = ctx
+        .sql("SELECT id FROM cats.facts")
+        .await
+        .expect("plan")
+        .collect()
+        .await
+        .expect("execute");
+    let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+    assert_eq!(rows, 3, "page 1 (2 rows) + body-cursor page (1 row)");
+}
+
+#[tokio::test]
+async fn reshape_dict_entries_paginates_until_empty() {
+    let server = MockServer::start().await;
+    // Each page is an object map needing `dict_entries`; pagination's empty-page
+    // stop must look at post-reshape rows. Page 1 → 2 rows, page 2 → {} → stop.
+    Mock::given(method("GET"))
+        .and(path("/facts"))
+        .and(query_param("page", "1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "a": { "length": 1 },
+            "b": { "length": 2 }
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/facts"))
+        .and(query_param("page", "2"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+        .mount(&server)
+        .await;
+
+    let (ctx, catalog) = build_ctx().await;
+    let def = facts_def(
+        server.uri(),
+        json!({
+            "endpoint": "/facts",
+            "response": {
+                "path": "$",
+                "reshape": { "kind": "dict_entries" },
+                "schema": [
+                    { "name": "_key",   "type": "varchar" },
+                    { "name": "length", "type": "bigint" }
+                ]
+            },
+            "pagination": { "type": "page", "param": "page", "start": 1 }
+        }),
+        None,
+    );
+
+    register_http_source(&def, &ctx, catalog.as_ref())
+        .await
+        .expect("register");
+
+    let batches = ctx
+        .sql("SELECT _key FROM cats.facts")
+        .await
+        .expect("plan")
+        .collect()
+        .await
+        .expect("execute");
+    let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+    assert_eq!(rows, 2, "reshaped page 1 (2 entries); page 2 empty → stop");
+}
+
+#[tokio::test]
+async fn body_cursor_pagination_nested_path() {
+    let server = MockServer::start().await;
+    // GraphQL connection: rows + cursor live deep under $.data.search, not $.data.
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(body_partial_json(
+            json!({ "variables": { "after": "CUR" } }),
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": { "search": {
+                "nodes": [ { "id": 3 } ],
+                "pageInfo": { "endCursor": "" }
+            } }
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": { "search": {
+                "nodes": [ { "id": 1 }, { "id": 2 } ],
+                "pageInfo": { "endCursor": "CUR" }
+            } }
+        })))
+        .mount(&server)
+        .await;
+
+    let (ctx, catalog) = build_ctx().await;
+    let def = facts_def(
+        server.uri(),
+        json!({
+            "endpoint": "/graphql",
+            "method": "POST",
+            "body": { "kind": "json", "template": "{\"variables\": {\"first\": 2}}" },
+            "response": {
+                "path": "$.data.search.nodes",
+                "schema": [ { "name": "id", "type": "bigint" } ]
+            },
+            "pagination": {
+                "type": "body_cursor",
+                "cursor_path": "$.variables.after",
+                "next_path": "$.data.search.pageInfo.endCursor"
+            }
+        }),
+        None,
+    );
+
+    register_http_source(&def, &ctx, catalog.as_ref())
+        .await
+        .expect("register");
+
+    let batches = ctx
+        .sql("SELECT id FROM cats.facts")
+        .await
+        .expect("plan")
+        .collect()
+        .await
+        .expect("execute");
+    let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+    assert_eq!(rows, 3, "nested nodes page 1 (2) + cursor page (1)");
 }
 
 #[tokio::test]

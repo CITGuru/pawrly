@@ -35,3 +35,6 @@ base64 = { workspace = true }
 [dev-dependencies]
 wiremock = { workspace = true }
 tempfile = { workspace = true }
+# `test-util` enables `#[tokio::test(start_paused = true)]` for deterministic,
+# wall-clock-free timer tests (e.g. rate-limit throttling).
+tokio = { workspace = true, features = ["test-util"] }

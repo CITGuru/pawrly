@@ -116,7 +116,7 @@ async fn header_value_api_key() {
     assert_eq!(rows, 1);
 }
 
-/// Multiple headers (e.g. Datadog-style API key + app key) are all attached.
+/// Multiple headers (e.g. an API key plus an app key) are all attached.
 #[tokio::test]
 async fn header_multiple() {
     let server = MockServer::start().await;
