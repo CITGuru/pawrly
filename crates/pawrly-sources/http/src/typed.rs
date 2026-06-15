@@ -690,24 +690,73 @@ fn build_url(
 
 /// Extract `column IN (lit, lit, …)` (non-negated, all literals) as the column
 /// name plus its values as strings. Returns `None` for anything else.
+///
+/// Recognises both the literal `InList` node and the disjunction-of-equalities
+/// form (`col = a OR col = b OR …`) that DataFusion lowers a short `IN (…)` into
+/// before filter pushdown — without the latter, `explode` would never fire for a
+/// SQL `IN`.
 fn extract_in_list(expr: &Expr) -> Option<(String, Vec<String>)> {
-    let Expr::InList(il) = expr else {
-        return None;
-    };
-    if il.negated {
-        return None;
+    match expr {
+        Expr::InList(il) if !il.negated => {
+            let Expr::Column(c) = il.expr.as_ref() else {
+                return None;
+            };
+            let mut vals = Vec::with_capacity(il.list.len());
+            for item in &il.list {
+                let Expr::Literal(s, _) = item else {
+                    return None;
+                };
+                vals.push(scalar_to_string(s)?);
+            }
+            Some((c.name.clone(), vals))
+        }
+        Expr::BinaryExpr(_) => {
+            let mut col: Option<String> = None;
+            let mut vals = Vec::new();
+            collect_or_equalities(expr, &mut col, &mut vals).then_some(())?;
+            // Require at least two values so a lone `col = a` stays an equality
+            // (handled by `extract_cmp`), not a single-element explode.
+            if vals.len() < 2 {
+                return None;
+            }
+            Some((col?, vals))
+        }
+        _ => None,
     }
-    let Expr::Column(c) = il.expr.as_ref() else {
-        return None;
+}
+
+/// Walk a disjunction of `col = literal` equalities on a *single* column,
+/// accumulating the literals. Returns `false` if any leaf isn't an equality on
+/// that one column, or the tree contains a non-`OR` connective.
+fn collect_or_equalities(expr: &Expr, col: &mut Option<String>, vals: &mut Vec<String>) -> bool {
+    use datafusion::logical_expr::{BinaryExpr, Operator};
+    let Expr::BinaryExpr(BinaryExpr { left, op, right }) = expr else {
+        return false;
     };
-    let mut vals = Vec::with_capacity(il.list.len());
-    for item in &il.list {
-        let Expr::Literal(s, _) = item else {
-            return None;
-        };
-        vals.push(scalar_to_string(s)?);
+    match op {
+        Operator::Or => {
+            collect_or_equalities(left, col, vals) && collect_or_equalities(right, col, vals)
+        }
+        Operator::Eq => {
+            let (c, scalar) = match (left.as_ref(), right.as_ref()) {
+                (Expr::Column(c), Expr::Literal(s, _)) => (c, s),
+                (Expr::Literal(s, _), Expr::Column(c)) => (c, s),
+                _ => return false,
+            };
+            match col {
+                Some(existing) if existing != &c.name => return false,
+                _ => *col = Some(c.name.clone()),
+            }
+            match scalar_to_string(scalar) {
+                Some(v) => {
+                    vals.push(v);
+                    true
+                }
+                None => false,
+            }
+        }
+        _ => false,
     }
-    Some((c.name.clone(), vals))
 }
 
 /// Wrap an error message as a `DataFusionError` that fails the scan.
@@ -813,9 +862,10 @@ fn reshape_series_points(
 fn as_array(v: &Value) -> datafusion::common::Result<Vec<Value>> {
     match v {
         Value::Array(a) => Ok(a.clone()),
+        Value::Object(_) => Ok(vec![v.clone()]),
         Value::Null => Ok(Vec::new()),
         other => Err(DataFusionError::Plan(format!(
-            "expected array at response path, got {other:?}"
+            "expected array or object at response path, got {other:?}"
         ))),
     }
 }
@@ -862,10 +912,14 @@ fn build_batch(
                     let mut b = Int64Builder::with_capacity(n);
                     for row in rows {
                         match pull_value(row, col, params) {
-                            Some(Value::Number(n)) => match n.as_i64() {
-                                Some(i) => b.append_value(i),
-                                None => b.append_null(),
-                            },
+                            // Integers directly; float-encoded integers (`1.7e12`)
+                            // via an f64 fallback (`as` saturates out of range).
+                            Some(Value::Number(n)) => {
+                                match n.as_i64().or_else(|| n.as_f64().map(|f| f as i64)) {
+                                    Some(i) => b.append_value(i),
+                                    None => b.append_null(),
+                                }
+                            }
                             Some(Value::String(s)) => match s.parse::<i64>() {
                                 Ok(i) => b.append_value(i),
                                 Err(_) => b.append_null(),
@@ -880,7 +934,11 @@ fn build_batch(
                     for row in rows {
                         match pull_value(row, col, params) {
                             Some(Value::Number(n)) => {
-                                match n.as_i64().and_then(|x| i32::try_from(x).ok()) {
+                                match n
+                                    .as_i64()
+                                    .or_else(|| n.as_f64().map(|f| f as i64))
+                                    .and_then(|x| i32::try_from(x).ok())
+                                {
                                     Some(i) => b.append_value(i),
                                     None => b.append_null(),
                                 }
@@ -902,6 +960,11 @@ fn build_batch(
                                 Some(f) => b.append_value(f),
                                 None => b.append_null(),
                             },
+                            // Numbers that arrive as strings still coerce.
+                            Some(Value::String(s)) => match s.trim().parse::<f64>() {
+                                Ok(f) => b.append_value(f),
+                                Err(_) => b.append_null(),
+                            },
                             _ => b.append_null(),
                         }
                     }
@@ -912,6 +975,14 @@ fn build_batch(
                         .iter()
                         .map(|r| match pull_value(r, col, params) {
                             Some(Value::Bool(b)) => Some(b),
+                            // Accept the common stringified forms.
+                            Some(Value::String(s)) => {
+                                match s.trim().to_ascii_lowercase().as_str() {
+                                    "true" => Some(true),
+                                    "false" => Some(false),
+                                    _ => None,
+                                }
+                            }
                             _ => None,
                         })
                         .collect();
@@ -985,6 +1056,10 @@ fn parse_timestamp_micros(v: &Value) -> Option<i64> {
         if let Ok(ndt) = chrono::NaiveDateTime::parse_from_str(s, fmt) {
             return Some(ndt.and_utc().timestamp_micros());
         }
+    }
+    // A bare `YYYY-MM-DD` in a timestamp column is midnight UTC.
+    if let Ok(d) = chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d") {
+        return Some(d.and_hms_opt(0, 0, 0)?.and_utc().timestamp_micros());
     }
     None
 }
@@ -1105,6 +1180,56 @@ mod build_tests {
     }
 
     #[test]
+    fn build_batch_coerces_float_number_to_int_columns() {
+        // JSON floats that encode integers (`1.7e12`) must populate int columns.
+        let cols = vec![
+            ResponseColumn {
+                name: "ts".into(),
+                r#type: "bigint".into(),
+                source: None,
+                expr: None,
+            },
+            ResponseColumn {
+                name: "small".into(),
+                r#type: "int".into(),
+                source: None,
+                expr: None,
+            },
+        ];
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("ts", DataType::Int64, true),
+            Field::new("small", DataType::Int32, true),
+        ]));
+        let rows = vec![serde_json::json!({ "ts": 1_700_000_000_000.0, "small": 42.0 })];
+        let batch = build_batch(&schema, &cols, &rows, &BTreeMap::new()).unwrap();
+        let ts = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<arrow_array::Int64Array>()
+            .unwrap();
+        assert_eq!(ts.value(0), 1_700_000_000_000);
+        let small = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<arrow_array::Int32Array>()
+            .unwrap();
+        assert_eq!(small.value(0), 42);
+    }
+
+    #[test]
+    fn as_array_handles_array_object_and_null() {
+        // Arrays pass through; a lone object becomes a single row (so endpoints
+        // returning one record, e.g. an FX rates object, are modelled directly);
+        // null is an empty result.
+        assert_eq!(as_array(&serde_json::json!([1, 2])).unwrap().len(), 2);
+        let one = as_array(&serde_json::json!({ "base": "USD" })).unwrap();
+        assert_eq!(one.len(), 1);
+        assert_eq!(one[0], serde_json::json!({ "base": "USD" }));
+        assert!(as_array(&Value::Null).unwrap().is_empty());
+        assert!(as_array(&serde_json::json!(42)).is_err());
+    }
+
+    #[test]
     fn reshape_dict_entries_keys_to_rows() {
         let v = serde_json::json!({
             "primary": { "background": "#fff", "foreground": "#000" },
@@ -1145,5 +1270,34 @@ mod build_tests {
         // Negated IN does not push down.
         let neg = col("status").in_list(vec![lit("open")], true);
         assert_eq!(extract_in_list(&neg), None);
+    }
+
+    #[test]
+    fn extract_in_list_reads_or_of_equalities() {
+        use datafusion::logical_expr::{col, lit};
+        // DataFusion lowers a short `IN (...)` to `col = a OR col = b OR col = c`
+        // before pushdown; that disjunction must still read as an in-list.
+        let e = col("status")
+            .eq(lit("open"))
+            .or(col("status").eq(lit("closed")))
+            .or(col("status").eq(lit("merged")));
+        assert_eq!(
+            extract_in_list(&e),
+            Some((
+                "status".to_string(),
+                vec!["open".into(), "closed".into(), "merged".into()]
+            ))
+        );
+
+        // A lone equality is not an in-list (stays an equality push-down).
+        assert_eq!(extract_in_list(&col("status").eq(lit("open"))), None);
+
+        // A disjunction spanning two columns is not an in-list.
+        let mixed = col("status").eq(lit("open")).or(col("state").eq(lit("x")));
+        assert_eq!(extract_in_list(&mixed), None);
+
+        // A disjunction with a non-equality leaf is not an in-list.
+        let ranged = col("n").eq(lit(1)).or(col("n").gt(lit(5)));
+        assert_eq!(extract_in_list(&ranged), None);
     }
 }
