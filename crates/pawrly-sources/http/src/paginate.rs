@@ -54,19 +54,41 @@ pub fn set_json_at_path(root: &mut Value, path: &str, leaf: Value) -> bool {
 
 /// Walk a `$.a.b` path into a JSON body and return the leaf value, if present.
 ///
-/// Mirrors the simple walker used by `extract_rows` in `typed.rs`: no filters,
+/// Supports object keys and array indices, including bare leading indices, so
+/// `$.data`, `$.data[0]`, `$[1]`, and `$.items[2].name` all resolve. No filters,
 /// slices, or wildcards. `$` returns the body itself.
 pub fn json_at_path<'a>(body: &'a Value, path: &str) -> Option<&'a Value> {
     if path == "$" {
         return Some(body);
     }
-    let trimmed = path.trim_start_matches("$.");
+    let trimmed = path.trim_start_matches("$.").trim_start_matches('$');
     let mut current = body;
     for part in trimmed.split('.') {
         if part.is_empty() {
             continue;
         }
-        current = current.get(part)?;
+        current = segment_get(current, part)?;
+    }
+    Some(current)
+}
+
+/// Resolve one dot-delimited path segment that may carry trailing array indices,
+/// e.g. `data`, `data[0]`, `[1]`, or `items[2][3]`.
+fn segment_get<'a>(value: &'a Value, segment: &str) -> Option<&'a Value> {
+    let (key, mut rest) = match segment.find('[') {
+        Some(i) => (&segment[..i], &segment[i..]),
+        None => (segment, ""),
+    };
+    let mut current = if key.is_empty() {
+        value
+    } else {
+        value.get(key)?
+    };
+    while let Some(stripped) = rest.strip_prefix('[') {
+        let end = stripped.find(']')?;
+        let idx: usize = stripped[..end].trim().parse().ok()?;
+        current = current.get(idx)?;
+        rest = &stripped[end + 1..];
     }
     Some(current)
 }
@@ -280,6 +302,38 @@ mod tests {
         let mut blocked = serde_json::json!({ "a": 1 });
         assert!(!set_json_at_path(&mut blocked, "$.a.b", Value::Bool(true)));
         assert_eq!(blocked["a"], serde_json::json!(1));
+    }
+
+    #[test]
+    fn json_at_path_resolves_keys_and_indices() {
+        let body = serde_json::json!([
+            { "page": 1 },
+            [{ "country": { "value": "USA" } }, { "country": { "value": "NGA" } }]
+        ]);
+        // Whole body.
+        assert_eq!(json_at_path(&body, "$"), Some(&body));
+        // Bare leading index into the top-level array.
+        assert_eq!(
+            json_at_path(&body, "$[1]"),
+            Some(&serde_json::json!([
+                { "country": { "value": "USA" } },
+                { "country": { "value": "NGA" } }
+            ]))
+        );
+        // Index then key chain.
+        assert_eq!(
+            json_at_path(&body, "$[1][0].country.value"),
+            Some(&serde_json::json!("USA"))
+        );
+        // key[idx] form.
+        let wrapped = serde_json::json!({ "data": [10, 20, 30] });
+        assert_eq!(
+            json_at_path(&wrapped, "$.data[2]"),
+            Some(&serde_json::json!(30))
+        );
+        // Out-of-bounds / missing -> None.
+        assert!(json_at_path(&body, "$[9]").is_none());
+        assert!(json_at_path(&wrapped, "$.missing[0]").is_none());
     }
 
     #[test]

@@ -16,7 +16,7 @@ use datafusion::execution::context::SessionContext;
 use pawrly_core::{CachePolicy, SourceDef, SourceKind, TableDef};
 use pawrly_sources_http::register_http_source;
 use serde_json::json;
-use wiremock::matchers::{header, method, path};
+use wiremock::matchers::{body_json, header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 async fn build_ctx() -> (SessionContext, Arc<MemoryCatalogProvider>) {
@@ -169,6 +169,81 @@ async fn conditional_request_selects_by_bound_filter() {
     // `number` bound → get-by-id endpoint (1 row).
     assert_eq!(
         count(&ctx, "SELECT id FROM api.issues WHERE number = 5").await,
+        1
+    );
+}
+
+/// A conditional request can swap method *and* body: list via GET by default,
+/// but POST a search body when the `q` filter is bound.
+#[tokio::test]
+async fn conditional_request_swaps_method_and_body() {
+    let server = MockServer::start().await;
+    // Default: GET /items → 2 rows (same $.results envelope as search).
+    Mock::given(method("GET"))
+        .and(path("/items"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "results": [ { "id": 1 }, { "id": 2 } ]
+        })))
+        .mount(&server)
+        .await;
+    // When `q` is bound: POST /search with the rendered JSON body → 1 row.
+    Mock::given(method("POST"))
+        .and(path("/search"))
+        .and(body_json(json!({ "query": "cats" })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "results": [ { "id": 7 } ]
+        })))
+        .mount(&server)
+        .await;
+
+    let (ctx, catalog) = build_ctx().await;
+    let def = SourceDef {
+        name: "api".into(),
+        kind: SourceKind::Http,
+        description: None,
+        wiki: None,
+        examples: Vec::new(),
+        config: json!({ "base_url": server.uri() }),
+        cache: CachePolicy::None,
+        safety: None,
+        tables: vec![TableDef {
+            name: "items".into(),
+            description: None,
+            wiki: None,
+            config: json!({
+                "endpoint": "/items",
+                "params": [ { "name": "q", "type": "varchar" } ],
+                "requests": [
+                    {
+                        "when_filters": ["q"],
+                        "endpoint": "/search",
+                        "method": "POST",
+                        "body": { "kind": "json", "template": "{\"query\": \"{q}\"}" }
+                    }
+                ],
+                "response": {
+                    "path": "$.results",
+                    "schema": [
+                        { "name": "id", "type": "bigint" },
+                        { "name": "q",  "type": "varchar", "source": "param" }
+                    ]
+                }
+            }),
+            cache: None,
+            safety: None,
+        }],
+        raw_table: false,
+        raw_table_safety: None,
+    };
+    register_http_source(&def, &ctx, catalog.as_ref())
+        .await
+        .expect("register");
+
+    // No `q` → GET list (2 rows).
+    assert_eq!(count(&ctx, "SELECT id FROM api.items").await, 2);
+    // `q` bound → POST /search with the rendered body (1 row).
+    assert_eq!(
+        count(&ctx, "SELECT id FROM api.items WHERE q = 'cats'").await,
         1
     );
 }
