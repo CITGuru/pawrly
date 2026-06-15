@@ -1,9 +1,11 @@
 //! In-process Pawrly engine.
 //!
 //! `LocalEngine` implements [`pawrly_core::EngineService`] using
-//! DataFusion as the planner/executor. DuckDB-extension support is not yet wired;
-//! the file source (parquet/csv/json) is implemented through DataFusion
-//! native readers.
+//! DataFusion as the planner/executor. Local file sources (parquet/csv/json)
+//! are read through DataFusion native readers; sources that DuckDB already
+//! speaks — Postgres, MySQL, Snowflake, Iceberg/Delta, DuckLake, and remote
+//! files over `httpfs` — run through an in-process DuckDB sub-engine
+//! (extensions loaded on demand) and surface as DataFusion table providers.
 
 #![doc(html_root_url = "https://docs.rs/pawrly-engine")]
 
