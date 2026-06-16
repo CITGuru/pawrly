@@ -18,7 +18,7 @@ use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::catalog::{CatalogProvider, MemoryCatalogProvider};
 use datafusion::execution::config::SessionConfig;
 use datafusion::execution::context::SessionContext;
-use pawrly_core::{CachePolicy, SourceDef, SourceKind, TableDef};
+use pawrly_core::{CachePolicy, SafetyPolicy, SourceDef, SourceKind, TableDef};
 use pawrly_sources_http::register_http_source;
 use serde_json::{Value, json};
 use wiremock::matchers::{method, path, query_param};
@@ -240,6 +240,103 @@ async fn limit_stops_pagination_early() {
         .collect()
         .await
         .expect("execute: LIMIT should stop before requesting page 2");
+    let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+    assert_eq!(rows, 2);
+}
+
+/// `SELECT COUNT(*)` pushes an empty projection, leaving the batch with zero
+/// arrays — the row count must be carried explicitly. Regression test.
+#[tokio::test]
+async fn count_star_empty_projection_preserves_row_count() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/items"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            { "id": 1 }, { "id": 2 }, { "id": 3 }
+        ])))
+        .mount(&server)
+        .await;
+
+    let (ctx, catalog) = build_ctx().await;
+    let table = TableDef {
+        name: "items".into(),
+        description: None,
+        wiki: None,
+        config: json!({
+            "endpoint": "/items",
+            "response": {
+                "path": "$",
+                "schema": [ { "name": "id", "type": "bigint" } ]
+            }
+        }),
+        cache: None,
+        safety: None,
+    };
+    register_http_source(&source("api", server.uri(), table), &ctx, catalog.as_ref())
+        .await
+        .expect("register");
+
+    let batches = query(&ctx, "SELECT COUNT(*) FROM api.items").await;
+    let total: i64 = batches
+        .iter()
+        .flat_map(|b| {
+            b.column(0)
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .expect("count is i64")
+                .iter()
+                .flatten()
+        })
+        .sum();
+    assert_eq!(total, 3);
+}
+
+/// `safety.max_rows` refuses a scan over the cap; a `LIMIT` at or under it wins.
+#[tokio::test]
+async fn max_rows_refuses_oversized_scan() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/items"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            { "id": 1 }, { "id": 2 }, { "id": 3 }, { "id": 4 }, { "id": 5 }
+        ])))
+        .mount(&server)
+        .await;
+
+    let (ctx, catalog) = build_ctx().await;
+    let table = TableDef {
+        name: "items".into(),
+        description: None,
+        wiki: None,
+        config: json!({
+            "endpoint": "/items",
+            "response": { "path": "$", "schema": [ { "name": "id", "type": "bigint" } ] }
+        }),
+        cache: None,
+        safety: Some(SafetyPolicy {
+            max_rows: Some(3),
+            ..Default::default()
+        }),
+    };
+    register_http_source(&source("api", server.uri(), table), &ctx, catalog.as_ref())
+        .await
+        .expect("register");
+
+    // Unbounded scan would materialise 5 rows over a cap of 3 → refused.
+    let err = ctx
+        .sql("SELECT id FROM api.items")
+        .await
+        .expect("plan")
+        .collect()
+        .await
+        .expect_err("scan exceeding max_rows should be refused");
+    assert!(
+        err.to_string().contains("would return more than 3 rows"),
+        "unexpected error: {err}"
+    );
+
+    // A LIMIT at or under the cap takes precedence and succeeds.
+    let batches = query(&ctx, "SELECT id FROM api.items LIMIT 2").await;
     let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
     assert_eq!(rows, 2);
 }

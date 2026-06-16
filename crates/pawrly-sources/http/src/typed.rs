@@ -14,7 +14,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use arrow_array::{
-    ArrayRef, BooleanArray, RecordBatch,
+    ArrayRef, BooleanArray, RecordBatch, RecordBatchOptions,
     builder::{
         Date32Builder, Float64Builder, Int32Builder, Int64Builder, StringBuilder,
         TimestampMicrosecondBuilder,
@@ -49,6 +49,9 @@ pub struct HttpTableProvider {
     /// Hard cap on pagination calls, threaded from the table/source safety
     /// policy. `None` falls back to [`DEFAULT_MAX_PAGES`].
     pub max_pages: Option<u32>,
+    /// Hard cap on rows materialised by a scan, threaded from the table/source
+    /// safety policy. `None` means no cap.
+    pub max_rows: Option<u64>,
 }
 
 impl pawrly_core::DynamicFilterCapable for HttpTableProvider {
@@ -60,13 +63,14 @@ impl pawrly_core::DynamicFilterCapable for HttpTableProvider {
 
 impl HttpTableProvider {
     pub fn new(source: Arc<HttpSource>, spec: Arc<HttpTableSpec>) -> Self {
-        Self::with_max_pages(source, spec, None)
+        Self::with_safety(source, spec, None, None)
     }
 
-    pub fn with_max_pages(
+    pub fn with_safety(
         source: Arc<HttpSource>,
         spec: Arc<HttpTableSpec>,
         max_pages: Option<u32>,
+        max_rows: Option<u64>,
     ) -> Self {
         let schema = schema_for(&spec);
         Self {
@@ -74,6 +78,7 @@ impl HttpTableProvider {
             spec,
             schema,
             max_pages,
+            max_rows,
         }
     }
 
@@ -425,6 +430,20 @@ impl TableProvider for HttpTableProvider {
                 break;
             }
 
+            // Safety ceiling: refuse a scan that materialises more than `max_rows`
+            // rows (a LIMIT at or under the cap has already broken out above).
+            if let Some(max) = self.max_rows
+                && all_rows.len() as u64 > max
+            {
+                let err = pawrly_core::SafetyError::TooManyRows {
+                    table: self.spec.name.clone(),
+                    max_rows: max,
+                };
+                return Err(DataFusionError::External(Box::new(std::io::Error::other(
+                    err.to_string(),
+                ))));
+            }
+
             // Without a pagination config we fetch exactly one page.
             let Some(config) = &self.spec.pagination else {
                 break;
@@ -465,7 +484,10 @@ impl TableProvider for HttpTableProvider {
         };
         let projected: RecordBatch = if let Some(p) = projection {
             let cols: Vec<ArrayRef> = p.iter().map(|i| batch.column(*i).clone()).collect();
-            RecordBatch::try_new(projected_schema.clone(), cols)
+            // A zero-column projection (e.g. COUNT(*)) has no array to infer the
+            // row count from, so carry it explicitly.
+            let options = RecordBatchOptions::new().with_row_count(Some(batch.num_rows()));
+            RecordBatch::try_new_with_options(projected_schema.clone(), cols, &options)
                 .map_err(|e| DataFusionError::ArrowError(Box::new(e), None))?
         } else {
             batch
