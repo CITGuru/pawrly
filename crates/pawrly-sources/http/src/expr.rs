@@ -336,4 +336,71 @@ mod tests {
             Some(Value::String("a%23b%23c".into()))
         );
     }
+
+    #[test]
+    fn join_concatenates_array() {
+        let e = expr(serde_json::json!({ "kind": "join", "path": ["tags"] }));
+        let r = row(serde_json::json!({ "tags": ["a", "b", "c"] }));
+        assert_eq!(
+            e.eval(&r, &no_params()),
+            Some(Value::String("a,b,c".into()))
+        );
+    }
+
+    #[test]
+    fn lookup_join_concatenates_matches() {
+        let e = expr(serde_json::json!({
+            "kind": "lookup_join", "path": ["headers"],
+            "key": "X", "key_field": "name", "value_field": "value"
+        }));
+        let r = row(serde_json::json!({ "headers": [
+            { "name": "X", "value": "1" },
+            { "name": "X", "value": "2" },
+            { "name": "Y", "value": "3" }
+        ]}));
+        assert_eq!(e.eval(&r, &no_params()), Some(Value::String("1,2".into())));
+    }
+
+    #[test]
+    fn if_present_emits_then_value_only_when_present() {
+        let e = expr(serde_json::json!({
+            "kind": "if_present",
+            "check": { "kind": "path", "path": ["err"] },
+            "then_value": "errored"
+        }));
+        assert_eq!(
+            e.eval(&row(serde_json::json!({ "err": "boom" })), &no_params()),
+            Some(Value::String("errored".into()))
+        );
+        // Absent check -> null.
+        assert_eq!(
+            e.eval(&row(serde_json::json!({ "ok": true })), &no_params()),
+            None
+        );
+    }
+
+    #[test]
+    fn literal_returns_the_constant() {
+        let e = expr(serde_json::json!({ "kind": "literal", "value": 7 }));
+        assert_eq!(
+            e.eval(&row(serde_json::json!({})), &no_params()),
+            Some(serde_json::json!(7))
+        );
+    }
+
+    #[test]
+    fn current_row_returns_the_whole_element() {
+        let e = expr(serde_json::json!({ "kind": "current_row" }));
+        let r = row(serde_json::json!({ "a": 1, "b": 2 }));
+        assert_eq!(e.eval(&r, &no_params()), Some(r.clone()));
+    }
+
+    #[test]
+    fn null_is_always_none() {
+        let e = expr(serde_json::json!({ "kind": "null" }));
+        assert_eq!(
+            e.eval(&row(serde_json::json!({ "a": 1 })), &no_params()),
+            None
+        );
+    }
 }
