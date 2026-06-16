@@ -1,0 +1,120 @@
+# yaml-language-server: $schema=../../schemas/pawrly.schema.json
+#
+# TPC-H SF1, federated across three backends so the canonical 22 queries become
+# real cross-source joins:
+#
+#   facts (parquet) : lineitem, orders, partsupp   -- big fact tables
+#   pg    (Postgres): customer, supplier, part
+#   ref   (SQLite)  : nation, region
+#
+# Run ./gen.sh first to populate the backends, then ./bench.sh to time the 22
+# queries through Pawrly.
+version: 1
+name: tpch-federated
+
+defaults:
+  engine:
+    query_timeout: 5m
+    max_concurrent_queries: 16
+    duckdb_pool_size: 8
+
+sources:
+  # Large fact tables as local parquet.
+  - name: facts
+    kind: file
+    description: TPC-H fact tables (parquet).
+    examples:
+      - SELECT count(*) FROM facts.lineitem
+    tables:
+      - { name: lineitem, path: ./data/lineitem.parquet, format: parquet }
+      - { name: orders,   path: ./data/orders.parquet,   format: parquet }
+      - { name: partsupp, path: ./data/partsupp.parquet, format: parquet }
+
+  # Dimension tables in Postgres (DuckDB ATTACH, read-only).
+  - name: pg
+    kind: postgres
+    description: TPC-H dimension tables (Postgres).
+    examples:
+      - SELECT count(*) FROM pg.customer
+    config:
+      dsn: dbname=tpch host=/tmp
+
+  # Small reference tables in SQLite.
+  - name: ref
+    kind: sqlite
+    description: TPC-H reference tables (SQLite).
+    examples:
+      - SELECT count(*) FROM ref.nation
+    config:
+      path: ./data/ref.sqlite
+
+  # Live country reference data over HTTP (CountriesNow, public, no auth). Not
+  # used by the canonical 22 — it powers the 4-backend enrichment demo in
+  # queries_extra/. The 25 TPC-H nations are real countries, so this joins to
+  # ref.nation by name.
+  - name: world
+    kind: http
+    description: CountriesNow country reference data (public, no auth).
+    config:
+      base_url: https://countriesnow.space
+    examples:
+      - SELECT country, currency FROM world.currency LIMIT 1
+    tables:
+      - name: currency
+        endpoint: /api/v0.1/countries/currency
+        response:
+          path: $.data
+          schema:
+            - { name: country,  type: varchar, source: $.name }
+            - { name: currency, type: varchar, source: $.currency }
+            - { name: iso2,     type: varchar, source: $.iso2 }
+            - { name: iso3,     type: varchar, source: $.iso3 }
+
+  # Live FX rates over HTTP (Frankfurter, public, no auth). Returns one JSON
+  # object with a `rates` map keyed by currency, so it is modelled as a single
+  # row with one column per currency (base = USD); the enrichment query reshapes
+  # it to (currency, rate) with UNION ALL. Covers ~30 major currencies.
+  - name: fx
+    kind: http
+    description: Frankfurter latest FX rates, base USD (public, no auth).
+    config:
+      base_url: https://api.frankfurter.dev
+    examples:
+      - SELECT base, eur, jpy FROM fx.rates LIMIT 1
+    tables:
+      - name: rates
+        endpoint: /v1/latest?base=USD
+        response:
+          path: $
+          schema:
+            - { name: base, type: varchar, source: $.base }
+            - { name: date, type: varchar, source: $.date }
+            - { name: aud, type: double, source: $.rates.AUD }
+            - { name: brl, type: double, source: $.rates.BRL }
+            - { name: cad, type: double, source: $.rates.CAD }
+            - { name: chf, type: double, source: $.rates.CHF }
+            - { name: cny, type: double, source: $.rates.CNY }
+            - { name: czk, type: double, source: $.rates.CZK }
+            - { name: dkk, type: double, source: $.rates.DKK }
+            - { name: eur, type: double, source: $.rates.EUR }
+            - { name: gbp, type: double, source: $.rates.GBP }
+            - { name: hkd, type: double, source: $.rates.HKD }
+            - { name: huf, type: double, source: $.rates.HUF }
+            - { name: idr, type: double, source: $.rates.IDR }
+            - { name: ils, type: double, source: $.rates.ILS }
+            - { name: inr, type: double, source: $.rates.INR }
+            - { name: isk, type: double, source: $.rates.ISK }
+            - { name: jpy, type: double, source: $.rates.JPY }
+            - { name: krw, type: double, source: $.rates.KRW }
+            - { name: mxn, type: double, source: $.rates.MXN }
+            - { name: myr, type: double, source: $.rates.MYR }
+            - { name: nok, type: double, source: $.rates.NOK }
+            - { name: nzd, type: double, source: $.rates.NZD }
+            - { name: php, type: double, source: $.rates.PHP }
+            - { name: pln, type: double, source: $.rates.PLN }
+            - { name: ron, type: double, source: $.rates.RON }
+            - { name: sek, type: double, source: $.rates.SEK }
+            - { name: sgd, type: double, source: $.rates.SGD }
+            - { name: thb, type: double, source: $.rates.THB }
+            - { name: try, type: double, source: $.rates.TRY }
+            - { name: zar, type: double, source: $.rates.ZAR }

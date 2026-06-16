@@ -1,0 +1,6 @@
+# Generated benchmark artifacts — not checked in.
+data/
+results/
+results_extra/
+expected/
+.pawrlyhome/

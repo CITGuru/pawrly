@@ -203,7 +203,16 @@ pub fn next_page(
     match config {
         PaginationConfig::LinkHeader => parse_link_next(headers).map(NextPage::Url),
         PaginationConfig::Cursor { next_path, param } => {
+            // Stop on an empty page, when no further cursor is offered, or when
+            // the cursor is unchanged (a repeating cursor would loop until the
+            // page cap).
+            if rows.is_empty() {
+                return None;
+            }
             let cursor = cursor_at_path(body, next_path)?;
+            if params.get(param) == Some(&cursor) {
+                return None;
+            }
             let mut next = params.clone();
             next.insert(param.clone(), cursor);
             Some(NextPage::Params(next))
@@ -428,6 +437,62 @@ mod tests {
                 1
             )
             .is_none()
+        );
+    }
+
+    #[test]
+    fn cursor_advances_then_stops_when_unchanged() {
+        let cfg = PaginationConfig::Cursor {
+            next_path: "$.meta.next".into(),
+            param: "cursor".into(),
+        };
+        let headers = HeaderMap::new();
+        let rows = vec![serde_json::json!({ "id": 1 })];
+
+        // First page (no cursor yet) advances to "c2".
+        let params = BTreeMap::new();
+        match next_page(
+            &cfg,
+            &params,
+            &serde_json::json!({ "meta": { "next": "c2" } }),
+            &headers,
+            &rows,
+            0,
+        ) {
+            Some(NextPage::Params(p)) => {
+                assert_eq!(p.get("cursor").map(String::as_str), Some("c2"))
+            }
+            _ => panic!("expected a next page"),
+        }
+
+        // A response echoing the cursor we already sent must stop, not loop.
+        let mut same = BTreeMap::new();
+        same.insert("cursor".to_string(), "c2".to_string());
+        assert!(
+            next_page(
+                &cfg,
+                &same,
+                &serde_json::json!({ "meta": { "next": "c2" } }),
+                &headers,
+                &rows,
+                1,
+            )
+            .is_none(),
+            "an unchanged cursor should stop pagination"
+        );
+
+        // An empty page also stops.
+        assert!(
+            next_page(
+                &cfg,
+                &params,
+                &serde_json::json!({ "meta": { "next": "c3" } }),
+                &headers,
+                &[],
+                1,
+            )
+            .is_none(),
+            "an empty page should stop cursor pagination"
         );
     }
 

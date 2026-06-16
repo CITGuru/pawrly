@@ -15,6 +15,7 @@ use axum::{
 };
 use pawrly_core::EngineService;
 use serde_json::Value;
+use subtle::ConstantTimeEq as _;
 
 use crate::cancel::CancelRegistry;
 use crate::dispatch::{error_response, handle_message};
@@ -66,7 +67,10 @@ fn authorized(state: &AppState, headers: &HeaderMap) -> bool {
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
-        .is_some_and(|t| t == expected)
+        .is_some_and(|t| {
+            // Constant-time comparison to avoid leaking the token via timing.
+            t.as_bytes().ct_eq(expected.as_bytes()).into()
+        })
 }
 
 async fn mcp_post(State(state): State<Arc<AppState>>, headers: HeaderMap, body: Bytes) -> Response {

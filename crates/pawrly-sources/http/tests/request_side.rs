@@ -597,18 +597,17 @@ async fn derive_ago_supplies_time_window_default() {
 }
 
 /// When the API reports its quota is exhausted via `remaining`/`reset` headers,
-/// the next page waits until the reset time. Under a paused runtime the timer
-/// auto-advances, so the elapsed (virtual) time reflects the throttle without a
-/// real wall-clock wait.
-#[tokio::test(start_paused = true)]
+/// the next page waits until the reset time (a short real-time window here).
+#[tokio::test]
 async fn rate_limit_headers_throttle_next_page() {
     let server = MockServer::start().await;
     let reset_at = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs()
-        + 50;
-    // Page 1: quota exhausted (remaining=0), reset 50s out. Page 2: empty → stop.
+        + 2;
+    // Page 1: quota exhausted (remaining=0), reset ~1-2s out (whole-second
+    // granularity). Page 2: empty → stop.
     Mock::given(method("GET"))
         .and(path("/items"))
         .and(query_param("page", "1"))
@@ -662,7 +661,7 @@ async fn rate_limit_headers_throttle_next_page() {
         .await
         .expect("register");
 
-    let start = tokio::time::Instant::now();
+    let start = std::time::Instant::now();
     let batches = ctx
         .sql("SELECT id FROM api.items")
         .await
@@ -674,7 +673,7 @@ async fn rate_limit_headers_throttle_next_page() {
     let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
     assert_eq!(rows, 1, "only page 1 carried a row");
     assert!(
-        elapsed >= std::time::Duration::from_secs(40),
+        elapsed >= std::time::Duration::from_millis(800),
         "the second page should wait for the reset window, waited {elapsed:?}"
     );
 }

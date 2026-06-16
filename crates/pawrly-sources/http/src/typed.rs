@@ -37,13 +37,17 @@ use crate::source::{
     ResponseColumn, ResponseSpec, custom_body_object, schema_for,
 };
 
+/// Backstop page cap when a source declares no `safety.max_pages`, so a
+/// misbehaving API can't paginate without bound. Raise it via `safety.max_pages`.
+const DEFAULT_MAX_PAGES: u32 = 1000;
+
 #[derive(Debug)]
 pub struct HttpTableProvider {
     pub source: Arc<HttpSource>,
     pub spec: Arc<HttpTableSpec>,
     pub schema: SchemaRef,
     /// Hard cap on pagination calls, threaded from the table/source safety
-    /// policy. `None` means no cap.
+    /// policy. `None` falls back to [`DEFAULT_MAX_PAGES`].
     pub max_pages: Option<u32>,
 }
 
@@ -250,13 +254,14 @@ impl TableProvider for HttpTableProvider {
         let mut throttle_until: Option<std::time::SystemTime> = None;
 
         loop {
-            // Enforce the page cap before issuing the request for this page.
-            if let Some(max) = self.max_pages
-                && page_index as u64 >= max as u64
-            {
+            // Enforce the page cap before issuing the request for this page. An
+            // unconfigured source falls back to DEFAULT_MAX_PAGES so a misbehaving
+            // API (e.g. a never-terminating cursor) can't paginate unboundedly.
+            let max_pages = self.max_pages.unwrap_or(DEFAULT_MAX_PAGES);
+            if page_index as u64 >= max_pages as u64 {
                 let err = pawrly_core::SafetyError::TooManyPages {
                     table: self.spec.name.clone(),
-                    max_pages: max,
+                    max_pages,
                 };
                 return Err(DataFusionError::External(Box::new(std::io::Error::other(
                     err.to_string(),
