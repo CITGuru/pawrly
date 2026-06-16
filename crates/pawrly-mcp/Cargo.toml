@@ -24,6 +24,7 @@ tokio-util = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }
 futures-util = { workspace = true }
+subtle = { workspace = true }
 
 [dev-dependencies]
 pawrly-core = { workspace = true, features = ["test-support"] }

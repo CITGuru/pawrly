@@ -461,8 +461,12 @@ pub async fn call_tool(
                 .get("max_rows")
                 .and_then(serde_json::Value::as_u64)
                 .unwrap_or(1000);
+            // Push the row bound into the engine so it (and any pushdown-aware
+            // source) materializes at most `max + 1` rows instead of the whole
+            // result set; the extra row lets `format_batches` report truncation.
+            let bounded = row_bounded_sql(sql, max.saturating_add(1));
             let batches = engine
-                .query_collect(sql)
+                .query_collect(&bounded)
                 .await
                 .map_err(|e| ToolError::Engine(e.to_string()))?;
 
@@ -672,6 +676,20 @@ fn parse_format(s: &str) -> Result<pawrly_core::MaterializeFormat, ToolError> {
     }
 }
 
+/// Wrap a read query so the engine returns at most `limit` rows. Only `SELECT`
+/// and `WITH` (CTE) statements are wrapped — wrapping preserves any inner
+/// `LIMIT`/`ORDER BY` while capping the total — so other statements (`EXPLAIN`,
+/// `SHOW`, …) pass through unchanged.
+fn row_bounded_sql(sql: &str, limit: u64) -> String {
+    let trimmed = sql.trim().trim_end_matches(';').trim();
+    let lower = trimmed.to_ascii_lowercase();
+    if lower.starts_with("select") || lower.starts_with("with") {
+        format!("SELECT * FROM ({trimmed}) AS _pawrly_q LIMIT {limit}")
+    } else {
+        trimmed.to_string()
+    }
+}
+
 fn format_batches(
     batches: &[RecordBatch],
     max: usize,
@@ -742,6 +760,27 @@ mod tests {
 
     fn engine() -> Arc<dyn EngineService> {
         Arc::new(MockEngine::new())
+    }
+
+    #[test]
+    fn row_bounded_sql_wraps_selects_only() {
+        assert_eq!(
+            row_bounded_sql("SELECT * FROM t", 100),
+            "SELECT * FROM (SELECT * FROM t) AS _pawrly_q LIMIT 100"
+        );
+        // Trailing semicolon and surrounding whitespace are stripped before wrapping.
+        assert_eq!(
+            row_bounded_sql("  select a from t ;  ", 5),
+            "SELECT * FROM (select a from t) AS _pawrly_q LIMIT 5"
+        );
+        // CTEs (WITH) are wrapped too.
+        assert_eq!(
+            row_bounded_sql("WITH x AS (SELECT 1) SELECT * FROM x", 10),
+            "SELECT * FROM (WITH x AS (SELECT 1) SELECT * FROM x) AS _pawrly_q LIMIT 10"
+        );
+        // Non-SELECT statements pass through unchanged.
+        assert_eq!(row_bounded_sql("EXPLAIN SELECT 1", 10), "EXPLAIN SELECT 1");
+        assert_eq!(row_bounded_sql("SHOW TABLES", 10), "SHOW TABLES");
     }
 
     #[test]
