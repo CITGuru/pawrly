@@ -32,7 +32,7 @@ use arrow_array::builder::{ListBuilder, StringBuilder};
 use arrow_array::{Array, ArrayRef, StringArray};
 use arrow_schema::{DataType, Field};
 use datafusion::error::{DataFusionError, Result};
-use datafusion::logical_expr::{create_udf, ColumnarValue, ScalarUDF, Volatility};
+use datafusion::logical_expr::{ColumnarValue, ScalarUDF, Volatility, create_udf};
 use datafusion::prelude::SessionContext;
 use serde_json::Value;
 
@@ -151,14 +151,17 @@ fn value_to_text(v: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow_array::cast::AsArray;
     use arrow_array::ListArray;
+    use arrow_array::cast::AsArray;
 
     fn utf8_col(values: &[Option<&str>]) -> ColumnarValue {
         ColumnarValue::Array(Arc::new(StringArray::from(values.to_vec())))
     }
 
-    fn run(f: impl Fn(&[ColumnarValue]) -> Result<ColumnarValue>, args: &[ColumnarValue]) -> ArrayRef {
+    fn run(
+        f: impl Fn(&[ColumnarValue]) -> Result<ColumnarValue>,
+        args: &[ColumnarValue],
+    ) -> ArrayRef {
         match f(args).unwrap() {
             ColumnarValue::Array(a) => a,
             ColumnarValue::Scalar(s) => s.to_array().unwrap(),
