@@ -363,6 +363,7 @@ fn build_params(
                 emit: BTreeMap::new(),
                 explode: false,
                 derive: None,
+                filterable: false,
             }
         })
         .collect()
@@ -797,6 +798,7 @@ mod tests {
                 emit: BTreeMap::new(),
                 explode: false,
                 derive: None,
+                filterable: false,
             },
             ParamSpec {
                 name: "per_page".into(),
@@ -807,6 +809,7 @@ mod tests {
                 emit: BTreeMap::new(),
                 explode: false,
                 derive: None,
+                filterable: false,
             },
         ];
         let pg = infer_pagination(&params, &BTreeSet::new());
@@ -827,6 +830,7 @@ mod tests {
                 emit: BTreeMap::new(),
                 explode: false,
                 derive: None,
+                filterable: false,
             },
             ParamSpec {
                 name: "limit".into(),
@@ -837,6 +841,7 @@ mod tests {
                 emit: BTreeMap::new(),
                 explode: false,
                 derive: None,
+                filterable: false,
             },
         ];
         assert!(matches!(
@@ -856,6 +861,7 @@ mod tests {
             emit: BTreeMap::new(),
             explode: false,
             derive: None,
+            filterable: false,
         }];
         assert!(infer_pagination(&params, &BTreeSet::new()).is_none());
         let fields: BTreeSet<String> = ["next_page_token".to_string()].into_iter().collect();
@@ -875,6 +881,7 @@ mod tests {
             emit: BTreeMap::new(),
             explode: false,
             derive: None,
+            filterable: false,
         }];
         assert!(infer_pagination(&params, &BTreeSet::new()).is_none());
     }
@@ -890,6 +897,7 @@ mod tests {
             emit: BTreeMap::new(),
             explode: false,
             derive: None,
+            filterable: false,
         }];
         assert!(infer_pagination(&params, &BTreeSet::new()).is_none());
         let fields: BTreeSet<String> = ["data".into(), "has_more".into()].into_iter().collect();

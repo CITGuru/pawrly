@@ -11,6 +11,7 @@
 
 use std::sync::Arc;
 
+use arrow_array::Int64Array;
 use datafusion::catalog::{CatalogProvider, MemoryCatalogProvider};
 use datafusion::execution::config::SessionConfig;
 use datafusion::execution::context::SessionContext;
@@ -142,6 +143,84 @@ async fn streamable_http_tool_is_queryable() {
     )
     .await;
     assert_eq!(with_arg.iter().map(|b| b.num_rows()).sum::<usize>(), 2);
+}
+
+/// `COUNT(*)` pushes an empty projection into the scan; the provider must build
+/// the projected batch with an explicit row count rather than zero columns and
+/// no rows, or Arrow rejects it ("must either specify a row count or at least
+/// one column").
+#[tokio::test]
+async fn count_star_empty_projection_preserves_row_count() {
+    let server = MockServer::start().await;
+    mount(
+        &server,
+        "initialize",
+        json!({ "protocolVersion": "2025-06-18", "capabilities": {} }),
+        200,
+    )
+    .await;
+    mount(&server, "notifications/initialized", json!({}), 202).await;
+    mount(
+        &server,
+        "tools/list",
+        json!({
+            "tools": [{
+                "name": "list_teams",
+                "description": "List teams",
+                "inputSchema": { "type": "object", "properties": {} },
+                "outputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "teams": { "type": "array", "items": { "type": "object", "properties": {
+                            "id": { "type": "string" }
+                        }}}
+                    }
+                },
+                "annotations": { "readOnlyHint": true }
+            }]
+        }),
+        200,
+    )
+    .await;
+    mount(
+        &server,
+        "tools/call",
+        json!({ "structuredContent": { "teams": [ { "id": "T-1" }, { "id": "T-2" }, { "id": "T-3" } ] } }),
+        200,
+    )
+    .await;
+
+    let def = SourceDef {
+        name: "linear".into(),
+        kind: SourceKind::Mcp,
+        description: None,
+        wiki: None,
+        examples: Vec::new(),
+        config: json!({ "transport": "streamable_http", "url": server.uri() }),
+        cache: CachePolicy::None,
+        safety: None,
+        tables: Vec::new(),
+        raw_table: false,
+        raw_table_safety: None,
+    };
+
+    let (ctx, catalog) = build_ctx().await;
+    register_mcp_source(&def, &ctx, catalog.as_ref())
+        .await
+        .expect("register");
+
+    let batches = collect(&ctx, "SELECT count(*) AS n FROM linear.list_teams").await;
+    let n = batches[0]
+        .column_by_name("n")
+        .expect("n column")
+        .as_any()
+        .downcast_ref::<Int64Array>()
+        .expect("count is bigint")
+        .value(0);
+    assert_eq!(
+        n, 3,
+        "COUNT(*) over an empty projection must return the row count"
+    );
 }
 
 /// Hits the live Linear MCP server. Set `PAWRLY_LINEAR_TOKEN`; run with `--ignored`.

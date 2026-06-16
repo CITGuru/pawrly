@@ -82,7 +82,7 @@ fn segment_get<'a>(value: &'a Value, segment: &str) -> Option<&'a Value> {
     let mut current = if key.is_empty() {
         value
     } else {
-        value.get(key)?
+        get_key_or_index(value, key)?
     };
     while let Some(stripped) = rest.strip_prefix('[') {
         let end = stripped.find(']')?;
@@ -91,6 +91,21 @@ fn segment_get<'a>(value: &'a Value, segment: &str) -> Option<&'a Value> {
         rest = &stripped[end + 1..];
     }
     Some(current)
+}
+
+/// Resolve a path segment key as either an object field or, when it's a bare
+/// number against an array, a positional index — so `nodes.0` works the same as
+/// `nodes[0]`.
+fn get_key_or_index<'a>(value: &'a Value, key: &str) -> Option<&'a Value> {
+    if let Some(v) = value.get(key) {
+        return Some(v);
+    }
+    if value.is_array()
+        && let Ok(idx) = key.parse::<usize>()
+    {
+        return value.get(idx);
+    }
+    None
 }
 
 /// Read a cursor string out of a JSON body at `path`. Numbers are stringified.
@@ -339,6 +354,17 @@ mod tests {
         assert_eq!(
             json_at_path(&wrapped, "$.data[2]"),
             Some(&serde_json::json!(30))
+        );
+        // Bare numeric dot-segment indexes an array too (`data.1` == `data[1]`).
+        assert_eq!(
+            json_at_path(&wrapped, "$.data.1"),
+            Some(&serde_json::json!(20))
+        );
+        // Dot-index chained with a following key (Linear's `nodes.0.comments`).
+        let nested = serde_json::json!({ "nodes": [{ "comments": { "n": 1 } }] });
+        assert_eq!(
+            json_at_path(&nested, "$.nodes.0.comments.n"),
+            Some(&serde_json::json!(1))
         );
         // Out-of-bounds / missing -> None.
         assert!(json_at_path(&body, "$[9]").is_none());

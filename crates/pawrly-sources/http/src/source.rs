@@ -141,6 +141,13 @@ pub struct ParamSpec {
     /// query doesn't supply it — a dynamic default. See [`Derive`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub derive: Option<Derive>,
+    /// Expose this param as a queryable column: filterable in `WHERE` (pushed
+    /// down like any param) and echoed as a constant column in output. Off by
+    /// default, so request-only knobs (`limit`/`order`/`cursor`) stay invisible
+    /// unless opted in. A param already named by a `response.schema` column does
+    /// not get a second synthesized column — the explicit declaration wins.
+    #[serde(default)]
+    pub filterable: bool,
 }
 
 /// How a [`ParamSpec`] computes its value when the query doesn't supply one.
@@ -669,11 +676,29 @@ impl HttpSource {
     }
 }
 
-/// Build an Arrow `SchemaRef` from the declared response schema.
+/// The output columns of a typed table: the declared `response.schema` plus a
+/// synthesized `source: param` column for each `filterable` param that isn't
+/// already named by a response column. Both the Arrow schema and the row builder
+/// run through this so they can never drift apart.
+pub fn effective_columns(table: &HttpTableSpec) -> Vec<ResponseColumn> {
+    let mut cols = table.response.schema.clone();
+    let declared: std::collections::HashSet<String> = cols.iter().map(|c| c.name.clone()).collect();
+    for p in &table.params {
+        if p.filterable && !declared.contains(&p.name) {
+            cols.push(ResponseColumn {
+                name: p.name.clone(),
+                r#type: p.r#type.clone(),
+                source: Some("param".into()),
+                expr: None,
+            });
+        }
+    }
+    cols
+}
+
+/// Build an Arrow `SchemaRef` from the table's [`effective_columns`].
 pub fn schema_for(table: &HttpTableSpec) -> SchemaRef {
-    let fields: Vec<Field> = table
-        .response
-        .schema
+    let fields: Vec<Field> = effective_columns(table)
         .iter()
         .map(|c| Field::new(&c.name, parse_arrow_type(&c.r#type), true))
         .collect();

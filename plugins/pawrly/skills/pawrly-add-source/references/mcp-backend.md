@@ -19,7 +19,7 @@ sources:
       auth:
         type: header
         headers:
-          - { name: Authorization, bearer: ${secret:LINEAR_API_TOKEN} }
+          - { name: Authorization, bearer: ${secret:LINEAR_API_KEY} }
 
   - name: github
     kind: mcp

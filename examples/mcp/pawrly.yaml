@@ -11,7 +11,9 @@ version: 1
 name: mcp-sources
 
 secrets:
-  - kind: env
+  - kind: env            # process environment first (e.g. `export LINEAR_API_KEY=...`)
+  - kind: file           # then the local dotenv beside this config
+    path: .env
 
 include:
   - ./linear.yaml      # one MCP source per file (github, linear)

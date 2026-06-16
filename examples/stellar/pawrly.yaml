@@ -205,9 +205,13 @@ sources:
         params:
           - { name: asset_code, required: false }
           - { name: asset_issuer, required: false }
-          - { name: limit, required: false, default: "10" }
+          - { name: limit, required: false, default: "200" }
           - { name: order, required: false, default: desc }
           - { name: cursor, required: false }
+        # /assets paginates by echoing each row's `paging_token` back as `?cursor=`
+        # (its `_links.next` does the same). Without this the table was capped at a
+        # single page, so `LIMIT > limit` silently returned fewer rows.
+        pagination: { type: row_cursor, param: cursor, field: paging_token }
         response:
           path: $._embedded.records
           schema:

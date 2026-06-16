@@ -529,7 +529,7 @@ Each table's request is built from these flat fields:
 - **endpoint** (required) — path appended to `base_url`. May carry a query string and `{param}` placeholders; a param whose name matches a `{placeholder}` fills the URL **path**. Remaining params become query parameters — except those consumed by the body `template`, which are sent in the body only, not duplicated onto the query string.
 - **method** — defaults to `GET`.
 - **headers** — a per-table map of extra request headers. Constant headers shared by every table (e.g. `Accept`, an API-version header) are better set once at the source level via `config.headers` (see below); per-table `headers` are merged *on top* and win on a key collision.
-- **body** — for POST/PUT/GraphQL: `kind` (`json`, the default, sets `Content-Type: application/json`; or `form` for `application/x-www-form-urlencoded`) and `template` (body text with `{param}` placeholders; other braces — JSON/GraphQL syntax — are left untouched).
+- **body** — for POST/PUT/GraphQL: `kind` (`json`, the default, sets `Content-Type: application/json`; or `form` for `application/x-www-form-urlencoded`) and `template` (body text with `{param}` placeholders; other braces — JSON/GraphQL syntax — are left untouched). In a **JSON** body, an *unbound* optional param (no filter and no `default`) doesn't leave its placeholder behind: the JSON object member holding it is dropped, and any object it empties is dropped too. This is what makes inlined optional GraphQL filters work — `filter: { team: { id: { eq: "{team_id}" } } }` with `team_id` unfiltered collapses to no `team` filter (the variable defaults to null = match-all) instead of sending a literal `"{team_id}"` that matches nothing.
 - **requests** — conditional request shapes tried in order; the first whose `when_filters` are **all** bound replaces the default `endpoint`/`method`/`body`. Each entry is `{ when_filters: [...], endpoint, method?, body? }`. The classic use is a get-by-id endpoint when an id filter is present, falling back to a list endpoint otherwise.
 
 ```yaml
@@ -550,10 +550,16 @@ Each table's request is built from these flat fields:
 
 #### Query parameters
 
-`params` declares the columns a table accepts as filters. Each is `{ name, type (default varchar), required (default false), default, accepts, emit, explode, derive }`:
+`params` declares the columns a table accepts as filters. Each is `{ name, type (default varchar), required (default false), default, accepts, emit, explode, derive, filterable }`:
 
 - `required: true` — the param must appear as a SQL filter, or the scan fails with a clear error (rather than fetching an unbounded result).
 - `default` — value used when the user doesn't filter on it.
+- `filterable: true` — let the param be used in a `WHERE` clause. Normally a param can only be filtered on if it's also a `response.schema` column; this exposes it as a column without declaring one. Use it for a filter the API accepts but doesn't return.
+
+```yaml
+        params:
+          - { name: status, filterable: true }   # WHERE status = 'active' → ?status=active
+```
 - **Equality** pushes down by default: `WHERE state = 'open'` → `?state=open`.
 - **Comparisons** — to push `>=` / `<=` etc., list them in `accepts` and map each to a query-parameter name in `emit`:
 

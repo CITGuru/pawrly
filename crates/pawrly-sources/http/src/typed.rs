@@ -34,7 +34,7 @@ use serde_json::Value;
 use crate::paginate::{self, NextPage};
 use crate::source::{
     BodyKind, HttpSource, HttpTableSpec, PaginationConfig, RateLimitPolicy, RequestBody, Reshape,
-    ResponseColumn, ResponseSpec, custom_body_object, schema_for,
+    ResponseColumn, ResponseSpec, custom_body_object, effective_columns, schema_for,
 };
 
 /// Backstop page cap when a source declares no `safety.max_pages`, so a
@@ -46,6 +46,10 @@ pub struct HttpTableProvider {
     pub source: Arc<HttpSource>,
     pub spec: Arc<HttpTableSpec>,
     pub schema: SchemaRef,
+    /// Output columns the batch builder emits — `response.schema` plus any
+    /// `filterable` params. Kept in lockstep with `schema` (both come from
+    /// [`effective_columns`]) so the built batch always matches the Arrow schema.
+    pub out_columns: Vec<ResponseColumn>,
     /// Hard cap on pagination calls, threaded from the table/source safety
     /// policy. `None` falls back to [`DEFAULT_MAX_PAGES`].
     pub max_pages: Option<u32>,
@@ -73,10 +77,12 @@ impl HttpTableProvider {
         max_rows: Option<u64>,
     ) -> Self {
         let schema = schema_for(&spec);
+        let out_columns = effective_columns(&spec);
         Self {
             source,
             spec,
             schema,
+            out_columns,
             max_pages,
             max_rows,
         }
@@ -327,7 +333,12 @@ impl TableProvider for HttpTableProvider {
             match (body, auth_body.is_empty()) {
                 // Table body only — render and attach as declared.
                 (Some(tbody), true) => {
-                    let mut rendered = render_template(&tbody.template, &next_params);
+                    let mut rendered = match tbody.kind {
+                        BodyKind::Json => {
+                            render_json_body(&tbody.template, &next_params, &self.spec.params)
+                        }
+                        BodyKind::Form => render_template(&tbody.template, &next_params),
+                    };
                     // Inject the body-cursor for the next page, if any.
                     if let (Some(cursor), Some(path)) = (&body_cursor, body_cursor_path)
                         && let Ok(mut v) = serde_json::from_str::<Value>(&rendered)
@@ -351,7 +362,8 @@ impl TableProvider for HttpTableProvider {
                             "custom auth `body` requires a JSON table body to merge into".into(),
                         ));
                     }
-                    let rendered = render_template(&tbody.template, &next_params);
+                    let rendered =
+                        render_json_body(&tbody.template, &next_params, &self.spec.params);
                     let mut value: Value = serde_json::from_str(&rendered).map_err(|e| {
                         DataFusionError::Plan(format!("table body is not valid JSON: {e}"))
                     })?;
@@ -475,7 +487,7 @@ impl TableProvider for HttpTableProvider {
             all_rows.truncate(lim);
         }
 
-        let batch = build_batch(&self.schema, &self.spec.response.schema, &all_rows, &params)?;
+        let batch = build_batch(&self.schema, &self.out_columns, &all_rows, &params)?;
         let projected_schema = if let Some(p) = projection {
             let fields: Vec<Field> = p.iter().map(|i| self.schema.field(*i).clone()).collect();
             Arc::new(Schema::new(fields))
@@ -638,6 +650,80 @@ fn render_template(template: &str, params: &BTreeMap<String, String>) -> String 
         out = out.replace(&format!("{{{k}}}"), v);
     }
     out
+}
+
+/// Sentinel marking a JSON value that came from an unbound optional param, so
+/// [`prune_unbound_filters`] can drop the enclosing object member.
+const UNBOUND_SENTINEL: &str = "__pawrly_unbound_placeholder__";
+
+/// Render a **JSON** body, then drop any object member still tied to an *unbound*
+/// declared param.
+///
+/// A GraphQL filter template inlines optional filters (`{"id": {"eq": "{x}"}}`).
+/// When `x` is neither filtered nor defaulted, plain [`render_template`] leaves
+/// the placeholder literal — surviving as the string `"{x}"` (matches nothing)
+/// or, for an unquoted numeric/bool slot, as invalid JSON. GraphQL wants the key
+/// *absent* to mean "no filter", so here each unbound placeholder is replaced
+/// with a sentinel, the body is parsed, and every member resolving to that
+/// sentinel (and any object it empties) is removed. Falls back to the plain
+/// render if the result isn't parseable, so a non-JSON or malformed body keeps
+/// today's behaviour.
+fn render_json_body(
+    template: &str,
+    bound: &BTreeMap<String, String>,
+    declared: &[crate::source::ParamSpec],
+) -> String {
+    let rendered = render_template(template, bound);
+    let unbound: Vec<&str> = declared
+        .iter()
+        .filter(|p| !bound.contains_key(&p.name))
+        .map(|p| p.name.as_str())
+        .collect();
+    if unbound.is_empty() {
+        return rendered;
+    }
+    let sentinel_json = format!("\"{UNBOUND_SENTINEL}\"");
+    let mut marked = rendered.clone();
+    for name in unbound {
+        // Quoted slot first (`"{name}"`), then any bare slot (`{name}`), so both
+        // string and numeric/bool placeholders become a valid sentinel string.
+        marked = marked.replace(&format!("\"{{{name}}}\""), &sentinel_json);
+        marked = marked.replace(&format!("{{{name}}}"), &sentinel_json);
+    }
+    match serde_json::from_str::<Value>(&marked) {
+        Ok(v) => {
+            prune_unbound_filters(v).map_or_else(|| "{}".to_string(), |pruned| pruned.to_string())
+        }
+        Err(_) => rendered,
+    }
+}
+
+/// Drop values that are the unbound sentinel, and any object that empties out as
+/// a result. Returns `None` when the whole value collapses (a member to remove).
+fn prune_unbound_filters(value: Value) -> Option<Value> {
+    match value {
+        Value::String(s) if s == UNBOUND_SENTINEL => None,
+        Value::Object(map) => {
+            let had_members = !map.is_empty();
+            let mut out = serde_json::Map::new();
+            for (k, v) in map {
+                if let Some(pruned) = prune_unbound_filters(v) {
+                    out.insert(k, pruned);
+                }
+            }
+            // An object emptied *by pruning* is itself a dead filter; an
+            // originally-empty object is preserved as-is.
+            if had_members && out.is_empty() {
+                None
+            } else {
+                Some(Value::Object(out))
+            }
+        }
+        Value::Array(arr) => Some(Value::Array(
+            arr.into_iter().filter_map(prune_unbound_filters).collect(),
+        )),
+        other => Some(other),
+    }
 }
 
 /// Extract `column <op> literal` (or the flipped `literal <op> column`) where
@@ -1326,5 +1412,63 @@ mod build_tests {
         // A disjunction with a non-equality leaf is not an in-list.
         let ranged = col("n").eq(lit(1)).or(col("n").gt(lit(5)));
         assert_eq!(extract_in_list(&ranged), None);
+    }
+
+    fn param(name: &str) -> crate::source::ParamSpec {
+        serde_json::from_value(serde_json::json!({ "name": name })).unwrap()
+    }
+
+    /// A GraphQL-style filter template with one bound and several unbound
+    /// optional params: the bound filter survives, the unbound ones (quoted and
+    /// unquoted alike) are dropped along with the objects they empty.
+    #[test]
+    fn render_json_body_prunes_unbound_filters() {
+        let template = concat!(
+            r#"{"query":"q","variables":{"filter":{"#,
+            r#""team":{"id":{"eq":"{team_id}"},"key":{"eq":"{team_key}"}},"#,
+            r#""cycle":{"number":{"eq":{cycle_number}}}},"first":100}}"#,
+        );
+        let declared = vec![param("team_id"), param("team_key"), param("cycle_number")];
+        let mut bound = BTreeMap::new();
+        bound.insert("team_key".to_string(), "FIN".to_string());
+
+        let out = render_json_body(template, &bound, &declared);
+        let v: Value = serde_json::from_str(&out).unwrap();
+        // Bound filter kept.
+        assert_eq!(v["variables"]["filter"]["team"]["key"]["eq"], "FIN");
+        // Unbound `team_id` dropped (its object pruned).
+        assert!(v["variables"]["filter"]["team"].get("id").is_none());
+        // Unbound unquoted `cycle_number` dropped, emptying `cycle` -> removed.
+        assert!(v["variables"]["filter"].get("cycle").is_none());
+        // Untouched scalars survive.
+        assert_eq!(v["variables"]["first"], 100);
+        assert_eq!(v["query"], "q");
+    }
+
+    /// When every filter is unbound the whole `filter` object collapses and is
+    /// removed, so the GraphQL variable defaults to null (match-all).
+    #[test]
+    fn render_json_body_drops_fully_unbound_filter_object() {
+        let template =
+            r#"{"query":"q","variables":{"filter":{"team":{"id":{"eq":"{team_id}"}}},"first":50}}"#;
+        let declared = vec![param("team_id")];
+        let out = render_json_body(template, &BTreeMap::new(), &declared);
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert!(v["variables"].get("filter").is_none());
+        assert_eq!(v["variables"]["first"], 50);
+    }
+
+    /// A body with no unbound params is returned untouched (fast path).
+    #[test]
+    fn render_json_body_no_unbound_is_passthrough() {
+        let template = r#"{"query":"q","variables":{"first":100}}"#;
+        let declared = vec![param("team_id")];
+        let mut bound = BTreeMap::new();
+        bound.insert("team_id".to_string(), "T".to_string());
+        // `team_id` is bound and not in the template; output equals plain render.
+        assert_eq!(
+            render_json_body(template, &bound, &declared),
+            render_template(template, &bound)
+        );
     }
 }

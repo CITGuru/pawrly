@@ -5,7 +5,9 @@ use std::any::Any;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use arrow_array::{ArrayRef, BooleanArray, Float64Array, Int64Array, RecordBatch, StringArray};
+use arrow_array::{
+    ArrayRef, BooleanArray, Float64Array, Int64Array, RecordBatch, RecordBatchOptions, StringArray,
+};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use async_trait::async_trait;
 use datafusion::catalog::Session;
@@ -349,7 +351,10 @@ fn project(
     let fields: Vec<Field> = indices.iter().map(|i| schema.field(*i).clone()).collect();
     let projected_schema = Arc::new(Schema::new(fields));
     let columns: Vec<ArrayRef> = indices.iter().map(|i| batch.column(*i).clone()).collect();
-    let projected = RecordBatch::try_new(projected_schema.clone(), columns)
+    // A zero-column projection (e.g. COUNT(*)) has no array to infer the row
+    // count from, so carry it explicitly.
+    let options = RecordBatchOptions::new().with_row_count(Some(batch.num_rows()));
+    let projected = RecordBatch::try_new_with_options(projected_schema.clone(), columns, &options)
         .map_err(|e| DataFusionError::ArrowError(Box::new(e), None))?;
     Ok((projected_schema, projected))
 }

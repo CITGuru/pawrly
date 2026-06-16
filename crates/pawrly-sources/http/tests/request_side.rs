@@ -11,6 +11,7 @@
 
 use std::sync::Arc;
 
+use datafusion::arrow::array::StringArray;
 use datafusion::catalog::{CatalogProvider, MemoryCatalogProvider};
 use datafusion::execution::config::SessionConfig;
 use datafusion::execution::context::SessionContext;
@@ -804,4 +805,97 @@ async fn extra_status_403_is_retried() {
         .expect("execute: 403 should be retried and then succeed");
     let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
     assert_eq!(rows, 1);
+}
+
+/// A `filterable: true` param that is *not* a `response.schema` column still
+/// becomes a queryable column: a `WHERE` on it pushes down to the query string
+/// (here as `?order=asc`), and the column echoes the bound value in output. When
+/// the filter is absent the param's `default` is pushed and echoed instead. The
+/// param name is a SQL keyword (`order`), so it must be quoted — exercising that
+/// path too.
+#[tokio::test]
+async fn filterable_param_becomes_queryable_column() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/items"))
+        .and(query_param("order", "asc"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([ { "id": 1 } ])))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/items"))
+        .and(query_param("order", "desc"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([ { "id": 2 }, { "id": 3 } ])))
+        .mount(&server)
+        .await;
+
+    let (ctx, catalog) = build_ctx().await;
+    let def = SourceDef {
+        name: "api".into(),
+        kind: SourceKind::Http,
+        description: None,
+        wiki: None,
+        examples: Vec::new(),
+        config: json!({ "base_url": server.uri() }),
+        cache: CachePolicy::None,
+        safety: None,
+        tables: vec![TableDef {
+            name: "items".into(),
+            description: None,
+            wiki: None,
+            config: json!({
+                "endpoint": "/items",
+                // `order` is filterable but absent from response.schema.
+                "params": [ { "name": "order", "default": "desc", "filterable": true } ],
+                "response": { "path": "$", "schema": [ { "name": "id", "type": "bigint" } ] }
+            }),
+            cache: None,
+            safety: None,
+        }],
+        raw_table: false,
+        raw_table_safety: None,
+    };
+    register_http_source(&def, &ctx, catalog.as_ref())
+        .await
+        .expect("register");
+
+    // Filtering on the synthesized column pushes `?order=asc` and echoes it.
+    let batches = ctx
+        .sql("SELECT id, \"order\" FROM api.items WHERE \"order\" = 'asc'")
+        .await
+        .expect("plan: filterable param should be a valid column")
+        .collect()
+        .await
+        .expect("execute: WHERE order=asc should push ?order=asc");
+    let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+    assert_eq!(rows, 1, "only the order=asc page carried one row");
+    let order_col = batches[0]
+        .column_by_name("order")
+        .expect("order column exists")
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .expect("order is a varchar column");
+    assert_eq!(order_col.value(0), "asc", "the bound value is echoed");
+
+    // No filter -> the param default (`desc`) is pushed and echoed.
+    let batches = ctx
+        .sql("SELECT \"order\" FROM api.items")
+        .await
+        .expect("plan")
+        .collect()
+        .await
+        .expect("execute: default order=desc should be sent");
+    let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+    assert_eq!(rows, 2, "the order=desc page carried two rows");
+    let order_col = batches[0]
+        .column_by_name("order")
+        .expect("order column exists")
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .expect("order is a varchar column");
+    assert_eq!(
+        order_col.value(0),
+        "desc",
+        "the default is echoed when unfiltered"
+    );
 }

@@ -145,7 +145,7 @@ See [mcp-backend.md](mcp-backend.md) for transports, the `expose` dial, column p
     transport: streamable_http     # or stdio (with command: [...] + env:)
     url: https://mcp.linear.app/mcp
     expose: read_only              # read_only (default) | all | listed
-    auth: { type: header, headers: [{ name: Authorization, bearer: ${secret:LINEAR_API_TOKEN} }] }
+    auth: { type: header, headers: [{ name: Authorization, bearer: ${secret:LINEAR_API_KEY} }] }
   tables:                          # optional: pin typed columns
     - name: list_issues
       columns:
