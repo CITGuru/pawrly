@@ -32,6 +32,7 @@ use datafusion::physical_plan::streaming::{PartitionStream, StreamingTableExec};
 use parking_lot::Mutex;
 use pawrly_core::{SourceDef, SourceKind, StorageScheme, origin_prefix};
 use pawrly_sources_http::AuthSpec;
+use secrecy::ExposeSecret as _;
 use serde_json::Value as JsonValue;
 
 use crate::duckdb_pool::DuckDbPool;
@@ -831,19 +832,20 @@ fn build_http_secret_sql(def: &SourceDef) -> Result<Vec<String>, String> {
         AuthSpec::Header { headers: hs } => {
             for h in hs {
                 if let Some(t) = h.bearer {
+                    let t = t.expose_secret();
                     if h.name.eq_ignore_ascii_case("authorization") && bearer_token.is_none() {
-                        bearer_token = Some(t);
+                        bearer_token = Some(t.to_string());
                     } else {
                         headers.push((h.name, format!("Bearer {t}")));
                     }
                 } else if let Some(v) = h.value {
-                    headers.push((h.name, v));
+                    headers.push((h.name, v.expose_secret().to_string()));
                 }
             }
         }
         AuthSpec::Basic { username, password } => {
-            let enc =
-                base64::engine::general_purpose::STANDARD.encode(format!("{username}:{password}"));
+            let enc = base64::engine::general_purpose::STANDARD
+                .encode(format!("{username}:{}", password.expose_secret()));
             headers.push(("Authorization".to_string(), format!("Basic {enc}")));
         }
         AuthSpec::Custom { .. } => {

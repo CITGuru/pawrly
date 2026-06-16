@@ -34,6 +34,7 @@ chrono = { workspace = true }
 parking_lot = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+secrecy = { workspace = true }
 uuid = { workspace = true }
 num_cpus = { workspace = true }
 duckdb = { workspace = true }

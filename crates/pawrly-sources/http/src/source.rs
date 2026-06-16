@@ -5,12 +5,16 @@ use std::sync::Arc;
 
 use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use reqwest::header::HeaderMap;
+use secrecy::{ExposeSecret as _, SecretString};
 use serde::{Deserialize, Serialize};
 
 /// Auth declaration, tagged by `type`: `header` (tokens / API keys in headers),
 /// `basic` (HTTP Basic), `custom` (credentials in the query string), and
 /// `oauth2` (client-credentials token fetch).
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+// Secret-bearing fields use `SecretString` (redacted Debug, zeroized on drop,
+// not `Serialize`) so credentials can't leak via a stray log or serialization.
+// That intentionally costs `AuthSpec` its `Clone`/`Serialize` derives.
+#[derive(Debug, Deserialize, Default)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AuthSpec {
     #[default]
@@ -23,7 +27,7 @@ pub enum AuthSpec {
     },
     Basic {
         username: String,
-        password: String,
+        password: SecretString,
     },
     /// Credentials carried outside headers: query parameters appended to every
     /// request (`?api_key=…`) and/or name/value fields injected into the request
@@ -42,31 +46,31 @@ pub enum AuthSpec {
     Oauth2 {
         token_url: String,
         client_id: String,
-        client_secret: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        client_secret: SecretString,
+        #[serde(default)]
         scope: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(default)]
         audience: Option<String>,
     },
 }
 
 /// One header in a `type: header` auth block. Provide exactly one of `bearer`
 /// (sent as `Bearer <bearer>`) or `value` (sent verbatim).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Deserialize)]
 pub struct AuthHeader {
     pub name: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub bearer: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub value: Option<String>,
+    #[serde(default)]
+    pub bearer: Option<SecretString>,
+    #[serde(default)]
+    pub value: Option<SecretString>,
 }
 
 /// One credential in a `type: custom` auth block — a name/value pair used as a
 /// query parameter (`query`) or a request-body field (`body`).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Deserialize)]
 pub struct QueryCredential {
     pub name: String,
-    pub value: String,
+    pub value: SecretString,
 }
 
 /// Build a JSON object from `custom` auth body credential fields.
@@ -76,7 +80,12 @@ pub fn custom_body_object(
 ) -> serde_json::Map<String, serde_json::Value> {
     fields
         .iter()
-        .map(|c| (c.name.clone(), serde_json::Value::String(c.value.clone())))
+        .map(|c| {
+            (
+                c.name.clone(),
+                serde_json::Value::String(c.value.expose_secret().to_string()),
+            )
+        })
         .collect()
 }
 
@@ -87,7 +96,7 @@ impl AuthSpec {
         AuthSpec::Header {
             headers: vec![AuthHeader {
                 name: "Authorization".into(),
-                bearer: Some(token.into()),
+                bearer: Some(SecretString::from(token.into())),
                 value: None,
             }],
         }
@@ -531,9 +540,16 @@ impl std::fmt::Debug for HttpSource {
 
 impl HttpSource {
     /// Build a `reqwest::Client` configured with reasonable defaults.
+    ///
+    /// reqwest applies no timeout by default, so a hung upstream would stall a
+    /// request indefinitely. These per-request bounds cap a single HTTP call;
+    /// overall query time (across paginated calls) is bounded separately by the
+    /// engine's query timeout.
     pub fn build_client() -> reqwest::Client {
         reqwest::Client::builder()
             .user_agent(format!("pawrly/{}", env!("CARGO_PKG_VERSION")))
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .timeout(std::time::Duration::from_secs(60))
             .build()
             .unwrap_or_else(|_| reqwest::Client::new())
     }
@@ -550,20 +566,24 @@ impl HttpSource {
                 let mut req = req;
                 for h in headers {
                     match (&h.bearer, &h.value) {
-                        (Some(b), _) => req = req.header(&h.name, format!("Bearer {b}")),
-                        (None, Some(v)) => req = req.header(&h.name, v),
+                        (Some(b), _) => {
+                            req = req.header(&h.name, format!("Bearer {}", b.expose_secret()));
+                        }
+                        (None, Some(v)) => req = req.header(&h.name, v.expose_secret()),
                         (None, None) => {}
                     }
                 }
                 req
             }
-            AuthSpec::Basic { username, password } => req.basic_auth(username, Some(password)),
+            AuthSpec::Basic { username, password } => {
+                req.basic_auth(username, Some(password.expose_secret()))
+            }
             AuthSpec::Custom { query, .. } => {
                 // Body fields are attached at request-build time (typed/raw), where
                 // they can merge with a table's own body; here we only do query.
                 let pairs: Vec<(&str, &str)> = query
                     .iter()
-                    .map(|q| (q.name.as_str(), q.value.as_str()))
+                    .map(|q| (q.name.as_str(), q.value.expose_secret()))
                     .collect();
                 req.query(&pairs)
             }
@@ -606,7 +626,7 @@ impl HttpSource {
         let mut form = vec![
             ("grant_type", "client_credentials"),
             ("client_id", client_id.as_str()),
-            ("client_secret", client_secret.as_str()),
+            ("client_secret", client_secret.expose_secret()),
         ];
         if let Some(s) = scope {
             form.push(("scope", s.as_str()));
