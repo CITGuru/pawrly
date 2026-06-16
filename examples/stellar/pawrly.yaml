@@ -1,0 +1,145 @@
+# Stellar Horizon API — SQL over a live public blockchain REST API.
+# yaml-language-server: $schema=../../schemas/pawrly.schema.json
+#
+# STATUS: working, verified live against https://horizon.stellar.org (no auth).
+#
+# Horizon is the Stellar network's REST API. Its list endpoints wrap rows in a
+# HAL envelope — the records live at `$._embedded.records` — and accept the
+# standard `cursor` / `limit` / `order` paging params. Each table below maps one
+# GET endpoint to a typed table; `raw_table: true` also exposes a `_raw` JSON
+# escape hatch per source for fields we didn't type.
+#
+#   pawrly validate examples/stellar/pawrly.yaml
+#   pawrly --config examples/stellar/pawrly.yaml schema
+#   pawrly --config examples/stellar/pawrly.yaml check
+#   pawrly --config examples/stellar/pawrly.yaml sql \
+#     'SELECT sequence, closed_at, successful_transaction_count, operation_count
+#        FROM stellar.ledgers ORDER BY sequence DESC LIMIT 5'
+#   pawrly --config examples/stellar/pawrly.yaml sql \
+#     'SELECT asset_code, asset_issuer, num_contracts FROM stellar.assets LIMIT 5'
+
+version: 1
+name: stellar-horizon
+
+defaults:
+  http:
+    timeout: 30s
+    user_agent: pawrly-stellar-example/0.0.1
+
+sources:
+  - name: stellar
+    kind: http
+    description: Stellar Horizon — public mainnet REST API, no authentication.
+    wiki: |
+      List endpoints page with `limit` (1-200, default 10), `order` (asc|desc),
+      and an opaque `cursor` (`paging_token` of a prior row). Amounts are decimal
+      strings denominated in lumens; timestamps are ISO-8601 UTC.
+    examples:
+      - SELECT sequence, operation_count FROM stellar.ledgers ORDER BY sequence DESC LIMIT 1
+      - SELECT asset_code FROM stellar.assets LIMIT 1
+    config:
+      base_url: https://horizon.stellar.org
+    raw_table: true
+    tables:
+      # ----- /ledgers -------------------------------------------------------
+      - name: ledgers
+        wiki: |
+          One row per closed ledger (~5s cadence). `sequence` is the height;
+          `closed_at` is when consensus closed it.
+        endpoint: /ledgers
+        params:
+          - { name: limit, required: false, default: "10" }
+          - { name: order, required: false, default: desc }
+          - { name: cursor, required: false }
+        response:
+          path: $._embedded.records
+          schema:
+            - { name: sequence, type: bigint }
+            - { name: hash, type: varchar }
+            - { name: prev_hash, type: varchar }
+            - { name: closed_at, type: varchar }
+            - { name: successful_transaction_count, type: bigint }
+            - { name: failed_transaction_count, type: bigint }
+            - { name: operation_count, type: bigint }
+            - { name: total_coins, type: varchar }
+            - { name: fee_pool, type: varchar }
+            - { name: base_fee_in_stroops, type: bigint }
+            - { name: base_reserve_in_stroops, type: bigint }
+            - { name: protocol_version, type: bigint }
+            - { name: paging_token, type: varchar }
+
+      # ----- /transactions --------------------------------------------------
+      - name: transactions
+        wiki: |
+          One row per transaction. `successful` is false for failed-but-included
+          txs; `operation_count` counts the ops bundled inside.
+        endpoint: /transactions
+        params:
+          - { name: limit, required: false, default: "10" }
+          - { name: order, required: false, default: desc }
+          - { name: cursor, required: false }
+        # Horizon pages via each row's `paging_token`, echoed back as `?cursor=`.
+        # SQL `LIMIT n` stops the walk once n rows are collected.
+        pagination: { type: row_cursor, param: cursor, field: paging_token }
+        response:
+          path: $._embedded.records
+          schema:
+            - { name: id, type: varchar }
+            - { name: hash, type: varchar }
+            - { name: ledger, type: bigint }
+            - { name: created_at, type: varchar }
+            - { name: source_account, type: varchar }
+            - { name: successful, type: boolean }
+            - { name: operation_count, type: bigint }
+            - { name: fee_charged, type: varchar }
+            - { name: memo_type, type: varchar }
+            - { name: paging_token, type: varchar }
+
+      # ----- /operations ----------------------------------------------------
+      - name: operations
+        wiki: |
+          Individual operations across all transactions. `type` is the op kind
+          (payment, create_account, invoke_host_function, ...).
+        endpoint: /operations
+        params:
+          - { name: limit, required: false, default: "10" }
+          - { name: order, required: false, default: desc }
+          - { name: cursor, required: false }
+        response:
+          path: $._embedded.records
+          schema:
+            - { name: id, type: varchar }
+            - { name: type, type: varchar }
+            - { name: type_i, type: bigint }
+            - { name: source_account, type: varchar }
+            - { name: transaction_hash, type: varchar }
+            - { name: transaction_successful, type: boolean }
+            - { name: created_at, type: varchar }
+            - { name: paging_token, type: varchar }
+
+      # ----- /assets --------------------------------------------------------
+      - name: assets
+        wiki: |
+          Issued assets on the network. Filter with `asset_code` / `asset_issuer`
+          query params to narrow to a single asset. Holder/balance counts are
+          nested under `accounts`/`balances` in the raw row — query `_raw` for
+          those; the typed columns expose the flat top-level fields.
+        endpoint: /assets
+        params:
+          - { name: asset_code, required: false }
+          - { name: asset_issuer, required: false }
+          - { name: limit, required: false, default: "10" }
+          - { name: order, required: false, default: desc }
+          - { name: cursor, required: false }
+        response:
+          path: $._embedded.records
+          schema:
+            - { name: asset_type, type: varchar }
+            - { name: asset_code, type: varchar }
+            - { name: asset_issuer, type: varchar }
+            - { name: num_claimable_balances, type: bigint }
+            - { name: num_liquidity_pools, type: bigint }
+            - { name: num_contracts, type: bigint }
+            - { name: claimable_balances_amount, type: varchar }
+            - { name: contracts_amount, type: varchar }
+            - { name: paging_token, type: varchar }

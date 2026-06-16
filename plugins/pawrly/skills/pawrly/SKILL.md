@@ -68,6 +68,7 @@ A model gives a curated vocabulary (`orders.revenue` by `orders.status`) with bu
 - Address tables as `data.orders` (or `"data"."orders"`), never `"data.orders"`.
 - **Set required filters.** Many sources require them (HTTP `params: {required: true}`, `safety.require_filters_on`); `describe_table` lists them. Missing them errors or fans out.
 - Add a `LIMIT` unless the user wants complete output.
+- **Don't put a top-level `ORDER BY` (or `GROUP BY`/aggregate) over a paginated source.** `LIMIT n` pushes down and stops the scan after `n` rows, but a global sort/aggregate must see *every* row first, so the limit can no longer push through — the engine pages the whole (often unbounded) feed and is refused with `would page more than 1000 times`. Instead rely on the source's natural/default order (e.g. HTTP `order: desc` returns newest-first, so `... LIMIT 10` already gives the 10 latest), or bound the scan first and sort the small result: `SELECT * FROM (SELECT * FROM src.tbl LIMIT 200) t ORDER BY created_at DESC`. `describe_table` flags which sources paginate.
 - Cross-source joins work — each source is scanned, then joined locally.
 - Lead with the answer or the blocker. Include SQL only when it helps the user trust or reuse the result; don't dump exhaustive column lists.
 
