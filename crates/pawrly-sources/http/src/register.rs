@@ -69,6 +69,7 @@ pub async fn register_http_source(
 
     let client = HttpSource::build_client();
     let source_max_pages = def.safety.as_ref().and_then(|s| s.max_pages);
+    let source_max_rows = def.safety.as_ref().and_then(|s| s.max_rows);
 
     // In openapi mode `base_url` points at the spec, not the API; the request
     // base comes from the spec's `servers`.
@@ -116,22 +117,21 @@ pub async fn register_http_source(
     // Synthesized tables first. An explicit `def.tables` entry whose name matches
     // a synthesized table *patches* it (merge only the fields it sets); a new name
     // is a full table definition.
-    let mut tables: Vec<(HttpTableSpec, Option<u32>)> = synthesized
+    let mut tables: Vec<(HttpTableSpec, Option<u32>, Option<u64>)> = synthesized
         .into_iter()
-        .map(|spec| (spec, source_max_pages))
+        .map(|spec| (spec, source_max_pages, source_max_rows))
         .collect();
     for t in &def.tables {
-        let max_pages = t
-            .safety
-            .as_ref()
-            .and_then(|s| s.max_pages)
-            .or(source_max_pages);
-        match tables.iter_mut().find(|(s, _)| s.name == t.name) {
+        let table_safety = t.safety.as_ref();
+        let max_pages = table_safety.and_then(|s| s.max_pages).or(source_max_pages);
+        let max_rows = table_safety.and_then(|s| s.max_rows).or(source_max_rows);
+        match tables.iter_mut().find(|(s, _, _)| s.name == t.name) {
             Some(slot) => {
                 slot.0 = merge_table_def(&slot.0, t)?;
                 slot.1 = max_pages;
+                slot.2 = max_rows;
             }
-            None => tables.push((table_spec_from_def(t)?, max_pages)),
+            None => tables.push((table_spec_from_def(t)?, max_pages, max_rows)),
         }
     }
     if tables.is_empty() && !def.raw_table {
@@ -142,7 +142,7 @@ pub async fn register_http_source(
     }
 
     let mut summaries = Vec::with_capacity(tables.len());
-    for (spec, max_pages) in tables {
+    for (spec, max_pages, max_rows) in tables {
         let required: Vec<String> = spec
             .params
             .iter()
@@ -150,8 +150,12 @@ pub async fn register_http_source(
             .map(|p| p.name.clone())
             .collect();
         let description = spec.description.clone();
-        let provider =
-            HttpTableProvider::with_max_pages(source.clone(), Arc::new(spec.clone()), max_pages);
+        let provider = HttpTableProvider::with_safety(
+            source.clone(),
+            Arc::new(spec.clone()),
+            max_pages,
+            max_rows,
+        );
         schema
             .register_table(spec.name.clone(), Arc::new(provider))
             .map_err(|e| HttpBuildError::DataFusion(format!("register table: {e}")))?;
