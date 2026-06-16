@@ -37,6 +37,11 @@ sources:
     examples:
       - SELECT sequence, operation_count FROM stellar.ledgers ORDER BY sequence DESC LIMIT 1
       - SELECT asset_code FROM stellar.assets LIMIT 1
+      # Stablecoin transfers — bound the global feed first, then filter the asset
+      # (Horizon has no server-side asset filter, so an unbounded WHERE pages forever).
+      - SELECT created_at, amount, "from", "to" FROM (SELECT * FROM stellar.payments LIMIT 200) t WHERE asset_code = 'USDC' AND asset_issuer = 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN'
+      # Path payments — cross-asset conversions; source_asset_* is spent, asset_* delivered, path is the hops.
+      - SELECT created_at, type, source_asset_code, source_amount, asset_code, amount, path FROM (SELECT * FROM stellar.payments LIMIT 200) t WHERE type LIKE 'path_payment%'
     config:
       base_url: https://horizon.stellar.org
     raw_table: true
@@ -99,12 +104,15 @@ sources:
       - name: operations
         wiki: |
           Individual operations across all transactions. `type` is the op kind
-          (payment, create_account, invoke_host_function, ...).
+          (payment, create_account, invoke_host_function, ...). Polymorphic: the
+          asset/amount/from/to/account columns are only populated for the op types
+          that carry them; the full type-specific payload is always in `_raw`.
         endpoint: /operations
         params:
           - { name: limit, required: false, default: "10" }
           - { name: order, required: false, default: desc }
           - { name: cursor, required: false }
+        pagination: { type: row_cursor, param: cursor, field: paging_token }
         response:
           path: $._embedded.records
           schema:
@@ -115,15 +123,84 @@ sources:
             - { name: transaction_hash, type: varchar }
             - { name: transaction_successful, type: boolean }
             - { name: created_at, type: varchar }
+            - { name: asset_type, type: varchar }
+            - { name: asset_code, type: varchar }
+            - { name: asset_issuer, type: varchar }
+            - { name: amount, type: varchar }
+            - { name: from, type: varchar, source: $.from }
+            - { name: to, type: varchar, source: $.to }
+            - { name: account, type: varchar }
+            - { name: starting_balance, type: varchar }
+            - { name: funder, type: varchar }
+            - { name: paging_token, type: varchar }
+
+      # ----- /payments ------------------------------------------------------
+      - name: payments
+        wiki: |
+          Value-moving operations only (payment, path payments, create_account,
+          account_merge) — the right table for "who sent what to whom". Each row
+          carries the destination asset (`asset_code` + `asset_issuer`;
+          `asset_type=native` for XLM), `amount` (delivered), and `from`/`to`.
+          Horizon has no server-side asset filter here, so to pull a single
+          stablecoin filter in SQL on the newest-first feed, e.g.
+            WHERE asset_code = 'USDC'
+              AND asset_issuer = 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN'
+          Scope to one account by setting `account_id` (switches to
+          /accounts/{id}/payments).
+
+          Path payments (`type` = path_payment_strict_send / _strict_receive) also
+          populate the `source_asset_*` / `source_amount` columns (the asset spent)
+          and `path` (a JSON array of intermediate hop assets). When the source and
+          destination assets differ the payment was converted across the DEX.
+          `destination_min` (strict-send) and `source_max` (strict-receive) are the
+          slippage bounds.
+        endpoint: /payments
+        params:
+          - { name: account_id, required: false }
+          - { name: limit, required: false, default: "200" }
+          - { name: order, required: false, default: desc }
+          - { name: cursor, required: false }
+        requests:
+          - { when_filters: [account_id], endpoint: "/accounts/{account_id}/payments" }
+        pagination: { type: row_cursor, param: cursor, field: paging_token }
+        response:
+          path: $._embedded.records
+          schema:
+            - { name: id, type: varchar }
+            - { name: type, type: varchar }
+            - { name: type_i, type: bigint }
+            - { name: transaction_hash, type: varchar }
+            - { name: transaction_successful, type: boolean }
+            - { name: created_at, type: varchar }
+            - { name: source_account, type: varchar }
+            - { name: asset_type, type: varchar }
+            - { name: asset_code, type: varchar }
+            - { name: asset_issuer, type: varchar }
+            - { name: amount, type: varchar }
+            - { name: from, type: varchar, source: $.from }
+            - { name: to, type: varchar, source: $.to }
+            # Path-payment-only fields (the asset spent + the routing hops)
+            - { name: source_asset_type, type: varchar }
+            - { name: source_asset_code, type: varchar }
+            - { name: source_asset_issuer, type: varchar }
+            - { name: source_amount, type: varchar }
+            - { name: destination_min, type: varchar }
+            - { name: source_max, type: varchar }
+            - { name: path, type: json }
+            - { name: account_id, type: varchar, source: param }
             - { name: paging_token, type: varchar }
 
       # ----- /assets --------------------------------------------------------
       - name: assets
         wiki: |
           Issued assets on the network. Filter with `asset_code` / `asset_issuer`
-          query params to narrow to a single asset. Holder/balance counts are
-          nested under `accounts`/`balances` in the raw row — query `_raw` for
-          those; the typed columns expose the flat top-level fields.
+          query params to narrow to a single asset. Holder counts and supply are
+          split by authorization state in the nested `accounts`/`balances` objects:
+          `holders` (= accounts.authorized) is the trustline count and
+          `supply_authorized` (= balances.authorized, a decimal string) the
+          circulating amount held in classic accounts. `contracts_amount` is the
+          supply wrapped into Soroban (SAC) contracts. The raw `accounts`/`balances`
+          JSON is kept for the other states.
         endpoint: /assets
         params:
           - { name: asset_code, required: false }
@@ -137,9 +214,17 @@ sources:
             - { name: asset_type, type: varchar }
             - { name: asset_code, type: varchar }
             - { name: asset_issuer, type: varchar }
+            - { name: contract_id, type: varchar }
+            - { name: holders, type: bigint, source: $.accounts.authorized }
+            - { name: holders_unauthorized, type: bigint, source: $.accounts.unauthorized }
+            - { name: supply_authorized, type: varchar, source: $.balances.authorized }
             - { name: num_claimable_balances, type: bigint }
             - { name: num_liquidity_pools, type: bigint }
             - { name: num_contracts, type: bigint }
             - { name: claimable_balances_amount, type: varchar }
+            - { name: liquidity_pools_amount, type: varchar }
             - { name: contracts_amount, type: varchar }
+            - { name: accounts, type: json }
+            - { name: balances, type: json }
+            - { name: flags, type: json }
             - { name: paging_token, type: varchar }
