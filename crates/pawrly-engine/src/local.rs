@@ -111,7 +111,11 @@ impl LocalEngine {
             .with_default_catalog_and_schema(PAWRLY_CATALOG, "default")
             .with_create_default_catalog_and_schema(false)
             .with_information_schema(true);
-        let ctx = SessionContext::new_with_config(session_config);
+        let mut ctx = SessionContext::new_with_config(session_config);
+        // Register the JSON SQL functions so `json`-typed columns (stored as
+        // Utf8) are queryable in SQL.
+        crate::json_udf::register(&mut ctx)
+            .map_err(|e| EngineError::Internal(format!("register json udfs: {e}")))?;
         let catalog: Arc<MemoryCatalogProvider> = Arc::new(MemoryCatalogProvider::new());
         // Register a `default` schema so `SELECT * FROM unqualified_table` resolves.
         let default_schema: Arc<dyn datafusion::catalog::SchemaProvider> =

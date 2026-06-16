@@ -25,26 +25,26 @@ This page is the reference for the **source block** (every top-level field) and 
 Every entry under `sources:` is one source. These are the top-level fields:
 
 
-| Field              | Type    | Required | Default         | Notes                                                                                                |
-| ------------------ | ------- | -------- | --------------- | ---------------------------------------------------------------------------------------------------- |
-| `name`             | string  | **yes**  | —               | SQL identifier; becomes the schema prefix (`name.table`). Must be unique.                            |
-| `kind`             | enum    | **yes**  | —               | The source kind — see [Source kinds](#source-kinds). Case-insensitive; some kinds have aliases.      |
-| `description`      | string  | no       | —               | Free text; surfaced in `pawrly source list`.                                                         |
-| `wiki`             | string  | no       | —               | Agent-facing usage notes for the whole source; surfaced by `describe_table`. See [`wiki`](#wiki).    |
-| `examples`         | list    | no       | `[]`            | SQL statements that must run against this source; probed by `pawrly check`. See [`examples`](#examples). |
-| `config`           | mapping | no¹      | `{}`            | Per-kind settings (connection, auth, paths, storage, …). Shape depends on `kind`.                    |
-| `tables`           | list    | no¹      | `[]`            | Explicit per-table declarations. Required for some kinds, optional for others (which auto-discover). |
-| `cache`            | mapping | no       | `mode: none`    | Per-source caching. See [the cache block](#the-cache-block).                                          |
-| `safety`           | mapping | no       | permissive      | Per-source guard rails. See [the safety block](#the-safety-block).                                    |
-| `raw_table`        | bool    | no       | `false`         | `http` only: register a raw-HTTP escape-hatch table named after the source.                          |
-| `raw_table_safety` | mapping | no       | filter-required | Safety policy for the raw table when `raw_table: true`.                                              |
+| Field              | Type    | Required | Default         | Notes                                                                                                    |
+| ------------------ | ------- | -------- | --------------- | -------------------------------------------------------------------------------------------------------- |
+| `name`             | string  | **yes**  | —               | SQL identifier; becomes the schema prefix (`name.table`). Must be unique.                                |
+| `kind`             | enum    | **yes**  | —               | The source kind — see [Source kinds](#source-kinds). Case-insensitive; some kinds have aliases.          |
+| `description`      | string  | no       | —               | Free text; surfaced in `pawrly source list`.                                                             |
+| `wiki`             | string  | no       | —               | Agent-facing usage notes for the whole source; surfaced by `describe_table`. See `[wiki](#wiki)`.        |
+| `examples`         | list    | no       | `[]`            | SQL statements that must run against this source; probed by `pawrly check`. See `[examples](#examples)`. |
+| `config`           | mapping | no¹      | `{}`            | Per-kind settings (connection, auth, paths, storage, …). Shape depends on `kind`.                        |
+| `tables`           | list    | no¹      | `[]`            | Explicit per-table declarations. Required for some kinds, optional for others (which auto-discover).     |
+| `cache`            | mapping | no       | `mode: none`    | Per-source caching. See [the cache block](#the-cache-block).                                             |
+| `safety`           | mapping | no       | permissive      | Per-source guard rails. See [the safety block](#the-safety-block).                                       |
+| `raw_table`        | bool    | no       | `false`         | `http` only: register a raw-HTTP escape-hatch table named after the source.                              |
+| `raw_table_safety` | mapping | no       | filter-required | Safety policy for the raw table when `raw_table: true`.                                                  |
 
 
 ¹ Whether `config` or `tables` is required depends on the kind (see each kind below).
 
 The config-layer source block also accepts `from:` (load the body from another file) — see [Configuration → Multi-file configs](./config.md#multi-file-configs).
 
-> **Strict keys.** The source block rejects unknown top-level fields: a typo'd or misplaced key (e.g. `safty:`, or a kind-specific key written outside `config:`/`tables:`) fails the config load with an error rather than being silently ignored. The full machine-readable shape lives in the generated JSON Schema at [`schemas/pawrly.schema.json`](../schemas/pawrly.schema.json), which editors can use for completion and validation.
+> **Strict keys.** The source block rejects unknown top-level fields: a typo'd or misplaced key (e.g. `safty:`, or a kind-specific key written outside `config:`/`tables:`) fails the config load with an error rather than being silently ignored. The full machine-readable shape lives in the generated JSON Schema at `[schemas/pawrly.schema.json](../schemas/pawrly.schema.json)`, which editors can use for completion and validation.
 
 ### `name`
 
@@ -129,15 +129,15 @@ Only `name`, `description`, `wiki`, `cache`, and `safety` are common; everything
 Whether a kind needs `tables:`, and whether it reads per-table fields at all:
 
 
-| Kind                         | `tables:`                          | Per-table fields read                                  |
-| ---------------------------- | ---------------------------------- | ------------------------------------------------------ |
-| `file` (local)               | optional (globs auto-discover)     | `path`, `format`, `csv`, `json`, `schema`, `partition_cols` |
-| `file` (object store)        | **required**                       | `path`/`location`, `format`                            |
-| `http`                       | required for typed tables          | full request/response spec (see the Http backend section below) |
-| `mcp`                        | optional (tools auto-expose)       | `transport`, then `command`/`url` + `auth` (see the MCP backend section) |
-| `sqlite`                     | optional (auto-enumerates)         | `query` (reshape/restrict)                             |
-| `postgres`, `mysql`, `duckdb`, `snowflake`, `ducklake` | optional (lazy catalog enumeration) | none — entries are ignored; the live catalog is exposed as-is |
-| `iceberg`, `delta`           | **required**                       | `path`/`location`                                      |
+| Kind                                                   | `tables:`                           | Per-table fields read                                                    |
+| ------------------------------------------------------ | ----------------------------------- | ------------------------------------------------------------------------ |
+| `file` (local)                                         | optional (globs auto-discover)      | `path`, `format`, `csv`, `json`, `schema`, `partition_cols`              |
+| `file` (object store)                                  | **required**                        | `path`/`location`, `format`                                              |
+| `http`                                                 | required for typed tables           | full request/response spec (see the Http backend section below)          |
+| `mcp`                                                  | optional (tools auto-expose)        | `transport`, then `command`/`url` + `auth` (see the MCP backend section) |
+| `sqlite`                                               | optional (auto-enumerates)          | `query` (reshape/restrict)                                               |
+| `postgres`, `mysql`, `duckdb`, `snowflake`, `ducklake` | optional (lazy catalog enumeration) | none — entries are ignored; the live catalog is exposed as-is            |
+| `iceberg`, `delta`                                     | **required**                        | `path`/`location`                                                        |
 
 
 > For the attach-style catalog kinds (`postgres`/`mysql`/`duckdb`/`snowflake`/`ducklake`), tables are surfaced lazily straight from the remote catalog, so adding `tables:` entries does **not** restrict or rename them. Use the [semantic layer](./semantic.md) if you need curated views over an attached database.
@@ -207,9 +207,9 @@ WHERE request_path = '/rate_limit'
 
 ---
 
-## Source kinds
+## Source Kinds
 
-### File Backend (`file)` — local files & object storage
+### File Backend (`file`) — local files & object storage
 
 The `file` backend serves columnar and row files. **Local** files use DataFusion's native readers; **object storage** (S3/GCS/Azure) is expressed with a `storage:` block and read through DuckDB. A `file` source needs **either** a top-level `config.path` glob **or** at least one `tables:` entry.
 
@@ -322,12 +322,12 @@ sources:
 `auth.type` selects the method (default `access_key`); each provider supports more than one:
 
 
-| `type`  | `auth.type`                | Fields                                                                                                                      |
-| ------- | -------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| `s3`    | `access_key`               | `access_key_id`, `secret_access_key`, `session_token`, `endpoint`, `url_style`                                              |
-| `gcs`   | `access_key`               | `access_key_id`, `secret_access_key` (HMAC keys)                                                                            |
-| `azure` | `access_key`               | `connection_string`, `account_name`                                                                                         |
-| `http`  | `header` / `basic`         | header/basic auth attached to HTTPS file reads                                                                              |
+| `type`  | `auth.type`                        | Fields                                                                                                                      |
+| ------- | ---------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `s3`    | `access_key`                       | `access_key_id`, `secret_access_key`, `session_token`, `endpoint`, `url_style`                                              |
+| `gcs`   | `access_key`                       | `access_key_id`, `secret_access_key` (HMAC keys)                                                                            |
+| `azure` | `access_key`                       | `connection_string`, `account_name`                                                                                         |
+| `http`  | `header` / `basic`                 | header/basic auth attached to HTTPS file reads                                                                              |
 | any     | `credential_chain` (alias `chain`) | none — resolve from the ambient chain (env / instance profile / `gcloud` / `az login`); optional `endpoint`, `account_name` |
 
 
@@ -339,7 +339,7 @@ In addition to `s3`/`gcs`/`azure`, `storage.type: http` covers **authenticated**
 
 > Remote files are read by DuckDB's `read_parquet`/`read_csv`/`read_json`, so the local-file `csv`/`json`/`partition_cols`/`schema` options do **not** apply to object-store tables — DuckDB infers the schema and reader from the URL and `format`. Remote `http(s)://` paths also **cannot be globbed**; point each table at a single concrete URL (bucket globs like `s3://…/*.parquet` are fine).
 
-### Http Backend (`http)` — REST & GraphQL APIs
+### Http Backend (`http`) — REST & GraphQL APIs
 
 Turns an HTTP API into SQL tables: you declare each table's request and how to shape its JSON response into rows. Source-level `config` carries `base_url` (**required**), auth, static request `headers`, retries, and rate limiting; each `tables:` entry maps one request shape to rows.
 
@@ -421,25 +421,29 @@ replace wholesale, and a `null` clears a field.
 
 **Top-level `config`** (the same plumbing as hand-declared HTTP mode):
 
-| Key          | Required | Description                                                                                  |
-| ------------ | -------- | -------------------------------------------------------------------------------------------- |
-| `type`       | yes      | `openapi` — enables spec-driven synthesis. Absent/`manual` keeps the hand-declared behaviour. |
+
+| Key          | Required | Description                                                                                                   |
+| ------------ | -------- | ------------------------------------------------------------------------------------------------------------- |
+| `type`       | yes      | `openapi` — enables spec-driven synthesis. Absent/`manual` keeps the hand-declared behaviour.                 |
 | `base_url`   | yes      | The **spec** location: an `http(s)://` URL or a `file://` path. The API base comes from the spec's `servers`. |
-| `auth`       | no       | Auth block (`header` / `basic` / `custom` / `oauth2`) — see [Authentication](#authentication).  |
-| `token`      | no       | Bearer shorthand: sent as `Authorization: Bearer <token>` (equivalent to a one-header `auth`). |
-| `headers`    | no       | Static request headers attached to every call.                                               |
-| `retry`      | no       | `{ max_retries, base_backoff_ms, max_backoff_ms }` — see [Rate limiting & retries](#rate-limiting--retries). |
-| `rate_limit` | no       | `{ requests_per_second, remaining_header, reset_header, extra_statuses }`.                    |
+| `auth`       | no       | Auth block (`header` / `basic` / `custom` / `oauth2`) — see [Authentication](#authentication).                |
+| `token`      | no       | Bearer shorthand: sent as `Authorization: Bearer <token>` (equivalent to a one-header `auth`).                |
+| `headers`    | no       | Static request headers attached to every call.                                                                |
+| `retry`      | no       | `{ max_retries, base_backoff_ms, max_backoff_ms }` — see [Rate limiting & retries](#rate-limiting--retries).  |
+| `rate_limit` | no       | `{ requests_per_second, remaining_header, reset_header, extra_statuses }`.                                    |
 
-**`config.openapi`** (synthesis-specific):
 
-| Key        | Description                                                                                                                |
-| ---------- | ------------------------------------------------------------------------------------------------------------------------- |
+**config.openapi** (synthesis-specific):
+
+
+| Key        | Description                                                                                                                                                              |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `include`  | `{ tags: [...], paths: [globs], operations: [...] }` — only matching `GET`s become tables. A `*` glob matches path segments. Omit `include` to register **every** `GET`. |
-| `exclude`  | Same shape as `include`; an operation matching `exclude` is dropped (wins over `include`).                                  |
-| `naming`   | How tables are named: `operationId` (default) \| `path` (segments joined) \| `tag` (`<tag>_<leaf>`). Collisions get a numeric suffix. |
-| `base_url` | Override for the effective **request** base, used only when the spec declares no usable `servers[0].url`.                  |
+| `exclude`  | Same shape as `include`; an operation matching `exclude` is dropped (wins over `include`).                                                                               |
+| `naming`   | How tables are named: `operationId` (default)                                                                                                                            |
+| `base_url` | Override for the effective **request** base, used only when the spec declares no usable `servers[0].url`.                                                                |
 | `cache`    | `{ ttl: <duration> }` — cache the fetched spec on disk and reuse it while fresh (e.g. `24h`, `30m`). Omit to re-fetch on every load. Applies to `http(s)://` specs only. |
+
 
 Source-level `safety.max_pages` caps the pagination loop for synthesized tables (they inherit no
 per-table `safety`). With `openapi.cache` set, the spec is stored under
@@ -560,8 +564,8 @@ Each table's request is built from these flat fields:
             emit: { ">=": since, "<=": until }   # WHERE created >= X → ?since=X
 ```
 
-- **`explode`** — `explode: true` pushes a SQL `IN (a, b, c)` filter down as repeated query pairs (`?key=a&key=b&key=c`) instead of post-filtering. Equality still emits a single pair; a non-`explode` `IN` is filtered in-engine as before. Only honored for the query string (not path/body params).
-- **`derive`** — compute the param's value when the query doesn't supply one (a dynamic default), tagged by `kind`:
+- **explode** — `explode: true` pushes a SQL `IN (a, b, c)` filter down as repeated query pairs (`?key=a&key=b&key=c`) instead of post-filtering. Equality still emits a single pair; a non-`explode` `IN` is filtered in-engine as before. Only honored for the query string (not path/body params).
+- **derive** — compute the param's value when the query doesn't supply one (a dynamic default), tagged by `kind`:
   - `ago` — `{ kind: ago, seconds: N }` → epoch seconds `now - N` (a relative time window, e.g. "last hour").
   - `split` — `{ kind: split, from: <other param>, separator: "-", part: 0 }` → a `part` (0-based) of another bound param's value split by `separator`. Useful to derive request fields from a composite filter (e.g. an issue key `ENG-123` → team `ENG` + number `123`). A derived param that feeds a body template stays out of the query string.
 
@@ -605,24 +609,24 @@ A param can also be surfaced as an output column with `source: param` on a `resp
 When a column needs more than a single JSONPath, give it an `expr` instead of a `source`. An `expr` is a small tree, each node tagged by `kind`, evaluated against each row (plus the bound request params). A missing path, a shape mismatch, or a failed transform yields `NULL` — never a scan error.
 
 
-| `kind`         | Fields                                                    | Result                                                                            |
-| -------------- | -------------------------------------------------------- | --------------------------------------------------------------------------------- |
-| `path`         | `path: [a, b]`                                           | Walk object keys `a.b` from the row.                                              |
-| `coalesce`     | `exprs: [...]`                                            | First non-null sub-expression.                                                    |
-| `literal`      | `value`                                                  | A constant value.                                                                 |
-| `replace`      | `expr`, `from`, `to`                                     | Find/replace on the string produced by `expr`.                                    |
-| `current_row`  | —                                                        | The whole row element (usually into a `json` column).                            |
-| `null`         | —                                                        | Always null.                                                                      |
-| `from_filter`  | `filter`                                                 | Inject a bound request param's value.                                             |
-| `join`         | `path`                                                   | Join the array at `path` into `"a,b,c"` (objects as compact JSON).               |
-| `map_join`     | `path`, `item_path`                                      | Take `item_path` of each array element, then join.                               |
-| `first_of`     | `path`, `item_path`                                      | `item_path` of the **first** array element (keeps its type).                     |
-| `lookup`       | `path`, `key`, `key_field?`, `value_field?`             | In `[{key, value}]`, the `value_field` whose `key_field` equals `key`. The fields default to `key`/`value`. |
-| `lookup_join`  | `path`, `key`, `key_field?`, `value_field?`             | Like `lookup` but joins every matching value.                                    |
-| `pick`         | `path`, `by`, `item_path`                               | Index the object at `path` by the bound param `by`, then take `item_path`.       |
-| `to_timestamp` | `unit` (`seconds`/`millis`), `expr`                     | Convert the epoch number from `expr` to an RFC 3339 string (a string passes through). |
-| `from_base64`  | `expr`                                                   | Base64-decode the string from `expr` into UTF-8 text.                            |
-| `if_present`   | `check`, `then_value`                                    | `then_value` when `check` is non-null, else null.                               |
+| `kind`         | Fields                                      | Result                                                                                                      |
+| -------------- | ------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `path`         | `path: [a, b]`                              | Walk object keys `a.b` from the row.                                                                        |
+| `coalesce`     | `exprs: [...]`                              | First non-null sub-expression.                                                                              |
+| `literal`      | `value`                                     | A constant value.                                                                                           |
+| `replace`      | `expr`, `from`, `to`                        | Find/replace on the string produced by `expr`.                                                              |
+| `current_row`  | —                                           | The whole row element (usually into a `json` column).                                                       |
+| `null`         | —                                           | Always null.                                                                                                |
+| `from_filter`  | `filter`                                    | Inject a bound request param's value.                                                                       |
+| `join`         | `path`                                      | Join the array at `path` into `"a,b,c"` (objects as compact JSON).                                          |
+| `map_join`     | `path`, `item_path`                         | Take `item_path` of each array element, then join.                                                          |
+| `first_of`     | `path`, `item_path`                         | `item_path` of the **first** array element (keeps its type).                                                |
+| `lookup`       | `path`, `key`, `key_field?`, `value_field?` | In `[{key, value}]`, the `value_field` whose `key_field` equals `key`. The fields default to `key`/`value`. |
+| `lookup_join`  | `path`, `key`, `key_field?`, `value_field?` | Like `lookup` but joins every matching value.                                                               |
+| `pick`         | `path`, `by`, `item_path`                   | Index the object at `path` by the bound param `by`, then take `item_path`.                                  |
+| `to_timestamp` | `unit` (`seconds`/`millis`), `expr`         | Convert the epoch number from `expr` to an RFC 3339 string (a string passes through).                       |
+| `from_base64`  | `expr`                                      | Base64-decode the string from `expr` into UTF-8 text.                                                       |
+| `if_present`   | `check`, `then_value`                       | `then_value` when `check` is non-null, else null.                                                           |
 
 
 ```yaml
@@ -645,7 +649,7 @@ When a column needs more than a single JSONPath, give it an `expr` instead of a 
 
 `response.path` normally points at an **array** of rows. `response.reshape` turns the value at `path` into rows when it isn't one — applied before column extraction. Tagged by `kind`:
 
-- **`dict_entries`** — the value at `path` is an **object/map**; each entry becomes a row: the entry value with its key added as `_key` (or `{_key, _value}` when the value isn't an object). Read the key with `source: $._key`.
+- **dict_entries** — the value at `path` is an **object/map**; each entry becomes a row: the entry value with its key added as `_key` (or `{_key, _value}` when the value isn't an object). Read the key with `source: $._key`.
 
 ```yaml
       - name: calendar_colors
@@ -658,7 +662,7 @@ When a column needs more than a single JSONPath, give it an `expr` instead of a 
             - { name: background, type: varchar }
 ```
 
-- **`series_points`** — flatten `{ <series>: [ { …, <points>: [[t, v], …] } ] }` into one row per point: each series object (minus its points field) plus the point's two values, written under the `timestamp` and `value` column names. Fields: `series`, `points`, `timestamp`, `value`.
+- **series_points** — flatten `{ <series>: [ { …, <points>: [[t, v], …] } ] }` into one row per point: each series object (minus its points field) plus the point's two values, written under the `timestamp` and `value` column names. Fields: `series`, `points`, `timestamp`, `value`.
 
 ```yaml
       - name: metrics
@@ -677,18 +681,18 @@ When a column needs more than a single JSONPath, give it an `expr` instead of a 
 Set `pagination` to keep fetching pages; absent means a single request. A SQL `LIMIT` stops pagination early once enough rows are collected, and `safety.max_pages` caps the loop. The strategy is tagged by `type`:
 
 
-| `type`        | Fields                                               | Behaviour                                                                                                                                               |
-| ------------- | ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `link_header` | —                                                    | Follows the RFC 5988 `Link:` header's `rel="next"` URL until absent.                                                                                    |
-| `cursor`      | `next_path`, `param`                                 | Reads an opaque cursor from the body at `next_path` (`$.a.b`) and echoes it back as the `param` query parameter; stops when the cursor is absent/empty. |
+| `type`        | Fields                                               | Behaviour                                                                                                                                                                                                                             |
+| ------------- | ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `link_header` | —                                                    | Follows the RFC 5988 `Link:` header's `rel="next"` URL until absent.                                                                                                                                                                  |
+| `cursor`      | `next_path`, `param`                                 | Reads an opaque cursor from the body at `next_path` (`$.a.b`) and echoes it back as the `param` query parameter; stops when the cursor is absent/empty.                                                                               |
 | `body_cursor` | `cursor_path`, `next_path`                           | Reads the next cursor from the body at `next_path` and writes it into the next request's JSON **body** at `cursor_path` (GraphQL `variables.after`, Notion `start_cursor`); stops when the cursor is absent/empty or a page is empty. |
-| `row_cursor`  | `param`, `field` (default `id`), `more_path?`        | Sends `param` = the last row's `field` (e.g. `starting_after=<last id>`); stops when `more_path` (a `$.a.b` boolean) is `false`, else on an empty page. |
-| `page`        | `param`, `start` (default 1), `size_param?`, `size?` | Increments the page number in `param` until a page returns zero rows; optionally sends a page size via `size_param`/`size`.                             |
-| `offset`      | `param`, `size_param`, `size`                        | Increments `param` by `size` each page until a short page (fewer than `size` rows).                                                                     |
+| `row_cursor`  | `param`, `field` (default `id`), `more_path?`        | Sends `param` = the last row's `field` (e.g. `starting_after=<last id>`); stops when `more_path` (a `$.a.b` boolean) is `false`, else on an empty page.                                                                               |
+| `page`        | `param`, `start` (default 1), `size_param?`, `size?` | Increments the page number in `param` until a page returns zero rows; optionally sends a page size via `size_param`/`size`.                                                                                                           |
+| `offset`      | `param`, `size_param`, `size`                        | Increments `param` by `size` each page until a short page (fewer than `size` rows).                                                                                                                                                   |
 
 
 ```yaml
-        pagination: { type: cursor, next_path: $.response_metadata.next_cursor, param: cursor }
+pagination: { type: cursor, next_path: $.response_metadata.next_cursor, param: cursor }
 ```
 
 #### Rate limiting & retries
@@ -719,12 +723,9 @@ Set `pagination` to keep fetching pages; absent means a single request. A SQL `L
 
 A runnable cache-over-API walkthrough lives at [examples/cache-http/](../examples/cache-http/pawrly.yaml).
 
-### MCP Backend (`mcp)` — an MCP server's tools as tables
+### MCP Backend (`mcp`) — an MCP server's tools as tables
 
-Connects to an external [Model Context Protocol](https://modelcontextprotocol.io) server and exposes
-its tools as SQL tables: a `SELECT` runs `tools/call`, pushed-down `WHERE` filters become tool
-arguments, and the result rows are projected into columns. Connect over **stdio** (a local
-subprocess) or **streamable HTTP** (a remote server).
+Connects to an external [Model Context Protocol](https://modelcontextprotocol.io) server and exposes its tools as SQL tables: a `SELECT` runs `tools/call`, pushed-down `WHERE` filters become tool arguments, and the result rows are projected into columns. Connect over **stdio** (a local subprocess) or **streamable HTTP** (a remote server).
 
 ```yaml
 sources:
@@ -752,34 +753,32 @@ sources:
 SELECT id, title, status FROM linear.list_issues WHERE assignee = 'me@example.com' LIMIT 20
 ```
 
-**Two ways to get tables, one dial.** A source produces tables from introspection (`tools/list`) and
-from declaration (`tables:`). `config.expose` sets how much introspection auto-exposes:
+**Two ways to get tables, one dial.** A source produces tables from introspection (`tools/list`) and from declaration (`tables:`). `config.expose` sets how much introspection auto-exposes:
 
-| `expose` | auto-exposed | use |
-| -------- | ------------ | --- |
-| `read_only` (default) | tools with `annotations.readOnlyHint == true` | zero-config, safe |
-| `all` | every non-destructive tool | you accept a `SELECT` may call any read tool |
-| `listed` | none — only `tables:` / `include:` | fully declarative |
 
-`include`/`exclude` (by tool name) narrow whatever `expose` admits; a `destructiveHint` tool is never
-auto-exposed.
+| `expose`              | auto-exposed                                  | use                                          |
+| --------------------- | --------------------------------------------- | -------------------------------------------- |
+| `read_only` (default) | tools with `annotations.readOnlyHint == true` | zero-config, safe                            |
+| `all`                 | every non-destructive tool                    | you accept a `SELECT` may call any read tool |
+| `listed`              | none — only `tables:` / `include:`            | fully declarative                            |
 
-**Output columns.** A tool result is exposed as a single `result` json column unless the tool
-declares an `outputSchema` (columns inferred) or a `tables:` entry declares them. Each `tables:`
-entry **patches** a synthesized table of the same name or **defines** a new one (`tool:` + knobs):
 
-| field | meaning |
-| ----- | ------- |
-| `tool` | the MCP tool to call (defaults to the table name on a patch). |
-| `columns` | `{ name, type, path: [keys] }` — pull a (possibly nested) field out of each row element; empty `path` is the whole element as JSON. |
-| `tool_args` | static arguments always sent. |
-| `filters` | bind a SQL filter to a differently-named argument. |
-| `limit_binding` | `{ tool_arg, max }` — push SQL `LIMIT` into a tool argument. |
-| `pagination` | `{ cursor_arg, response_cursor_path }` — cursor pagination (default: follow `nextCursor`). |
+`include`/`exclude` (by tool name) narrow whatever `expose` admits; a `destructiveHint` tool is never auto-exposed.
 
-**Security.** A `streamable_http` `url` must be `https` (or `http` only for loopback), and may not
-embed credentials in the URL — use the `auth` block (`header`/`bearer`/`basic`, same shapes as the
-HTTP backend) with `${secret:…}` tokens. Validated at config-load time.
+**Output columns.** A tool result is exposed as a single `result` json column unless the tool declares an `outputSchema` (columns inferred) or a `tables:` entry declares them. Each `tables:` entry **patches** a synthesized table of the same name or **defines** a new one (`tool:` + knobs):
+
+
+| field           | meaning                                                                                                                             |
+| --------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `tool`          | the MCP tool to call (defaults to the table name on a patch).                                                                       |
+| `columns`       | `{ name, type, path: [keys] }` — pull a (possibly nested) field out of each row element; empty `path` is the whole element as JSON. |
+| `tool_args`     | static arguments always sent.                                                                                                       |
+| `filters`       | bind a SQL filter to a differently-named argument.                                                                                  |
+| `limit_binding` | `{ tool_arg, max }` — push SQL `LIMIT` into a tool argument.                                                                        |
+| `pagination`    | `{ cursor_arg, response_cursor_path }` — cursor pagination (default: follow `nextCursor`).                                          |
+
+
+**Security.** A `streamable_http` `url` must be `https` (or `http` only for loopback), and may not embed credentials in the URL — use the `auth` block (`header`/`bearer`/`basic`, same shapes as the HTTP backend) with `${secret:…}` tokens. Validated at config-load time.
 
 A runnable, per-source-per-file example lives at [examples/mcp.yaml](../examples/mcp.yaml).
 
@@ -801,13 +800,14 @@ sources:
 ```
 
 
-| `config` key | Required | Notes                                                    |
-| ------------ | -------- | -------------------------------------------------------- |
-| `path`       | **yes**  | Path to the `.db` file (`:memory:` allowed).             |
+| `config` key | Required | Notes                                        |
+| ------------ | -------- | -------------------------------------------- |
+| `path`       | **yes**  | Path to the `.db` file (`:memory:` allowed). |
 
 
-| Per-table key | Notes                                                                |
-| ------------- | ------------------------------------------------------------------- |
+
+| Per-table key | Notes                                                                 |
+| ------------- | --------------------------------------------------------------------- |
 | `query`       | Optional SQL backing the table; defaults to `SELECT * FROM "<name>"`. |
 
 
@@ -816,13 +816,13 @@ sources:
 DuckDB `ATTACH`es the database **read-only** and exposes its tables lazily (`<source>.<table>`); equality predicates, projection, and limits push down. No `tables:` needed.
 
 
-| Key                        | Notes                                                     |
-| -------------------------- | --------------------------------------------------------- |
-| `dsn`                      | Full connection string. If present, used as-is.           |
-| `host`                     | Required if no `dsn`.                                      |
-| `database` / `dbname`      | Database name (either spelling).                          |
-| `port`                     | Optional; accepts an integer or a string.                 |
-| `user`, `password`         | Optional.                                                 |
+| Key                   | Notes                                           |
+| --------------------- | ----------------------------------------------- |
+| `dsn`                 | Full connection string. If present, used as-is. |
+| `host`                | Required if no `dsn`.                           |
+| `database` / `dbname` | Database name (either spelling).                |
+| `port`                | Optional; accepts an integer or a string.       |
+| `user`, `password`    | Optional.                                       |
 
 
 ```yaml
@@ -849,14 +849,14 @@ sources:
 ```
 
 
-| `config` key | Required | Notes                                                       |
-| ------------ | -------- | ----------------------------------------------------------- |
+| `config` key | Required | Notes                                                        |
+| ------------ | -------- | ------------------------------------------------------------ |
 | `path`       | **yes**  | Path to the `.duckdb` file; resolved against the config dir. |
+
 
 #### `snowflake`
 
 DuckDB `ATTACH` via the Snowflake community extension (installed on first use). Requires `account`, `user`, `password`; optional `database`, `schema`, `warehouse`, `role`.
-
 
 ```yaml
 sources:
@@ -886,9 +886,10 @@ sources:
 For tables on an object store, provide credentials with a `storage:` block (same keys as object-store `file`); the `httpfs` extension loads automatically.
 
 
-| Per-table key      | Required | Notes                                          |
-| ------------------ | -------- | ---------------------------------------------- |
+| Per-table key       | Required | Notes                                              |
+| ------------------- | -------- | -------------------------------------------------- |
 | `path` / `location` | **yes**  | Table location passed to the DuckDB scan function. |
+
 
 #### `ducklake` — DuckLake lakehouse catalog
 
@@ -904,11 +905,12 @@ sources:
 ```
 
 
-| `config` key | Required | Notes                                                                       |
-| ------------ | -------- | --------------------------------------------------------------------------- |
-| `catalog`    | **yes**  | The metadata catalog (sqlite/duckdb/postgres).                              |
+| `config` key | Required | Notes                                                                          |
+| ------------ | -------- | ------------------------------------------------------------------------------ |
+| `catalog`    | **yes**  | The metadata catalog (sqlite/duckdb/postgres).                                 |
 | `data_path`  | no       | Where data files live; local or remote (`s3://…`). Resolved vs the config dir. |
-| `storage`    | no       | Object-store credentials for a remote `data_path` (loads `httpfs`).         |
+| `storage`    | no       | Object-store credentials for a remote `data_path` (loads `httpfs`).            |
+
 
 ---
 
@@ -917,21 +919,76 @@ sources:
 Several places take a column `type` — the `file` backend's `schema:` and `partition_cols`, and the `http` backend's `response.schema`. The accepted spellings (case-insensitive) and the contexts that support them:
 
 
-| Canonical type | Accepted spellings                | `file` schema / partitions | `http` response |
-| -------------- | --------------------------------- | -------------------------- | --------------- |
-| boolean        | `bool`, `boolean`                 | ✓                          | ✓               |
-| int32          | `int`, `int32`                    | ✓                          | ✓               |
-| int64          | `bigint`, `int64`, `long`         | ✓                          | ✓               |
-| float32        | `float`, `float32`                | ✓                          | ✓               |
-| float64        | `double`, `float64`               | ✓                          | ✓               |
-| date           | `date`                            | ✓                          | ✓               |
-| timestamp      | `timestamp`                       | —                          | ✓               |
-| timestamptz    | `timestamptz`                     | —                          | ✓ (RFC 3339)    |
-| varchar        | `varchar`, `string`, `text`       | ✓ (default)                | ✓               |
-| json           | `json`                            | —                          | ✓ (raw JSON text) |
+| Canonical type | Accepted spellings          | `file` schema / partitions | `http` response   |
+| -------------- | --------------------------- | -------------------------- | ----------------- |
+| boolean        | `bool`, `boolean`           | ✓                          | ✓                 |
+| int32          | `int`, `int32`              | ✓                          | ✓                 |
+| int64          | `bigint`, `int64`, `long`   | ✓                          | ✓                 |
+| float32        | `float`, `float32`          | ✓                          | ✓                 |
+| float64        | `double`, `float64`         | ✓                          | ✓                 |
+| date           | `date`                      | ✓                          | ✓                 |
+| timestamp      | `timestamp`                 | —                          | ✓                 |
+| timestamptz    | `timestamptz`               | —                          | ✓ (RFC 3339)      |
+| varchar        | `varchar`, `string`, `text` | ✓ (default)                | ✓                 |
+| json           | `json`                      | —                          | ✓ (raw JSON text) |
 
 
-Any unrecognized type spelling falls back to `varchar`. For `http`, `timestamp`/`timestamptz` parse ISO-8601 / RFC 3339 strings, and `json` keeps a nested object/array as raw JSON text (pair it with `source: $` to capture a whole row element).
+Any unrecognized type spelling falls back to `varchar`. For `http`, `timestamp`/`timestamptz` parse ISO-8601 / RFC 3339 strings, and `json` keeps a nested object/array as raw JSON text (pair it with `source: $` to capture a whole row element) — see [Querying JSON columns](#querying-json-columns) to read into it.
+
+---
+
+## Querying JSON columns
+
+A `json` column is raw JSON text — an object, array, or scalar kept verbatim so nested structure survives the scan. Two function families read into it; they share no names, so mix them freely.
+
+### Pawrly JSON Helpers
+
+
+| Function                          | Returns         | Purpose                                                                                                                                                                         |
+| --------------------------------- | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `from_json(text)`                 | `list<varchar>` | Parse a JSON array into its element texts, so `unnest(from_json(col))` explodes it into one row per element. A non-array value yields a single-element list.                    |
+| `json_extract_string(text, path)` | `varchar`       | Read a field by key, or a dotted path (`a.b.c`) for nested objects. Strings come back unquoted; numbers/bools/objects as their JSON text; a missing key (or JSON null) is NULL. |
+
+
+### DataFusion JSON Helpers
+
+| Function / Operator         | Returns         | Purpose                                                                                       |
+| --------------------------- | --------------- | --------------------------------------------------------------------------------------------- |
+| `json_get_str(col, ...)`    | `varchar`       | Read a value at the given key/index path as text.                                             |
+| `json_get_int(col, ...)`    | `bigint`        | Read a value at the path as an integer.                                                       |
+| `json_get_float(col, ...)`  | `double`        | Read a value at the path as a float.                                                          |
+| `json_get_bool(col, ...)`   | `boolean`       | Read a value at the path as a boolean.                                                         |
+| `json_get_json(col, ...)`   | `varchar`       | Read a value at the path back as raw JSON text (objects, arrays, or scalars).                 |
+| `json_get_array(col, ...)`  | `list`          | Read a value at the path as an array.                                                          |
+| `json_length(col, ...)`     | `bigint`        | Length of the array or object at the path (or of `col` itself).                               |
+| `json_contains(col, ...)`   | `boolean`       | Whether a value exists at the given key/index path.                                           |
+| `json_object_keys(col)`     | `list<varchar>` | The keys of the JSON object.                                                                  |
+| `col -> key`                | `varchar`       | Get the value at `key` as raw JSON (alias for `json_get`).                                     |
+| `col ->> key`               | `varchar`       | Get the value at `key` as text (alias for `json_get_str`).                                     |
+| `col ? key`                 | `boolean`       | Whether `key` is present (alias for `json_contains`).                                          |
+
+### Exploding an array of objects
+
+`unnest` must sit in a projection, not a correlated lateral join, so explode the array in a subquery (a CTE) and read its elements in the outer query:
+
+```sql
+WITH elems AS (
+  SELECT unnest(from_json(payload)) AS e   -- payload is a JSON array of objects
+  FROM t
+)
+SELECT json_extract_string(e, 'code')                   AS code,
+       CAST(json_extract_string(e, 'amount') AS DOUBLE)  AS amount
+FROM elems
+WHERE json_extract_string(e, 'code') = 'USD'
+```
+
+`json_length(payload)` gives the array length without unnesting.
+
+### Gotchas
+
+- `unnest` is projection-only.** `FROM t, unnest(from_json(t.payload))` (a correlated lateral join) is rejected by the planner — use the CTE form above.
+- **Operator precedence.** `->`/`->>` bind looser than `IN` and comparisons, so parenthesize: `(e ->> 'code') IN ('USD', 'EUR')`.
+- **Typed getters match the JSON type.** `json_get_float(e, 'amount')` returns NULL when the value is a JSON *string* (`"12.50"`) rather than a number — use `json_get_str` or `->>`, then `CAST`.
 
 ---
 

@@ -63,6 +63,9 @@ parquet = "58"
 
 # DataFusion (planner + executor)
 datafusion = "53"
+# JSON SQL functions (json_get_*, ->/->> operators, json_length, ...).
+# Pinned to 0.53.x so it links against the same DataFusion 53 above.
+datafusion-functions-json = "0.53"
 arrow-json = "58"
 arrow-cast = "58"
 

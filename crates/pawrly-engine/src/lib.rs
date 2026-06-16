@@ -12,6 +12,7 @@
 mod cache;
 mod duckdb_pool;
 mod duckdb_source;
+mod json_udf;
 mod local;
 mod namespace;
 pub mod optimizer;
