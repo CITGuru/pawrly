@@ -17,7 +17,7 @@ use datafusion::execution::context::SessionContext;
 use pawrly_core::{CachePolicy, SourceDef, SourceKind, TableDef};
 use pawrly_sources_http::register_http_source;
 use serde_json::json;
-use wiremock::matchers::{body_json, header, method, path, query_param};
+use wiremock::matchers::{body_json, body_string, header, method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 async fn build_ctx() -> (SessionContext, Arc<MemoryCatalogProvider>) {
@@ -93,6 +93,69 @@ async fn post_request_body_is_rendered() {
         .expect("execute: rendered body should match the server");
     let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
     assert_eq!(rows, 2);
+}
+
+/// A `form` body is rendered (params substituted) and sent as
+/// `application/x-www-form-urlencoded`.
+#[tokio::test]
+async fn form_body_is_sent_urlencoded() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/search"))
+        .and(header("content-type", "application/x-www-form-urlencoded"))
+        .and(body_string("q=cats&limit=5"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "results": [ { "id": 1 } ]
+        })))
+        .mount(&server)
+        .await;
+
+    let (ctx, catalog) = build_ctx().await;
+    let def = SourceDef {
+        name: "api".into(),
+        kind: SourceKind::Http,
+        description: None,
+        wiki: None,
+        examples: Vec::new(),
+        config: json!({ "base_url": server.uri() }),
+        cache: CachePolicy::None,
+        safety: None,
+        tables: vec![TableDef {
+            name: "search".into(),
+            description: None,
+            wiki: None,
+            config: json!({
+                "endpoint": "/search",
+                "method": "POST",
+                "params": [ { "name": "q", "type": "varchar", "required": true } ],
+                "body": { "kind": "form", "template": "q={q}&limit=5" },
+                "response": {
+                    "path": "$.results",
+                    "schema": [
+                        { "name": "id", "type": "bigint" },
+                        { "name": "q",  "type": "varchar", "source": "param" }
+                    ]
+                }
+            }),
+            cache: None,
+            safety: None,
+        }],
+        raw_table: false,
+        raw_table_safety: None,
+    };
+    register_http_source(&def, &ctx, catalog.as_ref())
+        .await
+        .expect("register");
+
+    let batches = ctx
+        .sql("SELECT id FROM api.search WHERE q = 'cats'")
+        .await
+        .expect("plan")
+        .collect()
+        .await
+        .expect("execute: form body should match the server");
+    let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+    assert_eq!(rows, 1);
 }
 
 /// `custom` auth `body` fields are merged into the table's JSON body: the server

@@ -16,7 +16,7 @@ use datafusion::execution::context::SessionContext;
 use pawrly_core::{CachePolicy, SourceDef, SourceKind, TableDef};
 use pawrly_sources_http::register_http_source;
 use serde_json::json;
-use wiremock::matchers::{body_json, header, method, path};
+use wiremock::matchers::{body_json, body_string_contains, header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 async fn build_ctx() -> (SessionContext, Arc<MemoryCatalogProvider>) {
@@ -106,6 +106,151 @@ async fn oauth2_fetches_caches_and_authorizes() {
     assert_eq!(count(&ctx, "SELECT id FROM api.items").await, 1);
     // Second query must reuse the cached token (token endpoint is exhausted).
     assert_eq!(count(&ctx, "SELECT id FROM api.items").await, 1);
+}
+
+/// The client-credentials exchange includes the configured `scope` and
+/// `audience` in the token request — the token endpoint only answers when both
+/// are present, so a successful query proves they were sent.
+#[tokio::test]
+async fn oauth2_sends_scope_and_audience() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/oauth/token"))
+        .and(body_string_contains("scope=read"))
+        .and(body_string_contains("audience=acme"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "access_token": "tok",
+            "expires_in": 3600
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/items"))
+        .and(header("authorization", "Bearer tok"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([ { "id": 1 } ])))
+        .mount(&server)
+        .await;
+
+    let (ctx, catalog) = build_ctx().await;
+    let def = SourceDef {
+        name: "api".into(),
+        kind: SourceKind::Http,
+        description: None,
+        wiki: None,
+        examples: Vec::new(),
+        config: json!({
+            "base_url": server.uri(),
+            "auth": {
+                "type": "oauth2",
+                "token_url": format!("{}/oauth/token", server.uri()),
+                "client_id": "id",
+                "client_secret": "secret",
+                "scope": "read",
+                "audience": "acme"
+            }
+        }),
+        cache: CachePolicy::None,
+        safety: None,
+        tables: vec![TableDef {
+            name: "items".into(),
+            description: None,
+            wiki: None,
+            config: json!({
+                "endpoint": "/items",
+                "response": { "path": "$", "schema": [ { "name": "id", "type": "bigint" } ] }
+            }),
+            cache: None,
+            safety: None,
+        }],
+        raw_table: false,
+        raw_table_safety: None,
+    };
+    register_http_source(&def, &ctx, catalog.as_ref())
+        .await
+        .expect("register");
+
+    assert_eq!(count(&ctx, "SELECT id FROM api.items").await, 1);
+}
+
+/// A token whose `expires_in` falls inside the refresh window is re-fetched on
+/// the next query rather than reused — the token endpoint is hit twice.
+#[tokio::test]
+async fn oauth2_refreshes_expired_token() {
+    let server = MockServer::start().await;
+    // First exchange yields a token expiring within the refresh skew; the second
+    // yields a long-lived one. Data endpoint accepts either bearer.
+    Mock::given(method("POST"))
+        .and(path("/oauth/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "access_token": "tok1",
+            "expires_in": 1
+        })))
+        .up_to_n_times(1)
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/oauth/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "access_token": "tok2",
+            "expires_in": 3600
+        })))
+        .with_priority(2)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/items"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([ { "id": 1 } ])))
+        .mount(&server)
+        .await;
+
+    let (ctx, catalog) = build_ctx().await;
+    let def = SourceDef {
+        name: "api".into(),
+        kind: SourceKind::Http,
+        description: None,
+        wiki: None,
+        examples: Vec::new(),
+        config: json!({
+            "base_url": server.uri(),
+            "auth": {
+                "type": "oauth2",
+                "token_url": format!("{}/oauth/token", server.uri()),
+                "client_id": "id",
+                "client_secret": "secret"
+            }
+        }),
+        cache: CachePolicy::None,
+        safety: None,
+        tables: vec![TableDef {
+            name: "items".into(),
+            description: None,
+            wiki: None,
+            config: json!({
+                "endpoint": "/items",
+                "response": { "path": "$", "schema": [ { "name": "id", "type": "bigint" } ] }
+            }),
+            cache: None,
+            safety: None,
+        }],
+        raw_table: false,
+        raw_table_safety: None,
+    };
+    register_http_source(&def, &ctx, catalog.as_ref())
+        .await
+        .expect("register");
+
+    assert_eq!(count(&ctx, "SELECT id FROM api.items").await, 1);
+    assert_eq!(count(&ctx, "SELECT id FROM api.items").await, 1);
+
+    let token_requests = server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|r| r.url.path() == "/oauth/token")
+        .count();
+    assert_eq!(token_requests, 2, "the expiring token should be refreshed");
 }
 
 /// A table with a conditional request uses the get-by-id endpoint when `number`
