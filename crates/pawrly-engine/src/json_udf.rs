@@ -68,8 +68,6 @@ fn json_extract_string_udf() -> ScalarUDF {
     )
 }
 
-/// `from_json(text) -> List<Utf8>`: explode a JSON array into one Utf8 element
-/// per item (each carrying that item's JSON text).
 fn from_json_impl(args: &[ColumnarValue]) -> Result<ColumnarValue> {
     let arrays = ColumnarValue::values_to_arrays(args)?;
     let input = utf8_arg(&arrays[0], "from_json")?;
@@ -93,15 +91,12 @@ fn from_json_impl(args: &[ColumnarValue]) -> Result<ColumnarValue> {
                 builder.values().append_value(value_to_text(&other));
                 builder.append(true);
             }
-            // Unparseable JSON → NULL list, never an error.
             Err(_) => builder.append_null(),
         }
     }
     Ok(ColumnarValue::Array(Arc::new(builder.finish())))
 }
 
-/// `json_extract_string(text, path) -> Utf8`: read a field out of a JSON object
-/// by key or dotted path.
 fn json_extract_string_impl(args: &[ColumnarValue]) -> Result<ColumnarValue> {
     let arrays = ColumnarValue::values_to_arrays(args)?;
     let text = utf8_arg(&arrays[0], "json_extract_string")?;
@@ -185,9 +180,9 @@ mod tests {
         let input = utf8_col(&[None, Some("not json"), Some(r#"{"a":1}"#)]);
         let out = run(from_json_impl, &[input]);
         let list = out.as_any().downcast_ref::<ListArray>().unwrap();
-        assert!(list.is_null(0)); // NULL input -> NULL list
-        assert!(list.is_null(1)); // bad JSON -> NULL list
-        assert_eq!(list.value(2).as_string::<i32>().len(), 1); // object -> 1-elem list
+        assert!(list.is_null(0));
+        assert!(list.is_null(1));
+        assert_eq!(list.value(2).as_string::<i32>().len(), 1);
     }
 
     #[test]
@@ -206,9 +201,9 @@ mod tests {
         ])));
         let out = run(json_extract_string_impl, &[text, path]);
         let s = out.as_string::<i32>();
-        assert_eq!(s.value(0), "USDC"); // string -> unquoted
-        assert_eq!(s.value(1), "3"); // nested path -> JSON text
-        assert_eq!(s.value(2), "true"); // bool -> JSON text
-        assert!(s.is_null(3)); // missing key -> NULL
+        assert_eq!(s.value(0), "USDC");
+        assert_eq!(s.value(1), "3");
+        assert_eq!(s.value(2), "true");
+        assert!(s.is_null(3));
     }
 }
