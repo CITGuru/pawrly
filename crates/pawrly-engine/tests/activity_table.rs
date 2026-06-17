@@ -158,12 +158,18 @@ async fn durable_store_survives_a_restart() {
     {
         let engine = durable_engine(tmp.path(), &store, 1).await;
         run(&engine, "SELECT 1 AS n").await;
-        assert!(activity_rows(&engine).await >= 1, "record not visible in first engine");
+        assert!(
+            activity_rows(&engine).await >= 1,
+            "record not visible in first engine"
+        );
     }
 
     // A Parquet file was actually written under the partitioned layout.
     let parquet_count = walk_parquet(&store);
-    assert!(parquet_count >= 1, "expected a Parquet file on disk, found {parquet_count}");
+    assert!(
+        parquet_count >= 1,
+        "expected a Parquet file on disk, found {parquet_count}"
+    );
 
     // Second engine over the same dir: the record persists across the restart.
     let engine = durable_engine(tmp.path(), &store, 1).await;
@@ -194,7 +200,10 @@ async fn shutdown_flushes_sub_threshold_buffer() {
         activity_rows(&engine).await >= 1,
         "buffered record was not flushed on shutdown"
     );
-    assert!(walk_parquet(&store) >= 1, "shutdown flush wrote no Parquet file");
+    assert!(
+        walk_parquet(&store) >= 1,
+        "shutdown flush wrote no Parquet file"
+    );
 }
 
 /// Count `.parquet` files anywhere under `dir`.

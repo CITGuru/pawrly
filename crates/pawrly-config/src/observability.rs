@@ -147,7 +147,11 @@ pub struct ActivityConfig {
     #[schemars(with = "String")]
     pub flush_interval: Duration,
     /// Prune durable files older than this. Omit to keep all history.
-    #[serde(default, with = "humantime_serde::option", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        with = "humantime_serde::option",
+        skip_serializing_if = "Option::is_none"
+    )]
     #[schemars(with = "Option<String>")]
     pub retention: Option<Duration>,
 }

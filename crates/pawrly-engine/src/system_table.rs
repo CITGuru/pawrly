@@ -213,12 +213,9 @@ impl TableProvider for ActivityTableProvider {
         _limit: Option<usize>,
     ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
         let batches = self.backing.batches(&self.schema)?;
-        let exec = MemorySourceConfig::try_new_exec(
-            &[batches],
-            self.schema.clone(),
-            projection.cloned(),
-        )
-        .map_err(|e| DataFusionError::Plan(e.to_string()))?;
+        let exec =
+            MemorySourceConfig::try_new_exec(&[batches], self.schema.clone(), projection.cloned())
+                .map_err(|e| DataFusionError::Plan(e.to_string()))?;
         Ok(exec)
     }
 }

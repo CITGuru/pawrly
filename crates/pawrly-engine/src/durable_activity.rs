@@ -141,10 +141,10 @@ impl DurableActivityStore {
         let schema = activity_schema();
         let batch = records_to_batch(&records, &schema)
             .map_err(|e| EngineError::Internal(format!("activity batch: {e}")))?;
-        let (min_at, max_at) = records.iter().map(|r| r.at.timestamp_micros()).fold(
-            (i64::MAX, i64::MIN),
-            |(lo, hi), v| (lo.min(v), hi.max(v)),
-        );
+        let (min_at, max_at) = records
+            .iter()
+            .map(|r| r.at.timestamp_micros())
+            .fold((i64::MAX, i64::MIN), |(lo, hi), v| (lo.min(v), hi.max(v)));
 
         let (rel, abs) = self.next_file_path();
         if let Some(parent) = abs.parent() {
@@ -173,7 +173,9 @@ impl DurableActivityStore {
                 Ok(mut b) => batches.append(&mut b),
                 // A missing/corrupt file is skipped rather than failing the
                 // whole query; the rest of the history is still returned.
-                Err(e) => tracing::warn!(error = %e, path = %path.display(), "activity: skipping unreadable file"),
+                Err(e) => {
+                    tracing::warn!(error = %e, path = %path.display(), "activity: skipping unreadable file")
+                }
             }
         }
         let pending = self.inner.pending.lock().clone();
@@ -227,7 +229,10 @@ impl DurableActivityStore {
 
     /// Load-modify-write the manifest under a cross-process advisory lock.
     fn with_manifest(&self, f: impl FnOnce(&mut Manifest)) -> Result<(), EngineError> {
-        let lock = io(File::create(self.inner.dir.join(LOCK)), "open manifest lock")?;
+        let lock = io(
+            File::create(self.inner.dir.join(LOCK)),
+            "open manifest lock",
+        )?;
         io(lock.lock_exclusive(), "lock manifest")?;
         let mut manifest = read_manifest(&self.inner.dir);
         f(&mut manifest);
