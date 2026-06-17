@@ -381,6 +381,9 @@ impl From<v1::QueryRequest> for core::QueryRequest {
             } else {
                 Some(req.trace_id)
             },
+            // Interface/principal are determined at the server boundary (the gRPC
+            // service fills them), not carried on the wire; default here.
+            context: core::activity::RequestContext::default(),
         }
     }
 }
@@ -949,6 +952,7 @@ mod tests {
             timeout: Some(std::time::Duration::from_secs(30)),
             max_rows: 100,
             trace_id: Some("abc".into()),
+            context: core::activity::RequestContext::default(),
         };
         let proto: v1::QueryRequest = req.clone().into();
         let back: core::QueryRequest = proto.into();

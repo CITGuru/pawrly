@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "crates/pawrly-core",
+    "crates/pawrly-telemetry",
     "crates/pawrly-config",
     "crates/pawrly-secrets",
     "crates/pawrly-proto",
@@ -30,6 +31,8 @@ repository = "https://github.com/CITGuru/pawrly"
 [workspace.dependencies]
 # Internal crates
 pawrly-core = { path = "crates/pawrly-core", version = "0.0.1" }
+# Default to the lightweight metrics facade; binaries opt into `otel` for init.
+pawrly-telemetry = { path = "crates/pawrly-telemetry", version = "0.0.1", default-features = false }
 pawrly-config = { path = "crates/pawrly-config", version = "0.0.1" }
 pawrly-secrets = { path = "crates/pawrly-secrets", version = "0.0.1" }
 pawrly-proto = { path = "crates/pawrly-proto", version = "0.0.1" }
@@ -116,6 +119,11 @@ thiserror = "1"
 anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+# OpenTelemetry facades shared across crates that propagate/emit telemetry. The
+# heavy SDK + exporters live only in pawrly-telemetry.
+opentelemetry = "0.32"
+tracing-opentelemetry = "0.33"
 
 # CLI helpers
 clap = { version = "4", features = ["derive", "env"] }

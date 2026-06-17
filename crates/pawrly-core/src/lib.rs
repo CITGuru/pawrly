@@ -5,6 +5,7 @@
 
 #![doc(html_root_url = "https://docs.rs/pawrly-core")]
 
+pub mod activity;
 pub mod cache;
 pub mod error;
 pub mod home;

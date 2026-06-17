@@ -54,6 +54,10 @@ pub struct QueryRequest {
     /// Optional client-supplied trace id for log correlation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trace_id: Option<String>,
+    /// Who/where this request came from, for activity attribution and trace
+    /// propagation. Defaults to in-process; old clients send the default.
+    #[serde(default)]
+    pub context: crate::activity::RequestContext,
 }
 
 impl QueryRequest {

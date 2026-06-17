@@ -22,12 +22,12 @@ pawrly-engine = { workspace = true }
 pawrly-server = { workspace = true }
 pawrly-client = { workspace = true }
 pawrly-mcp = { workspace = true }
+pawrly-telemetry = { workspace = true, features = ["otel"] }
 clap = { workspace = true }
 tokio = { workspace = true }
 async-trait = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
 libc = "0.2"
 serde = { workspace = true }
 serde_json = { workspace = true }

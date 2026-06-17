@@ -16,7 +16,9 @@ mod json_udf;
 mod local;
 mod namespace;
 pub mod optimizer;
+mod activity;
 mod preagg;
+mod redact;
 mod registry;
 mod stream;
 

@@ -6,12 +6,14 @@ mod assemble;
 pub mod defaults;
 pub mod interpolate;
 pub mod loader;
+pub mod observability;
 pub mod schema;
 pub mod secrets;
 pub mod types;
 pub mod validator;
 
 pub use defaults::{Defaults, EngineDefaults, HttpDefaults, OptimizerDefaults, SafetyDefaults};
+pub use observability::{ActivityConfig, ActivitySinkKind, ObservabilityConfig, RedactSql};
 pub use loader::{
     IncludeNode, MaskedConfig, assemble_config, include_tree, load, load_auto, load_str,
     resolve_secret, secret_store,

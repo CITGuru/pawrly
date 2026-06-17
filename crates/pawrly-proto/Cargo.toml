@@ -21,6 +21,7 @@ arrow-ipc = { workspace = true }
 bytes = "1"
 thiserror = { workspace = true }
 chrono = { workspace = true }
+opentelemetry = { workspace = true }
 
 [build-dependencies]
 tonic-build = { workspace = true }

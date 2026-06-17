@@ -71,6 +71,7 @@ pub async fn build_local(
         include: Vec::new(),
         sources: Vec::new(),
         semantic: None,
+        observability: None,
     };
     let engine = LocalEngine::new(LocalEngineConfig {
         config: cfg,

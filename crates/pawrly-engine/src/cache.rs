@@ -159,6 +159,7 @@ impl CacheManager {
     /// Fetch the inner provider fully, materialize it, and write it through to
     /// the cache, bypassing freshness. Used by `EngineService::refresh_table`
     /// and the background refreshers.
+    #[tracing::instrument(name = "pawrly.cache.refresh", skip_all, fields(pawrly.table = %key))]
     pub async fn refresh(
         &self,
         key: &TableName,
@@ -185,6 +186,14 @@ impl CacheManager {
         let entry = self
             .write_through(key, provider.schema(), &batches, &policy)
             .map_err(|e| EngineError::Internal(format!("cache refresh write: {e}")))?;
+
+        pawrly_telemetry::metrics::cache_refresh_duration().record(
+            started.elapsed().as_secs_f64() * 1000.0,
+            &[
+                opentelemetry::KeyValue::new("source", key.schema.clone()),
+                opentelemetry::KeyValue::new("status", "ok"),
+            ],
+        );
 
         Ok(RefreshOutcome {
             table: key.clone(),

@@ -566,6 +566,7 @@ mod tests {
             include: Vec::new(),
             sources,
             semantic: None,
+            observability: None,
         }
     }
 

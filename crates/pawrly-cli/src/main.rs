@@ -39,8 +39,58 @@ struct Cli {
     #[arg(long, env = "PAWRLY_LOG", global = true, default_value = "info")]
     log_level: String,
 
+    /// Log output format: text | json.
+    #[arg(long, env = "PAWRLY_LOG_FORMAT", global = true, default_value = "text")]
+    log_format: LogFormat,
+
+    /// OTLP collector endpoint. When set, enables OpenTelemetry trace + log export.
+    #[arg(long, env = "PAWRLY_OTEL_ENDPOINT", global = true)]
+    otel_endpoint: Option<String>,
+
+    /// OTLP transport: grpc | http.
+    #[arg(long, env = "PAWRLY_OTEL_PROTOCOL", global = true, default_value = "grpc")]
+    otel_protocol: OtelProtocol,
+
+    /// Serve a Prometheus `/metrics` pull endpoint at this address (e.g.
+    /// `127.0.0.1:9090`). Independent of `--otel-endpoint`.
+    #[arg(long, env = "PAWRLY_PROMETHEUS_LISTEN", global = true)]
+    prometheus_listen: Option<std::net::SocketAddr>,
+
     #[command(subcommand)]
     command: Command,
+}
+
+/// CLI mirror of [`pawrly_telemetry::LogFormat`], kept local so the telemetry
+/// crate need not depend on clap.
+#[derive(Clone, Copy, Debug, clap::ValueEnum)]
+enum LogFormat {
+    Text,
+    Json,
+}
+
+impl From<LogFormat> for pawrly_telemetry::LogFormat {
+    fn from(value: LogFormat) -> Self {
+        match value {
+            LogFormat::Text => pawrly_telemetry::LogFormat::Text,
+            LogFormat::Json => pawrly_telemetry::LogFormat::Json,
+        }
+    }
+}
+
+/// CLI mirror of [`pawrly_telemetry::OtelProtocol`].
+#[derive(Clone, Copy, Debug, clap::ValueEnum)]
+enum OtelProtocol {
+    Grpc,
+    Http,
+}
+
+impl From<OtelProtocol> for pawrly_telemetry::OtelProtocol {
+    fn from(value: OtelProtocol) -> Self {
+        match value {
+            OtelProtocol::Grpc => pawrly_telemetry::OtelProtocol::Grpc,
+            OtelProtocol::Http => pawrly_telemetry::OtelProtocol::Http,
+        }
+    }
 }
 
 #[derive(Subcommand, Debug)]
@@ -81,7 +131,6 @@ enum Command {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
-    install_logging(&cli.log_level);
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -91,6 +140,41 @@ fn main() -> ExitCode {
             eprintln!("error: failed to start tokio runtime: {e}");
             return ExitCode::from(64);
         }
+    };
+    // Build OTel config when either OTLP export or the Prometheus pull endpoint
+    // is requested. Traces/logs/metrics-push ride on the OTLP endpoint;
+    // Prometheus pull is independent.
+    let otel = if cli.otel_endpoint.is_some() || cli.prometheus_listen.is_some() {
+        let has_otlp = cli.otel_endpoint.is_some();
+        Some(pawrly_telemetry::OtelConfig {
+            endpoint: cli.otel_endpoint.clone().unwrap_or_default(),
+            protocol: cli.otel_protocol.into(),
+            service_name: "pawrly".to_string(),
+            traces: has_otlp,
+            logs: has_otlp,
+            metrics: has_otlp,
+            sample_ratio: 1.0,
+            prometheus: cli
+                .prometheus_listen
+                .map(|listen| pawrly_telemetry::PrometheusConfig { listen }),
+        })
+    } else {
+        None
+    };
+    // Hold the guard for the whole process: it flushes the OTel exporters on
+    // drop. Declared after `runtime` so it drops (and flushes) before the
+    // runtime is torn down. Init runs inside the runtime so the OTLP exporters
+    // can spawn their background workers.
+    let _telemetry = {
+        let _enter = runtime.enter();
+        pawrly_telemetry::init(
+            &pawrly_telemetry::TelemetryConfig {
+                level: cli.log_level.clone(),
+                format: cli.log_format.into(),
+                otel,
+            },
+            role_for(&cli.command),
+        )
     };
     match runtime.block_on(run(cli)) {
         Ok(()) => ExitCode::from(0),
@@ -155,15 +239,17 @@ async fn print_version(
     Ok(())
 }
 
-fn install_logging(level: &str) {
-    use tracing_subscriber::{EnvFilter, fmt};
-    let filter = EnvFilter::try_from_default_env()
-        .or_else(|_| EnvFilter::try_new(level))
-        .unwrap_or_else(|_| EnvFilter::new("info"));
-    let _ = fmt()
-        .with_env_filter(filter)
-        .with_writer(std::io::stderr)
-        .try_init();
+/// Pick the telemetry role from the subcommand: long-running servers report
+/// their own role so logs/traces (and, later, the OTel resource) are tagged
+/// correctly; everything else is a one-shot CLI invocation.
+fn role_for(command: &Command) -> pawrly_telemetry::ServiceRole {
+    use pawrly_telemetry::ServiceRole;
+    match command {
+        Command::Serve(_) => ServiceRole::Daemon,
+        Command::McpStdio(_) => ServiceRole::McpStdio,
+        Command::McpHttp(_) => ServiceRole::McpHttp,
+        _ => ServiceRole::Cli,
+    }
 }
 
 fn exit_code_for(_err: &anyhow::Error) -> u8 {
