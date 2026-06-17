@@ -150,6 +150,41 @@ async fn recorded_query_is_queryable_via_system_activity() {
 }
 
 #[tokio::test]
+async fn error_code_is_recorded_on_failure() {
+    let tmp = TempDir::new().unwrap();
+    let engine = engine(tmp.path()).await;
+
+    // Invalid SQL fails at planning; the activity record should capture the
+    // stable error code, not just `status = error`.
+    assert!(
+        engine
+            .query(QueryRequest::sql("SELECT * FROM no_such_table_xyz"))
+            .await
+            .is_err(),
+        "query should fail"
+    );
+
+    for _ in 0..50 {
+        let rows = engine
+            .query_collect("SELECT error_code FROM system.activity WHERE status = 'error'")
+            .await
+            .unwrap();
+        if let Some(batch) = rows.iter().find(|b| b.num_rows() > 0) {
+            let col = batch
+                .column(0)
+                .as_any()
+                .downcast_ref::<arrow_array::StringArray>()
+                .unwrap();
+            assert!(!col.is_null(0), "error_code is NULL on a failed query");
+            assert!(!col.value(0).is_empty(), "error_code is empty");
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("no error row recorded in system.activity");
+}
+
+#[tokio::test]
 async fn durable_store_survives_a_restart() {
     let tmp = TempDir::new().unwrap();
     let store = tmp.path().join("activity");

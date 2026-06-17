@@ -768,7 +768,8 @@ impl EngineService for LocalEngine {
                     params: req.params.clone(),
                 },
             )
-            .await?;
+            .await
+            .inspect_err(|e| guard.mark_error(e))?;
             tracing::info!(materialized_as = %format!("materialized.{name}"), "inline materialize");
             let read_sql = format!(
                 "SELECT * FROM {}.\"{name}\"",
@@ -778,11 +779,13 @@ impl EngineService for LocalEngine {
                 .ctx
                 .sql(&read_sql)
                 .await
-                .map_err(|e| EngineError::Internal(format!("datafusion: {e}")))?;
+                .map_err(|e| EngineError::Internal(format!("datafusion: {e}")))
+                .inspect_err(|e| guard.mark_error(e))?;
             let stream = df
                 .execute_stream()
                 .await
-                .map_err(|e| EngineError::Internal(format!("datafusion: {e}")))?;
+                .map_err(|e| EngineError::Internal(format!("datafusion: {e}")))
+                .inspect_err(|e| guard.mark_error(e))?;
             return Ok(crate::stream::adapt_instrumented(stream, guard));
         }
 
@@ -790,11 +793,13 @@ impl EngineService for LocalEngine {
             .ctx
             .sql(&sql)
             .await
-            .map_err(|e| EngineError::InvalidSql(e.to_string()))?;
+            .map_err(|e| EngineError::InvalidSql(e.to_string()))
+            .inspect_err(|e| guard.mark_error(e))?;
         let stream = df
             .execute_stream()
             .await
-            .map_err(|e| EngineError::Internal(format!("datafusion: {e}")))?;
+            .map_err(|e| EngineError::Internal(format!("datafusion: {e}")))
+            .inspect_err(|e| guard.mark_error(e))?;
         Ok(crate::stream::adapt_instrumented(stream, guard))
     }
 
@@ -1180,17 +1185,22 @@ impl EngineService for LocalEngine {
         }
         // Compile to SQL — reading a materialized rollup when one covers the
         // query — and execute through the same DataFusion path as `query`.
-        let sql = self.compile_semantic(&q).await?;
+        let sql = self
+            .compile_semantic(&q)
+            .await
+            .inspect_err(|e| guard.mark_error(e))?;
         let df = self
             .inner
             .ctx
             .sql(&sql)
             .await
-            .map_err(|e| EngineError::InvalidSql(e.to_string()))?;
+            .map_err(|e| EngineError::InvalidSql(e.to_string()))
+            .inspect_err(|e| guard.mark_error(e))?;
         let stream = df
             .execute_stream()
             .await
-            .map_err(|e| EngineError::Internal(format!("datafusion: {e}")))?;
+            .map_err(|e| EngineError::Internal(format!("datafusion: {e}")))
+            .inspect_err(|e| guard.mark_error(e))?;
         Ok(crate::stream::adapt_instrumented(stream, guard))
     }
 

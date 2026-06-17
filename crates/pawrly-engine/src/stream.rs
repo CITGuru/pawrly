@@ -52,6 +52,8 @@ pub struct QueryGuard {
     rows: u64,
     /// Pessimistic until [`QueryGuard::mark_ok`] flips it on clean completion.
     status: &'static str,
+    /// Stable error code, set by [`QueryGuard::mark_error`] on failure.
+    error_code: Option<String>,
     /// Set when activity logging is on; emitted as a record on drop.
     activity: Option<ActivityContext>,
 }
@@ -67,6 +69,7 @@ impl QueryGuard {
             start: Instant::now(),
             rows: 0,
             status: "error",
+            error_code: None,
             activity: None,
         }
     }
@@ -81,6 +84,12 @@ impl QueryGuard {
     fn mark_ok(&mut self, rows: u64) {
         self.status = "ok";
         self.rows = rows;
+    }
+
+    /// Record the failure's stable code. `status` is already pessimistic, so
+    /// this only captures the code (the same one surfaced over gRPC metadata).
+    pub fn mark_error(&mut self, err: &EngineError) {
+        self.error_code = Some(err.code().to_string());
     }
 }
 
@@ -108,7 +117,7 @@ impl Drop for QueryGuard {
                 sql: ctx.sql,
                 param_keys: ctx.param_keys,
                 status: if ok { Status::Ok } else { Status::Error },
-                error_code: None,
+                error_code: self.error_code.take(),
                 duration_ms: self.start.elapsed().as_millis() as u64,
                 rows_returned: ok.then_some(self.rows),
                 bytes: None,
@@ -148,7 +157,12 @@ impl Stream for InstrumentedStream {
                 this.rows += batch.num_rows() as u64;
                 Poll::Ready(Some(Ok(batch)))
             }
-            Poll::Ready(Some(Err(e))) => Poll::Ready(Some(Err(e))),
+            Poll::Ready(Some(Err(e))) => {
+                if let Some(guard) = this.guard.as_mut() {
+                    guard.mark_error(&e);
+                }
+                Poll::Ready(Some(Err(e)))
+            }
             Poll::Ready(None) => {
                 if let Some(mut guard) = this.guard.take() {
                     guard.mark_ok(this.rows);
