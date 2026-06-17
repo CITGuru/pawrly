@@ -94,9 +94,9 @@ async fn mcp_post(State(state): State<Arc<AppState>>, headers: HeaderMap, body: 
     // Root the request span at the caller's trace context when propagated, so a
     // remote client and this server share one trace. No-op when OTel is off.
     let span = tracing::info_span!("pawrly.mcp.request", pawrly.interface = "mcp");
-    let _ = span.set_parent(
-        opentelemetry::global::get_text_map_propagator(|p| p.extract(&HeaderExtractor(&headers))),
-    );
+    let _ = span.set_parent(opentelemetry::global::get_text_map_propagator(|p| {
+        p.extract(&HeaderExtractor(&headers))
+    }));
     match handle_message(&state.engine, &state.cancel, &req)
         .instrument(span)
         .await

@@ -229,7 +229,9 @@ impl LocalEngine {
             let system_schema = Arc::new(datafusion::catalog::MemorySchemaProvider::new());
             let _ = system_schema.register_table(
                 "activity".to_string(),
-                Arc::new(crate::system_table::ActivityTableProvider::new(store.clone())),
+                Arc::new(crate::system_table::ActivityTableProvider::new(
+                    store.clone(),
+                )),
             );
             let _ = catalog.register_schema(pawrly_core::SYSTEM_SCHEMA, system_schema);
         }

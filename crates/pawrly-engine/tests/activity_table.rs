@@ -2,7 +2,12 @@
 //! table sink enabled, each engine operation lands a queryable row whose SQL is
 //! redacted per policy.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, reason = "tests")]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "tests"
+)]
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -61,14 +66,22 @@ async fn recorded_query_is_queryable_via_system_activity() {
             .query_collect("SELECT operation, status, sql FROM system.activity")
             .await
             .unwrap();
-        if rows.iter().map(arrow_array::RecordBatch::num_rows).sum::<usize>() > 0 {
+        if rows
+            .iter()
+            .map(arrow_array::RecordBatch::num_rows)
+            .sum::<usize>()
+            > 0
+        {
             break;
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
 
     let total: usize = rows.iter().map(arrow_array::RecordBatch::num_rows).sum();
-    assert!(total >= 1, "expected at least one activity row, got {total}");
+    assert!(
+        total >= 1,
+        "expected at least one activity row, got {total}"
+    );
 
     // The recorded SQL is redacted: shape kept, literal dropped.
     let sql_col = rows[0]
@@ -78,7 +91,10 @@ async fn recorded_query_is_queryable_via_system_activity() {
         .unwrap();
     let recorded: Vec<&str> = (0..sql_col.len()).map(|i| sql_col.value(i)).collect();
     let joined = recorded.join(" | ");
-    assert!(joined.contains("$REDACTED"), "expected redaction in: {joined}");
+    assert!(
+        joined.contains("$REDACTED"),
+        "expected redaction in: {joined}"
+    );
     assert!(
         !joined.contains("topsecret"),
         "literal value leaked into system.activity: {joined}"

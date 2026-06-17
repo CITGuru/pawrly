@@ -54,7 +54,10 @@ pub fn activity_schema() -> SchemaRef {
 }
 
 /// Convert a slice of records into one Arrow batch matching [`activity_schema`].
-fn records_to_batch(records: &[ActivityRecord], schema: &SchemaRef) -> Result<RecordBatch, DataFusionError> {
+fn records_to_batch(
+    records: &[ActivityRecord],
+    schema: &SchemaRef,
+) -> Result<RecordBatch, DataFusionError> {
     let mut id = StringBuilder::new();
     let mut at = Vec::<i64>::with_capacity(records.len());
     let mut interface = StringBuilder::new();
@@ -184,9 +187,12 @@ impl TableProvider for ActivityTableProvider {
         _limit: Option<usize>,
     ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
         let batch = records_to_batch(&self.store.snapshot(), &self.schema)?;
-        let exec =
-            MemorySourceConfig::try_new_exec(&[vec![batch]], self.schema.clone(), projection.cloned())
-                .map_err(|e| DataFusionError::Plan(e.to_string()))?;
+        let exec = MemorySourceConfig::try_new_exec(
+            &[vec![batch]],
+            self.schema.clone(),
+            projection.cloned(),
+        )
+        .map_err(|e| DataFusionError::Plan(e.to_string()))?;
         Ok(exec)
     }
 }

@@ -9,6 +9,7 @@
 
 #![doc(html_root_url = "https://docs.rs/pawrly-engine")]
 
+mod activity;
 mod cache;
 mod duckdb_pool;
 mod duckdb_source;
@@ -16,7 +17,6 @@ mod json_udf;
 mod local;
 mod namespace;
 pub mod optimizer;
-mod activity;
 mod preagg;
 mod redact;
 mod registry;

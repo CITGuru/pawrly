@@ -187,10 +187,14 @@ pub fn init(cfg: &TelemetryConfig, role: ServiceRole) -> TelemetryGuard {
             .with_attribute(KeyValue::new("service.role", role.as_str()))
             .build();
 
-        if otel.traces && let Some(layer) = build_trace_layer(otel, &resource, &mut guard) {
+        if otel.traces
+            && let Some(layer) = build_trace_layer(otel, &resource, &mut guard)
+        {
             layers.push(layer);
         }
-        if otel.logs && let Some(layer) = build_log_layer(otel, &resource, &mut guard) {
+        if otel.logs
+            && let Some(layer) = build_log_layer(otel, &resource, &mut guard)
+        {
             layers.push(layer);
         }
         init_metrics(otel, &resource, &mut guard);
@@ -199,7 +203,11 @@ pub fn init(cfg: &TelemetryConfig, role: ServiceRole) -> TelemetryGuard {
         opentelemetry::global::set_text_map_propagator(TraceContextPropagator::new());
     }
 
-    let installed = Registry::default().with(layers).with(filter).try_init().is_ok();
+    let installed = Registry::default()
+        .with(layers)
+        .with(filter)
+        .try_init()
+        .is_ok();
     if installed {
         tracing::debug!(role = role.as_str(), "pawrly telemetry initialized");
     }
@@ -295,7 +303,9 @@ fn init_metrics(otel: &OtelConfig, resource: &Resource, guard: &mut TelemetryGua
     let mut builder = SdkMeterProvider::builder().with_resource(resource.clone());
     let mut enabled = false;
 
-    if otel.metrics && let Some(exporter) = build_metric_exporter(otel) {
+    if otel.metrics
+        && let Some(exporter) = build_metric_exporter(otel)
+    {
         builder = builder.with_reader(PeriodicReader::builder(exporter).build());
         enabled = true;
     }

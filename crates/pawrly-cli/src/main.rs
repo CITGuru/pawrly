@@ -48,7 +48,12 @@ struct Cli {
     otel_endpoint: Option<String>,
 
     /// OTLP transport: grpc | http.
-    #[arg(long, env = "PAWRLY_OTEL_PROTOCOL", global = true, default_value = "grpc")]
+    #[arg(
+        long,
+        env = "PAWRLY_OTEL_PROTOCOL",
+        global = true,
+        default_value = "grpc"
+    )]
     otel_protocol: OtelProtocol,
 
     /// Serve a Prometheus `/metrics` pull endpoint at this address (e.g.
@@ -245,9 +250,11 @@ fn resolve_telemetry(
         cli.log_level.clone()
     };
     let format = if matches!(cli.log_format, LogFormat::Text) {
-        obs.map_or(pawrly_telemetry::LogFormat::Text, |o| match o.tracing.format {
-            pawrly_config::LogFormat::Text => pawrly_telemetry::LogFormat::Text,
-            pawrly_config::LogFormat::Json => pawrly_telemetry::LogFormat::Json,
+        obs.map_or(pawrly_telemetry::LogFormat::Text, |o| {
+            match o.tracing.format {
+                pawrly_config::LogFormat::Text => pawrly_telemetry::LogFormat::Text,
+                pawrly_config::LogFormat::Json => pawrly_telemetry::LogFormat::Json,
+            }
         })
     } else {
         cli.log_format.into()
