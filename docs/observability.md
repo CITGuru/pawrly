@@ -35,7 +35,7 @@ observability:
 
 ## Logging
 
-Logs go to **stderr** in `text` (default) or `json` form. The level is an [`EnvFilter`](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html) directive; `RUST_LOG` always wins.
+Logs go to **stderr** in `text` (default) or `json` form. The level is an [EnvFilter](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html) directive; `RUST_LOG` always wins.
 
 | Setting | Flag / env | Config |
 |---|---|---|
@@ -60,7 +60,7 @@ When OTLP export is on, Pawrly produces a span tree per operation, named `pawrly
 
 Trace context is propagated as W3C `traceparent` across the **gRPC** (CLI → daemon) and **MCP HTTP** boundaries, so a request that crosses processes is a single trace. SQL text and parameter values are never put on spans (cardinality + secrets); they live in the activity log, subject to redaction.
 
-Configure under `otel:` — `endpoint`, `protocol` (`grpc` | `http`), `sample_ratio` (parent-based), and `traces` / `logs` toggles.
+Configure under `otel:` — `endpoint`, `protocol` (`grpc` | `http`), `service_name` (the OTel resource name, default `pawrly`), `sample_ratio` (parent-based), and the `traces` / `logs` toggles.
 
 ## Metrics
 
