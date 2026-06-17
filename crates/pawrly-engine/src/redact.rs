@@ -11,15 +11,20 @@
 //!   tables, never the text.
 //!
 //! Redaction never fails open: if a redacting mode cannot parse the SQL, it
-//! degrades (literals → tables-only → nothing) and flags `degraded` so the
-//! caller can count it — it never falls back to the raw text.
+//! degrades (literals → tables-only → the leading statement keyword) and flags
+//! `degraded` so the caller can count it — it never falls back to the raw text.
+//!
+//! Parsing uses DataFusion's own re-exported `sqlparser`, so the redactor
+//! accepts exactly the grammar the engine runs.
 
 use std::collections::BTreeSet;
 use std::ops::ControlFlow;
 
-use sqlparser::ast::{Expr, Ident, Statement, visit_expressions_mut, visit_relations_mut};
-use sqlparser::dialect::GenericDialect;
-use sqlparser::parser::Parser;
+use datafusion::sql::sqlparser::ast::{
+    Expr, Ident, Statement, visit_expressions_mut, visit_relations_mut,
+};
+use datafusion::sql::sqlparser::dialect::GenericDialect;
+use datafusion::sql::sqlparser::parser::Parser;
 
 /// Non-executable placeholder for redacted literals. Deliberately not valid SQL
 /// so the stored text is never mistaken for runnable.
@@ -58,9 +63,10 @@ pub fn redact(sql: &str, mode: RedactMode) -> Redacted {
                 sql: Some(redact_literals(stmts)),
                 degraded: false,
             },
-            // Degrade to tables-only rather than store raw text.
+            // Degrade to tables-only, then to the bare statement keyword,
+            // rather than store raw text.
             None => Redacted {
-                sql: tables_only(sql),
+                sql: tables_only(sql).or_else(|| leading_keyword(sql)),
                 degraded: true,
             },
         },
@@ -70,7 +76,7 @@ pub fn redact(sql: &str, mode: RedactMode) -> Redacted {
                 degraded: false,
             },
             None => Redacted {
-                sql: None,
+                sql: leading_keyword(sql),
                 degraded: true,
             },
         },
@@ -79,6 +85,25 @@ pub fn redact(sql: &str, mode: RedactMode) -> Redacted {
 
 fn parse(sql: &str) -> Option<Vec<Statement>> {
     Parser::parse_sql(&GenericDialect, sql).ok()
+}
+
+/// Statement-leading keywords safe to record on a parse failure — a keyword
+/// can't carry user data, so this leaks nothing.
+const STMT_KEYWORDS: &[&str] = &[
+    "SELECT", "WITH", "INSERT", "UPDATE", "DELETE", "CREATE", "DROP", "ALTER", "EXPLAIN", "SHOW",
+    "COPY", "MERGE", "CALL", "SET", "PRAGMA", "DESCRIBE",
+];
+
+/// The leading word of `sql`, but only when it's a recognized statement keyword;
+/// otherwise `None`, so a malformed input never echoes a non-keyword token.
+fn leading_keyword(sql: &str) -> Option<String> {
+    let word: String = sql
+        .trim_start()
+        .chars()
+        .take_while(char::is_ascii_alphabetic)
+        .collect::<String>()
+        .to_uppercase();
+    STMT_KEYWORDS.contains(&word.as_str()).then_some(word)
 }
 
 /// Replace every literal expression with the sentinel and re-serialize.
@@ -182,6 +207,34 @@ mod tests {
     #[test]
     fn tables_only_failsafe_returns_none() {
         let r = redact("@@@ not sql", RedactMode::TablesOnly);
+        assert!(r.degraded);
+        assert_eq!(r.sql, None);
+    }
+
+    #[test]
+    fn modern_syntax_parses_via_datafusion_dialect() {
+        // `FILTER` is valid in DataFusion and must redact, not degrade to NULL.
+        let r = redact(
+            "SELECT count(*) FILTER (WHERE n > 0) FROM t",
+            RedactMode::Literals,
+        );
+        assert!(!r.degraded, "FILTER should parse with the engine's dialect");
+        let out = r.sql.expect("expected redacted SQL, not NULL");
+        assert!(out.contains("FILTER"), "shape lost: {out}");
+        assert!(out.contains("$REDACTED"), "literal not redacted: {out}");
+    }
+
+    #[test]
+    fn unparseable_falls_back_to_leading_keyword() {
+        let r = redact("SELECT this is not valid ((", RedactMode::Literals);
+        assert!(r.degraded);
+        // Leak-safe keyword, never the raw text.
+        assert_eq!(r.sql.as_deref(), Some("SELECT"));
+    }
+
+    #[test]
+    fn non_keyword_garbage_yields_no_text() {
+        let r = redact("@@@ totally bogus", RedactMode::Literals);
         assert!(r.degraded);
         assert_eq!(r.sql, None);
     }

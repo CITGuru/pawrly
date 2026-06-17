@@ -32,8 +32,6 @@ tokio-stream = "0.1"
 tracing = { workspace = true }
 pawrly-telemetry = { workspace = true }
 opentelemetry = { workspace = true }
-# Same version DataFusion 53 vendors, with the visitor feature for SQL redaction.
-sqlparser = { version = "0.52", features = ["visitor"] }
 thiserror = { workspace = true }
 chrono = { workspace = true }
 parking_lot = { workspace = true }
