@@ -16,16 +16,17 @@ pub struct Args {
 }
 
 pub async fn run(home: Option<PathBuf>, args: Args) -> anyhow::Result<()> {
-    let pid_file = args.pid_file.unwrap_or_else(|| {
-        let h = home
-            .or_else(|| {
-                std::env::var_os("HOME")
-                    .map(PathBuf::from)
-                    .map(|h| h.join(".pawrly"))
-            })
-            .unwrap_or_else(|| PathBuf::from("."));
-        h.join("sockets").join("pawrly.pid")
-    });
+    let sockets_dir = home
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .map(|h| h.join(".pawrly"))
+        })
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("sockets");
+    let pid_file = args
+        .pid_file
+        .unwrap_or_else(|| sockets_dir.join("pawrly.pid"));
 
     let pid_str = std::fs::read_to_string(&pid_file)
         .map_err(|e| anyhow::anyhow!("could not read pid file `{}`: {e}", pid_file.display()))?;
@@ -51,6 +52,14 @@ pub async fn run(home: Option<PathBuf>, args: Args) -> anyhow::Result<()> {
             ));
         }
         println!("sent signal {signal} to pid {pid}");
+
+        // On SIGKILL the daemon can't unlink its own socket/pid, so clean up
+        // the default paths here as a backstop. On a graceful SIGTERM the
+        // daemon removes these itself; these best-effort removes are idempotent.
+        if args.force {
+            let _ = std::fs::remove_file(sockets_dir.join("pawrly.sock"));
+            let _ = std::fs::remove_file(&pid_file);
+        }
     }
     #[cfg(not(unix))]
     {

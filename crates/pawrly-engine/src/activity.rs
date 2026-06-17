@@ -138,7 +138,6 @@ mod tests {
         let sink = ActivitySink::spawn(Arc::new(Capturing(store.clone())), 8);
         assert!(sink.is_enabled());
         sink.emit(sample());
-        // Yield until the background drain has the record.
         for _ in 0..50 {
             if store.lock().unwrap().len() == 1 {
                 break;

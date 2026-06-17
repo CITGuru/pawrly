@@ -83,7 +83,7 @@ pub async fn run(home: Option<PathBuf>, config: Option<PathBuf>, args: Args) -> 
                     write_pid_file(pid)?;
                 }
                 tracing::info!(path = %path.display(), "starting pawrly daemon (UDS)");
-                builder.serve_uds(path).await?;
+                serve_uds_graceful(builder, path, args.pid_file.clone()).await?;
                 return Ok(());
             }
             #[cfg(not(unix))]
@@ -115,7 +115,7 @@ pub async fn run(home: Option<PathBuf>, config: Option<PathBuf>, args: Args) -> 
     tracing::info!(path = %path.display(), "starting pawrly daemon (UDS, default path)");
     #[cfg(unix)]
     {
-        builder.serve_uds(path).await?;
+        serve_uds_graceful(builder, path, args.pid_file.clone()).await?;
         Ok(())
     }
     #[cfg(not(unix))]
@@ -123,6 +123,51 @@ pub async fn run(home: Option<PathBuf>, config: Option<PathBuf>, args: Args) -> 
         let _ = builder;
         let _ = path;
         anyhow::bail!("UDS not supported on this platform; use --addr tcp://...")
+    }
+}
+
+/// Serve on a UDS, removing the socket and pid file on a clean shutdown.
+///
+/// On SIGTERM/SIGINT the daemon unlinks its own socket so a later `pawrly
+/// status` doesn't trip over a dead socket. SIGKILL can't be caught here;
+/// `pawrly stop --force` cleans up that case.
+#[cfg(unix)]
+async fn serve_uds_graceful(
+    builder: pawrly_server::ServerBuilder,
+    path: PathBuf,
+    pid_file: Option<PathBuf>,
+) -> anyhow::Result<()> {
+    let serve = builder.serve_uds(path.clone());
+    tokio::pin!(serve);
+    tokio::select! {
+        res = &mut serve => res?,
+        () = shutdown_signal() => {
+            tracing::info!(path = %path.display(), "shutdown signal received; cleaning up socket");
+        }
+    }
+    let _ = std::fs::remove_file(&path);
+    if let Some(pid) = pid_file {
+        let _ = std::fs::remove_file(pid);
+    }
+    Ok(())
+}
+
+/// Resolve when the process receives SIGTERM or SIGINT. If a handler can't be
+/// installed, this never resolves so serving continues until the transport
+/// ends on its own (rather than shutting down spuriously).
+#[cfg(unix)]
+async fn shutdown_signal() {
+    use tokio::signal::unix::{SignalKind, signal};
+    let (mut term, mut interrupt) = match (
+        signal(SignalKind::terminate()),
+        signal(SignalKind::interrupt()),
+    ) {
+        (Ok(term), Ok(interrupt)) => (term, interrupt),
+        _ => return std::future::pending().await,
+    };
+    tokio::select! {
+        _ = term.recv() => {}
+        _ = interrupt.recv() => {}
     }
 }
 
