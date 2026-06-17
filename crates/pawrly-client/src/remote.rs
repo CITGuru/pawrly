@@ -28,6 +28,7 @@ use pawrly_proto::v1::{
 use tonic::service::interceptor::InterceptedService;
 use tonic::transport::Channel;
 use tonic::{Request, Status};
+use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 use crate::transport::{ConnectError, Endpoint};
 
@@ -46,6 +47,10 @@ impl tonic::service::Interceptor for BearerInjector {
                 .map_err(|_| Status::invalid_argument("invalid bearer token"))?;
             req.metadata_mut().insert("authorization", value);
         }
+        // Carry the active trace context so the daemon-side span joins this
+        // trace. No-op when OTel is disabled (the global propagator is a no-op).
+        let cx = tracing::Span::current().context();
+        pawrly_proto::propagation::inject_context(&cx, req.metadata_mut());
         Ok(req)
     }
 }

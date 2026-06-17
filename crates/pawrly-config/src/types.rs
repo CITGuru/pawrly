@@ -45,6 +45,11 @@ pub struct Config {
     /// unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub semantic: Option<SemanticConfig>,
+
+    /// Optional observability block. Absent = today's behaviour (no activity
+    /// log; export controlled by CLI flags).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observability: Option<crate::observability::ObservabilityConfig>,
 }
 
 fn default_name() -> String {

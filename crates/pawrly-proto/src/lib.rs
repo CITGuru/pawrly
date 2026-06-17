@@ -18,6 +18,7 @@ pub mod v1 {
 
 pub mod arrow_helpers;
 pub mod conv;
+pub mod propagation;
 
 #[cfg(test)]
 mod tests {

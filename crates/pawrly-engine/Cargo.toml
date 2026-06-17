@@ -30,6 +30,8 @@ futures-util = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = "0.1"
 tracing = { workspace = true }
+pawrly-telemetry = { workspace = true }
+opentelemetry = { workspace = true }
 thiserror = { workspace = true }
 chrono = { workspace = true }
 parking_lot = { workspace = true }

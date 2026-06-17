@@ -9,16 +9,20 @@
 
 #![doc(html_root_url = "https://docs.rs/pawrly-engine")]
 
+mod activity;
 mod cache;
 mod duckdb_pool;
 mod duckdb_source;
+mod durable_activity;
 mod json_udf;
 mod local;
 mod namespace;
 pub mod optimizer;
 mod preagg;
+mod redact;
 mod registry;
 mod stream;
+mod system_table;
 
 pub use cache::{CacheManager, CachedTableProvider, ManifestEntry};
 pub use duckdb_pool::DuckDbPool;

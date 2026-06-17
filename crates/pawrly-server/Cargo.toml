@@ -29,6 +29,7 @@ futures = { workspace = true }
 futures-util = { workspace = true }
 hyper-util = { workspace = true, features = ["tokio"] }
 tracing = { workspace = true }
+tracing-opentelemetry = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]

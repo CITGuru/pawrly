@@ -24,6 +24,12 @@ pub fn validate(cfg: &Config) -> ConfigErrors {
                 "`materialized` is reserved for materialized tables".to_string(),
             ));
         }
+        if src.name == pawrly_core::SYSTEM_SCHEMA {
+            errors.push(ConfigError::Source(
+                src.name.clone(),
+                "`system` is reserved for engine system tables".to_string(),
+            ));
+        }
         if !seen.insert(src.name.clone()) {
             errors.push(ConfigError::Source(
                 src.name.clone(),
@@ -566,6 +572,7 @@ mod tests {
             include: Vec::new(),
             sources,
             semantic: None,
+            observability: None,
         }
     }
 

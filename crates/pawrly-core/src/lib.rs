@@ -5,6 +5,7 @@
 
 #![doc(html_root_url = "https://docs.rs/pawrly-core")]
 
+pub mod activity;
 pub mod cache;
 pub mod error;
 pub mod home;
@@ -39,7 +40,7 @@ pub use semantic::{
 };
 pub use service::{
     EngineService, EngineServiceExt, MATERIALIZED_SCHEMA, MaterializeFormat, MaterializeOutcome,
-    MaterializeSpec, QueryId, QueryRequest, QueryStream,
+    MaterializeSpec, QueryId, QueryRequest, QueryStream, SYSTEM_SCHEMA,
 };
 pub use source::{
     HealthReport, RefreshCatalogOutcome, ReloadReport, SourceDef, SourceInfo, SourceStatus,

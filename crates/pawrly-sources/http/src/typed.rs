@@ -511,15 +511,45 @@ impl TableProvider for HttpTableProvider {
     }
 }
 
-/// Send a request with retry/backoff on transient failures.
-///
+/// Send a request with retry/backoff, recording the `pawrly.source.request.*`
+/// metrics for the whole logical request (across retries). `kind` and `status`
+/// are recorded; source-name attribution is not available at this layer.
+#[tracing::instrument(name = "pawrly.source.http.request", skip_all)]
+async fn send_with_retry(
+    req: reqwest::RequestBuilder,
+    retry: &crate::source::RetryConfig,
+    rate_limit: &RateLimitPolicy,
+) -> datafusion::common::Result<reqwest::Response> {
+    let started = std::time::Instant::now();
+    let result = send_with_retry_inner(req, retry, rate_limit).await;
+
+    let status = if result.is_ok() { "ok" } else { "error" };
+    let code = result.as_ref().map_or(0, |r| r.status().as_u16());
+    pawrly_telemetry::metrics::source_request_total().add(
+        1,
+        &[
+            opentelemetry::KeyValue::new("kind", "http"),
+            opentelemetry::KeyValue::new("status", status),
+            opentelemetry::KeyValue::new("http.response.status_code", i64::from(code)),
+        ],
+    );
+    pawrly_telemetry::metrics::source_request_duration().record(
+        started.elapsed().as_secs_f64() * 1000.0,
+        &[
+            opentelemetry::KeyValue::new("kind", "http"),
+            opentelemetry::KeyValue::new("status", status),
+        ],
+    );
+    result
+}
+
 /// Retries on transport errors and HTTP 5xx with exponential backoff
 /// (`base * 2^attempt`, capped at `max_backoff`). For 429/503 and any
 /// `rate_limit.extra_statuses` (e.g. GitHub's `403`), prefers the reset header
 /// (epoch seconds) then a numeric `Retry-After` (seconds), otherwise falls back
 /// to the backoff. After exhausting `max_retries`, returns the last error
 /// wrapped as a `DataFusionError::External`.
-async fn send_with_retry(
+async fn send_with_retry_inner(
     req: reqwest::RequestBuilder,
     retry: &crate::source::RetryConfig,
     rate_limit: &RateLimitPolicy,

@@ -13,6 +13,7 @@ use pawrly_proto::v1::{
 };
 use prost_types::Timestamp;
 use tonic::{Request, Response, Status, async_trait};
+use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 use crate::error::engine_error_to_status;
 
@@ -32,11 +33,29 @@ type ResponseStream = Pin<Box<dyn Stream<Item = Result<QueryResponse, Status>> +
 impl QueryService for QuerySvc {
     type QueryStream = ResponseStream;
 
+    #[tracing::instrument(name = "pawrly.server.query", skip_all, fields(pawrly.interface = "grpc"))]
     async fn query(
         &self,
         req: Request<ProtoQueryRequest>,
     ) -> Result<Response<Self::QueryStream>, Status> {
-        let core_req: QueryRequest = req.into_inner().into();
+        // Adopt the client's trace context (if propagated) as this span's parent,
+        // so the CLI→daemon hop is one trace. Errs only when no OTel layer is
+        // installed (export disabled), which is the expected no-op case.
+        let _ = tracing::Span::current()
+            .set_parent(pawrly_proto::propagation::extract_context(req.metadata()));
+        let traceparent = req
+            .metadata()
+            .get("traceparent")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string);
+        let mut core_req: QueryRequest = req.into_inner().into();
+        // Attribute the activity record to the gRPC interface. Principal is not
+        // populated from the bearer-auth layer.
+        core_req.context = pawrly_core::activity::RequestContext {
+            interface: pawrly_core::activity::Interface::Grpc,
+            principal: None,
+            traceparent,
+        };
         let query_id = QueryId::new(uuid::Uuid::new_v4().to_string());
 
         let started = QueryResponse {

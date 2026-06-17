@@ -54,6 +54,10 @@ pub struct QueryRequest {
     /// Optional client-supplied trace id for log correlation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trace_id: Option<String>,
+    /// Who/where this request came from, for activity attribution and trace
+    /// propagation. Defaults to in-process; old clients send the default.
+    #[serde(default)]
+    pub context: crate::activity::RequestContext,
 }
 
 impl QueryRequest {
@@ -75,6 +79,11 @@ pub type QueryStream = Pin<Box<dyn Stream<Item = Result<RecordBatch, EngineError
 /// `add_source`), so `{source names} ∪ {materialized}` is always disjoint and a
 /// materialized table is addressable as `<namespace>.materialized.<name>`.
 pub const MATERIALIZED_SCHEMA: &str = "materialized";
+
+/// The reserved schema name for engine-internal system tables (e.g.
+/// `system.activity`). Like [`MATERIALIZED_SCHEMA`], no data source may use it,
+/// keeping the namespace disjoint.
+pub const SYSTEM_SCHEMA: &str = "system";
 
 /// Tabular format of a `File` / `Url` / `Inline` materialize origin.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

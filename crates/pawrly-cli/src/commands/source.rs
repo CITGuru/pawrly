@@ -413,6 +413,7 @@ fn read_or_init_config(path: &Path) -> anyhow::Result<Config> {
             include: Vec::new(),
             sources: Vec::new(),
             semantic: None,
+            observability: None,
         });
     }
     let raw = std::fs::read_to_string(path)

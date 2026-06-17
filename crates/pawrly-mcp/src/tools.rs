@@ -273,6 +273,7 @@ pub fn list_tools() -> Vec<Value> {
 }
 
 /// Dispatch a single `tools/call`.
+#[tracing::instrument(name = "pawrly.mcp.tool", skip_all, fields(tool = %name))]
 pub async fn call_tool(
     engine: &Arc<dyn EngineService>,
     name: &str,

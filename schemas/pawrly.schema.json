@@ -55,6 +55,17 @@
       "default": "default",
       "type": "string"
     },
+    "observability": {
+      "description": "Optional observability block. Absent = today's behaviour (no activity log; export controlled by CLI flags).",
+      "anyOf": [
+        {
+          "$ref": "#/definitions/ObservabilityConfig"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "secrets": {
       "description": "Configured secret backends. Empty = use the built-in default chain (`env`, then OS keyring under `service=pawrly`).",
       "default": [],
@@ -91,6 +102,92 @@
   },
   "additionalProperties": false,
   "definitions": {
+    "ActivityConfig": {
+      "description": "The `observability.activity:` block — one structured record per operation.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Master switch. Off by default, so no records are produced.",
+          "default": false,
+          "type": "boolean"
+        },
+        "flush_interval": {
+          "description": "Maximum time a record waits in the buffer before a flush. `0` disables the timer (flush only on threshold / shutdown).",
+          "default": "1m",
+          "type": "string"
+        },
+        "flush_threshold": {
+          "description": "Records buffered before a Parquet file is flushed.",
+          "default": 1000,
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0.0
+        },
+        "partition_hours": {
+          "description": "`hr=` partition bucket width in hours (clamped to 1..=24).",
+          "default": 4,
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0.0
+        },
+        "redact_sql": {
+          "description": "How much of the submitted SQL to capture.",
+          "default": "false",
+          "type": "string"
+        },
+        "retention": {
+          "description": "Prune durable files older than this. Omit to keep all history.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "ring_capacity": {
+          "description": "In-memory ring-buffer capacity for the `table` sink.",
+          "default": 10000,
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0.0
+        },
+        "sinks": {
+          "description": "Which sinks receive records. Defaults to the `tracing` event sink.",
+          "default": [
+            "tracing"
+          ],
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ActivitySinkKind"
+          }
+        },
+        "store": {
+          "description": "Durable store directory for the `table` sink. Set to persist records as date/hour-partitioned Parquet; omit to keep only the in-memory ring.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "ActivitySinkKind": {
+      "description": "An activity sink.",
+      "oneOf": [
+        {
+          "description": "Emit each record as a `tracing` event (sink 1).",
+          "type": "string",
+          "enum": [
+            "tracing"
+          ]
+        },
+        {
+          "description": "Expose records via the `system.activity` table (sink 2).",
+          "type": "string",
+          "enum": [
+            "table"
+          ]
+        }
+      ]
+    },
     "CacheDefaults": {
       "description": "Cache section under `defaults:`.",
       "type": "object",
@@ -414,6 +511,25 @@
         }
       }
     },
+    "LogFormat": {
+      "description": "Log line format.",
+      "oneOf": [
+        {
+          "description": "Human-readable text.",
+          "type": "string",
+          "enum": [
+            "text"
+          ]
+        },
+        {
+          "description": "Line-delimited JSON.",
+          "type": "string",
+          "enum": [
+            "json"
+          ]
+        }
+      ]
+    },
     "MaterializeDefaults": {
       "description": "Materialize section under `defaults:`.",
       "type": "object",
@@ -502,6 +618,67 @@
         }
       ]
     },
+    "ObservabilityConfig": {
+      "description": "The `observability:` block.",
+      "type": "object",
+      "properties": {
+        "activity": {
+          "description": "Activity log settings.",
+          "default": {
+            "enabled": false,
+            "flush_interval": "1m",
+            "flush_threshold": 1000,
+            "partition_hours": 4,
+            "redact_sql": "false",
+            "retention": "30days",
+            "ring_capacity": 10000,
+            "sinks": [
+              "tracing"
+            ]
+          },
+          "allOf": [
+            {
+              "$ref": "#/definitions/ActivityConfig"
+            }
+          ]
+        },
+        "otel": {
+          "description": "OpenTelemetry export (OTLP push and/or Prometheus pull).",
+          "default": {
+            "enabled": false,
+            "endpoint": "http://localhost:4317",
+            "logs": true,
+            "metrics": true,
+            "prometheus": {
+              "enabled": false,
+              "listen": "127.0.0.1:9090"
+            },
+            "protocol": "grpc",
+            "sample_ratio": 1.0,
+            "service_name": "pawrly",
+            "traces": true
+          },
+          "allOf": [
+            {
+              "$ref": "#/definitions/OtelConfig"
+            }
+          ]
+        },
+        "tracing": {
+          "description": "Logging level and format.",
+          "default": {
+            "format": "text",
+            "level": "info"
+          },
+          "allOf": [
+            {
+              "$ref": "#/definitions/TracingConfig"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
     "OptimizerDefaults": {
       "description": "Optimizer section under `defaults:`.",
       "type": "object",
@@ -520,6 +697,89 @@
           "type": "boolean"
         }
       }
+    },
+    "OtelConfig": {
+      "description": "The `observability.otel:` block.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Master switch for OTLP export.",
+          "default": false,
+          "type": "boolean"
+        },
+        "endpoint": {
+          "description": "Collector endpoint.",
+          "default": "http://localhost:4317",
+          "type": "string"
+        },
+        "logs": {
+          "description": "Bridge logs to OTel and export them.",
+          "default": true,
+          "type": "boolean"
+        },
+        "metrics": {
+          "description": "Export metrics over OTLP push.",
+          "default": true,
+          "type": "boolean"
+        },
+        "prometheus": {
+          "description": "Prometheus pull endpoint, independent of OTLP push.",
+          "default": {
+            "enabled": false,
+            "listen": "127.0.0.1:9090"
+          },
+          "allOf": [
+            {
+              "$ref": "#/definitions/PrometheusConfig"
+            }
+          ]
+        },
+        "protocol": {
+          "description": "OTLP transport.",
+          "default": "grpc",
+          "allOf": [
+            {
+              "$ref": "#/definitions/OtelProtocol"
+            }
+          ]
+        },
+        "sample_ratio": {
+          "description": "Parent-based ratio sampler probability in `[0.0, 1.0]`.",
+          "default": 1.0,
+          "type": "number",
+          "format": "double"
+        },
+        "service_name": {
+          "description": "`service.name` resource attribute.",
+          "default": "pawrly",
+          "type": "string"
+        },
+        "traces": {
+          "description": "Export traces.",
+          "default": true,
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "OtelProtocol": {
+      "description": "OTLP transport.",
+      "oneOf": [
+        {
+          "description": "OTLP over gRPC.",
+          "type": "string",
+          "enum": [
+            "grpc"
+          ]
+        },
+        {
+          "description": "OTLP over HTTP/protobuf.",
+          "type": "string",
+          "enum": [
+            "http"
+          ]
+        }
+      ]
     },
     "PreAggregation": {
       "description": "A declared rollup: a pre-materialized grouping that the matcher can swap in for the base table when it covers the query.",
@@ -562,6 +822,23 @@
           ]
         }
       }
+    },
+    "PrometheusConfig": {
+      "description": "The `observability.otel.prometheus:` block.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Serve a `/metrics` pull endpoint.",
+          "default": false,
+          "type": "boolean"
+        },
+        "listen": {
+          "description": "Address the endpoint listens on.",
+          "default": "127.0.0.1:9090",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
     },
     "Relationship": {
       "description": "A join from one model to another. `join_predicate` is a raw SQL fragment in which `this` aliases the declaring model and the target is referenced by its model name (e.g. `\"this.customer_id = customers.id\"`).",
@@ -1083,6 +1360,27 @@
         "quarter",
         "year"
       ]
+    },
+    "TracingConfig": {
+      "description": "The `observability.tracing:` block.",
+      "type": "object",
+      "properties": {
+        "format": {
+          "description": "Log line format.",
+          "default": "text",
+          "allOf": [
+            {
+              "$ref": "#/definitions/LogFormat"
+            }
+          ]
+        },
+        "level": {
+          "description": "`EnvFilter` directive (e.g. `info`, `pawrly=debug`). `RUST_LOG` wins.",
+          "default": "info",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
     }
   }
 }

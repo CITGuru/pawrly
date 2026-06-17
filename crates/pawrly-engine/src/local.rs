@@ -3,11 +3,12 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicI64, Ordering};
 
 use arrow_schema::SchemaRef;
 use async_trait::async_trait;
 use chrono::Utc;
-use datafusion::catalog::{CatalogProvider, MemoryCatalogProvider};
+use datafusion::catalog::{CatalogProvider, MemoryCatalogProvider, SchemaProvider};
 use datafusion::execution::context::SessionContext;
 use parking_lot::{Mutex, RwLock};
 use pawrly_core::semantic::{SemanticModelDescription, SemanticModelInfo, SemanticQuery};
@@ -84,6 +85,28 @@ pub(crate) struct LocalEngineInner {
     duckdb: Arc<DuckDbPool>,
     /// Recognize the inline `-- pawrly: materialize <name>` directive.
     allow_inline_materialize: bool,
+    /// In-flight query count, incremented at query start and decremented when
+    /// the result stream finishes or is dropped. Read by `health()`.
+    active_queries: Arc<AtomicI64>,
+    /// Activity-log sink (disabled unless `observability.activity` is enabled).
+    activity: crate::activity::ActivitySink,
+    /// SQL redaction policy for activity records.
+    redact_sql: crate::redact::RedactMode,
+    /// Durable activity store, when configured. Held so its buffered tail is
+    /// flushed to disk when the engine is torn down.
+    activity_durable: Option<crate::durable_activity::DurableActivityStore>,
+}
+
+impl Drop for LocalEngineInner {
+    fn drop(&mut self) {
+        // Persist the not-yet-flushed buffer on shutdown so the records recorded
+        // since the last threshold/timer flush aren't lost.
+        if let Some(store) = &self.activity_durable
+            && let Err(e) = store.flush()
+        {
+            tracing::warn!(error = %e, "activity: flush on shutdown failed");
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -96,6 +119,43 @@ struct RegisteredSource {
 }
 
 impl LocalEngine {
+    /// Build the activity context for an operation, or `None` when activity
+    /// logging is off. `sql` is the user-submitted text (pre-substitution); it
+    /// is redacted here per policy. `None` for operations without SQL text.
+    fn activity_context(
+        &self,
+        ctx: &pawrly_core::activity::RequestContext,
+        operation: pawrly_core::activity::Operation,
+        sql: Option<&str>,
+        params: &HashMap<String, String>,
+    ) -> Option<crate::stream::ActivityContext> {
+        if !self.inner.activity.is_enabled() {
+            return None;
+        }
+        let sql = sql.and_then(|s| {
+            let redacted = crate::redact::redact(s, self.inner.redact_sql);
+            if redacted.degraded {
+                pawrly_telemetry::metrics::redaction_failed().add(1, &[]);
+            }
+            redacted.sql
+        });
+        let mut param_keys: Vec<String> = params.keys().cloned().collect();
+        param_keys.sort();
+        Some(crate::stream::ActivityContext {
+            sink: self.inner.activity.clone(),
+            id: uuid::Uuid::new_v4().to_string(),
+            interface: ctx.interface,
+            principal: ctx.principal.clone(),
+            operation,
+            sql,
+            param_keys,
+            trace_id: ctx
+                .traceparent
+                .as_deref()
+                .and_then(trace_id_from_traceparent),
+        })
+    }
+
     /// Build a new local engine and register every source from the config.
     pub async fn new(cfg: LocalEngineConfig) -> Result<Self, EngineError> {
         Self::build(cfg, None).await
@@ -174,6 +234,27 @@ impl LocalEngine {
 
         let duckdb = Arc::new(DuckDbPool::new(cfg.resolved_pool_size())?);
 
+        let (activity, redact_sql, activity_backing) =
+            build_activity(cfg.config.observability.as_ref())?;
+
+        // Expose `system.activity` when the table sink is on. The `system`
+        // schema is reserved (no source may take the name), mirroring
+        // `materialized`.
+        if let Some(backing) = &activity_backing {
+            let system_schema = Arc::new(datafusion::catalog::MemorySchemaProvider::new());
+            let _ = system_schema.register_table(
+                "activity".to_string(),
+                Arc::new(crate::system_table::ActivityTableProvider::new(
+                    backing.clone(),
+                )),
+            );
+            let _ = catalog.register_schema(pawrly_core::SYSTEM_SCHEMA, system_schema);
+        }
+        let activity_durable = match &activity_backing {
+            Some(crate::system_table::ActivityBacking::Durable(store)) => Some(store.clone()),
+            _ => None,
+        };
+
         // Build the semantic catalog before the config is consumed into
         // engine-side sources below.
         let semantic_models = cfg
@@ -195,6 +276,10 @@ impl LocalEngine {
             config_path,
             duckdb,
             allow_inline_materialize: cfg.config.defaults.materialize.allow_inline,
+            active_queries: Arc::new(AtomicI64::new(0)),
+            activity,
+            redact_sql,
+            activity_durable,
         });
 
         // Move config into engine-side SourceDefs.
@@ -253,6 +338,7 @@ impl LocalEngine {
             include: Vec::new(),
             sources: Vec::new(),
             semantic: None,
+            observability: None,
         };
         Self::new(LocalEngineConfig {
             config: cfg,
@@ -267,18 +353,26 @@ impl LocalEngine {
     /// rollup when a fresh one covers it. A covering-but-unmaterialized rollup
     /// is built on demand (best-effort); on any miss the base table is used, so
     /// a rollup never changes a result, only how it is computed.
+    #[tracing::instrument(name = "pawrly.semantic.compile", skip_all)]
     async fn compile_semantic(&self, q: &SemanticQuery) -> Result<String, EngineError> {
-        if let Some(r) = self.inner.semantic.candidate_rollup(q) {
+        let started = std::time::Instant::now();
+        let sql = if let Some(r) = self.inner.semantic.candidate_rollup(q) {
             let key = TableName::new(r.schema().to_string(), r.table());
             if !self.inner.cache.is_fresh(&key) {
                 // Materialize on first use; ignore failure and fall back to base.
                 let _ = self.inner.cache.refresh(&key, &self.inner.ctx).await;
             }
             if self.inner.cache.is_fresh(&key) {
-                return Ok(self.inner.semantic.compile_rollup_sql(q, &r)?);
+                self.inner.semantic.compile_rollup_sql(q, &r)?
+            } else {
+                self.inner.semantic.compile_sql(q)?
             }
-        }
-        Ok(self.inner.semantic.compile_sql(q)?)
+        } else {
+            self.inner.semantic.compile_sql(q)?
+        };
+        pawrly_telemetry::metrics::semantic_compile_duration()
+            .record(started.elapsed().as_secs_f64() * 1000.0, &[]);
+        Ok(sql)
     }
 
     /// Produce `(schema, batches)` for a materialize spec. The optional
@@ -530,6 +624,11 @@ async fn register_source(inner: &Arc<LocalEngineInner>, def: SourceDef) -> Resul
             "source name `{name}` is reserved for materialized tables"
         )));
     }
+    if name == pawrly_core::SYSTEM_SCHEMA {
+        return Err(EngineError::Internal(format!(
+            "source name `{name}` is reserved for engine system tables"
+        )));
+    }
 
     // Re-registration path: drop any prior refreshers and tables for this source
     // so a re-scan reflects the current state (new files appear, vanished files
@@ -632,8 +731,27 @@ fn remove_source_inner(inner: &Arc<LocalEngineInner>, name: &str) -> bool {
 
 #[async_trait]
 impl EngineService for LocalEngine {
+    // Root engine span. `skip_all` keeps SQL text and param values off the span
+    // (cardinality + secrets); only low-cardinality attributes are attached.
+    #[tracing::instrument(
+        name = "pawrly.engine.query",
+        skip_all,
+        fields(pawrly.engine = "local")
+    )]
     async fn query(&self, req: QueryRequest) -> Result<QueryStream, EngineError> {
         let inner = self.inner.clone();
+        // Tracks active count + terminal metrics. Dropping it on any `?` error
+        // below records `status = error`; on success it moves into the result
+        // stream and finalizes when that stream ends.
+        let mut guard = crate::stream::QueryGuard::start(inner.active_queries.clone());
+        if let Some(actx) = self.activity_context(
+            &req.context,
+            pawrly_core::activity::Operation::Query,
+            Some(&req.sql),
+            &req.params,
+        ) {
+            guard = guard.with_activity(actx);
+        }
         // Substitute simple `${param:KEY}` occurrences.
         let sql = substitute_params(&req.sql, &req.params);
 
@@ -650,7 +768,8 @@ impl EngineService for LocalEngine {
                     params: req.params.clone(),
                 },
             )
-            .await?;
+            .await
+            .inspect_err(|e| guard.mark_error(e))?;
             tracing::info!(materialized_as = %format!("materialized.{name}"), "inline materialize");
             let read_sql = format!(
                 "SELECT * FROM {}.\"{name}\"",
@@ -660,26 +779,31 @@ impl EngineService for LocalEngine {
                 .ctx
                 .sql(&read_sql)
                 .await
-                .map_err(|e| EngineError::Internal(format!("datafusion: {e}")))?;
+                .map_err(|e| EngineError::Internal(format!("datafusion: {e}")))
+                .inspect_err(|e| guard.mark_error(e))?;
             let stream = df
                 .execute_stream()
                 .await
-                .map_err(|e| EngineError::Internal(format!("datafusion: {e}")))?;
-            return Ok(crate::stream::adapt(stream));
+                .map_err(|e| EngineError::Internal(format!("datafusion: {e}")))
+                .inspect_err(|e| guard.mark_error(e))?;
+            return Ok(crate::stream::adapt_instrumented(stream, guard));
         }
 
         let df = inner
             .ctx
             .sql(&sql)
             .await
-            .map_err(|e| EngineError::InvalidSql(e.to_string()))?;
+            .map_err(|e| EngineError::InvalidSql(e.to_string()))
+            .inspect_err(|e| guard.mark_error(e))?;
         let stream = df
             .execute_stream()
             .await
-            .map_err(|e| EngineError::Internal(format!("datafusion: {e}")))?;
-        Ok(crate::stream::adapt(stream))
+            .map_err(|e| EngineError::Internal(format!("datafusion: {e}")))
+            .inspect_err(|e| guard.mark_error(e))?;
+        Ok(crate::stream::adapt_instrumented(stream, guard))
     }
 
+    #[tracing::instrument(name = "pawrly.engine.explain", skip_all, fields(pawrly.engine = "local"))]
     async fn explain(&self, sql: &str, _analyze: bool) -> Result<String, EngineError> {
         let df = self
             .inner
@@ -916,6 +1040,11 @@ impl EngineService for LocalEngine {
         self.inner.cache.vacuum()
     }
 
+    #[tracing::instrument(
+        name = "pawrly.engine.materialize",
+        skip_all,
+        fields(pawrly.engine = "local", pawrly.table = %name)
+    )]
     async fn materialize(
         &self,
         name: &str,
@@ -1041,21 +1170,38 @@ impl EngineService for LocalEngine {
             .ok_or_else(|| EngineError::SemanticPlan(format!("unknown semantic model `{name}`")))
     }
 
+    #[tracing::instrument(name = "pawrly.engine.semantic_query", skip_all, fields(pawrly.engine = "local"))]
     async fn semantic_query(&self, q: SemanticQuery) -> Result<QueryStream, EngineError> {
+        let mut guard = crate::stream::QueryGuard::start(self.inner.active_queries.clone());
+        // SemanticQuery carries no RequestContext, so activity attribution
+        // defaults to in-process here.
+        if let Some(actx) = self.activity_context(
+            &pawrly_core::activity::RequestContext::default(),
+            pawrly_core::activity::Operation::SemanticQuery,
+            None,
+            &q.params,
+        ) {
+            guard = guard.with_activity(actx);
+        }
         // Compile to SQL — reading a materialized rollup when one covers the
         // query — and execute through the same DataFusion path as `query`.
-        let sql = self.compile_semantic(&q).await?;
+        let sql = self
+            .compile_semantic(&q)
+            .await
+            .inspect_err(|e| guard.mark_error(e))?;
         let df = self
             .inner
             .ctx
             .sql(&sql)
             .await
-            .map_err(|e| EngineError::InvalidSql(e.to_string()))?;
+            .map_err(|e| EngineError::InvalidSql(e.to_string()))
+            .inspect_err(|e| guard.mark_error(e))?;
         let stream = df
             .execute_stream()
             .await
-            .map_err(|e| EngineError::Internal(format!("datafusion: {e}")))?;
-        Ok(crate::stream::adapt(stream))
+            .map_err(|e| EngineError::Internal(format!("datafusion: {e}")))
+            .inspect_err(|e| guard.mark_error(e))?;
+        Ok(crate::stream::adapt_instrumented(stream, guard))
     }
 
     async fn health(&self) -> Result<HealthReport, EngineError> {
@@ -1063,7 +1209,7 @@ impl EngineService for LocalEngine {
         Ok(HealthReport {
             ok: true,
             version: env!("CARGO_PKG_VERSION").into(),
-            active_queries: 0,
+            active_queries: self.inner.active_queries.load(Ordering::Relaxed).max(0) as u64,
             sources_ok: sources
                 .values()
                 .filter(|s| matches!(s.info.status, SourceStatus::Ok))
@@ -1088,6 +1234,80 @@ impl EngineService for LocalEngine {
         }
         Ok(())
     }
+}
+
+/// Build the activity sink, redaction policy, and (when the `table` sink is on)
+/// the backing for `system.activity` — the durable on-disk store when
+/// `activity.store` is set, otherwise the in-memory ring. Disabled (a no-op
+/// sink) unless `activity.enabled` and a supported sink is configured.
+fn build_activity(
+    obs: Option<&pawrly_config::ObservabilityConfig>,
+) -> Result<
+    (
+        crate::activity::ActivitySink,
+        crate::redact::RedactMode,
+        Option<crate::system_table::ActivityBacking>,
+    ),
+    EngineError,
+> {
+    use crate::system_table::ActivityBacking;
+    use pawrly_config::{ActivitySinkKind, RedactSql};
+
+    let Some(act) = obs.map(|o| &o.activity).filter(|a| a.enabled) else {
+        return Ok((
+            crate::activity::ActivitySink::disabled(),
+            crate::redact::RedactMode::Off,
+            None,
+        ));
+    };
+    let redact = match act.redact_sql {
+        RedactSql::Off => crate::redact::RedactMode::Off,
+        RedactSql::Literals => crate::redact::RedactMode::Literals,
+        RedactSql::Tables => crate::redact::RedactMode::TablesOnly,
+    };
+
+    let mut recorders: Vec<Arc<dyn pawrly_core::activity::ActivityRecorder>> = Vec::new();
+    if act.sinks.contains(&ActivitySinkKind::Tracing) {
+        recorders.push(Arc::new(crate::activity::TracingRecorder));
+    }
+    let mut backing = None;
+    if act.sinks.contains(&ActivitySinkKind::Table) {
+        let b = match &act.store {
+            Some(dir) => {
+                let store = crate::durable_activity::DurableActivityStore::open(
+                    dir.clone(),
+                    act.partition_hours,
+                    act.flush_threshold,
+                    act.flush_interval,
+                    act.retention,
+                )?;
+                recorders.push(Arc::new(store.clone()));
+                ActivityBacking::Durable(store)
+            }
+            None => {
+                let ring = crate::system_table::ActivityStore::new(act.ring_capacity);
+                recorders.push(Arc::new(ring.clone()));
+                ActivityBacking::Ring(ring)
+            }
+        };
+        backing = Some(b);
+    }
+
+    let sink = if recorders.is_empty() {
+        crate::activity::ActivitySink::disabled()
+    } else {
+        crate::activity::ActivitySink::spawn(
+            Arc::new(crate::activity::MultiRecorder(recorders)),
+            act.ring_capacity,
+        )
+    };
+    Ok((sink, redact, backing))
+}
+
+/// Extract the 32-hex trace-id from a W3C `traceparent` (`00-<trace>-<span>-..`).
+fn trace_id_from_traceparent(tp: &str) -> Option<String> {
+    let trace = tp.split('-').nth(1)?;
+    (trace.len() == 32 && trace.bytes().all(|b| b.is_ascii_hexdigit())).then(|| trace.to_string())
 }
 
 fn substitute_params(sql: &str, params: &HashMap<String, String>) -> String {

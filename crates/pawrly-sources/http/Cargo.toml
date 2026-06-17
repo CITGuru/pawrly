@@ -29,6 +29,8 @@ secrecy = { workspace = true }
 humantime-serde = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
+pawrly-telemetry = { workspace = true }
+opentelemetry = { workspace = true }
 thiserror = { workspace = true }
 chrono = { workspace = true }
 base64 = { workspace = true }

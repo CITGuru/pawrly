@@ -1,0 +1,58 @@
+# yaml-language-server: $schema=../schemas/pawrly.schema.json
+#
+# Observability: logging, OpenTelemetry export, and the activity log.
+#
+#   # Run a query, then read the activity log back as SQL:
+#   pawrly --config examples/observability.yaml sql 'SELECT 1'
+#   pawrly --config examples/observability.yaml sql \
+#     'SELECT operation, status, duration_ms FROM system.activity'
+#
+#   # Scrape Prometheus metrics from a long-running server:
+#   pawrly --config examples/observability.yaml mcp-http --addr 127.0.0.1:8090 &
+#   curl -s localhost:9090/metrics | grep pawrly_
+
+version: 1
+name: observability-example
+
+sources:
+  - name: data
+    kind: file
+    description: Local parquet/csv fixtures shipped with the repo.
+    tables:
+      - name: orders
+        path: ../crates/pawrly-cli/tests/fixtures/orders.parquet
+        format: parquet
+
+observability:
+  tracing:
+    level: info
+    format: text          # `json` for line-delimited logs
+
+  otel:
+    # Turn on to push OTLP traces/metrics/logs to a collector.
+    enabled: false
+    endpoint: http://localhost:4317
+    protocol: grpc
+    service_name: pawrly
+    sample_ratio: 1.0
+    prometheus:
+      # Serve a /metrics pull endpoint without needing a collector.
+      enabled: true
+      listen: 127.0.0.1:9090
+
+  activity:
+    enabled: true
+    # `tracing` emits a structured event per operation; `table` also exposes
+    # the recent rows as the queryable `system.activity` table.
+    sinks: [tracing, table]
+    # Keep query shape but drop literal values from the recorded SQL.
+    redact_sql: literals
+    # In-memory ring size when no durable `store` is set.
+    ring_capacity: 10000
+    # Persist records to date/hour-partitioned Parquet so `system.activity`
+    # survives restarts. Omit `store` to keep only the in-memory ring.
+    store: ~/.pawrly/activity
+    partition_hours: 4        # `hr=` bucket width
+    flush_threshold: 1000     # records buffered before a file is written
+    flush_interval: 60s       # or this, whichever comes first
+    retention: 30d            # prune files older than this (omit to keep all)

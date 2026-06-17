@@ -13,9 +13,12 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
+use opentelemetry::propagation::Extractor;
 use pawrly_core::EngineService;
 use serde_json::Value;
 use subtle::ConstantTimeEq as _;
+use tracing::Instrument as _;
+use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 
 use crate::cancel::CancelRegistry;
 use crate::dispatch::{error_response, handle_message};
@@ -88,9 +91,31 @@ async fn mcp_post(State(state): State<Arc<AppState>>, headers: HeaderMap, body: 
             .into_response();
         }
     };
-    match handle_message(&state.engine, &state.cancel, &req).await {
+    // Root the request span at the caller's trace context when propagated, so a
+    // remote client and this server share one trace. No-op when OTel is off.
+    let span = tracing::info_span!("pawrly.mcp.request", pawrly.interface = "mcp");
+    let _ = span.set_parent(opentelemetry::global::get_text_map_propagator(|p| {
+        p.extract(&HeaderExtractor(&headers))
+    }));
+    match handle_message(&state.engine, &state.cancel, &req)
+        .instrument(span)
+        .await
+    {
         Some(resp) => Json(resp).into_response(),
         None => StatusCode::ACCEPTED.into_response(),
+    }
+}
+
+/// Read-only view of request headers for the W3C propagator.
+struct HeaderExtractor<'a>(&'a HeaderMap);
+
+impl Extractor for HeaderExtractor<'_> {
+    fn get(&self, key: &str) -> Option<&str> {
+        self.0.get(key).and_then(|v| v.to_str().ok())
+    }
+
+    fn keys(&self) -> Vec<&str> {
+        self.0.keys().map(|k| k.as_str()).collect()
     }
 }
 
