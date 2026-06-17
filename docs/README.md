@@ -15,6 +15,7 @@ One SQL dialect over your APIs, files, databases, and AI models — no ETL, no w
 - **[Materialized tables](./materialize.md)** — persist a query, file, or URL as a named, self-backed table.
 - **[MCP server](./mcp.md)** — connect AI agents (Claude Desktop, Cursor, Codex, …) over the Model Context Protocol.
 - **[Semantic layer](./semantic.md)** — business-named models, dimensions, measures, and relationships for humans and agents.
+- **[Observability](./observability.md)** — traces, metrics, and the queryable `system.activity` log over OpenTelemetry and Prometheus.
 
 ## At a glance
 
