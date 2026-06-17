@@ -157,3 +157,33 @@ pub fn redaction_failed() -> &'static Counter<u64> {
             .build()
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use opentelemetry::KeyValue;
+
+    use super::*;
+
+    /// With no meter provider installed the global meter is a no-op: building
+    /// and recording on every instrument must succeed without panicking, and the
+    /// accessors must be reusable (each caches its instrument).
+    #[test]
+    fn instruments_are_noop_without_a_provider() {
+        let attrs = [KeyValue::new("status", "ok")];
+        query_total().add(1, &attrs);
+        query_duration().record(1.0, &attrs);
+        query_rows_returned().record(1, &[]);
+        query_active().add(1, &[]);
+        query_active().add(-1, &[]);
+        semantic_compile_duration().record(1.0, &[]);
+        cache_requests().add(1, &[]);
+        cache_refresh_duration().record(1.0, &[]);
+        source_request_total().add(1, &[]);
+        source_request_duration().record(1.0, &[]);
+        activity_dropped().add(1, &[]);
+        redaction_failed().add(1, &[]);
+
+        // Second call returns the cached instrument and still records.
+        query_total().add(1, &attrs);
+    }
+}

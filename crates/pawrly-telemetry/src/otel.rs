@@ -392,3 +392,40 @@ fn spawn_metrics_server(
         }
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn service_role_str_is_stable() {
+        assert_eq!(ServiceRole::Cli.as_str(), "cli");
+        assert_eq!(ServiceRole::Daemon.as_str(), "daemon");
+        assert_eq!(ServiceRole::McpStdio.as_str(), "mcp_stdio");
+        assert_eq!(ServiceRole::McpHttp.as_str(), "mcp_http");
+    }
+
+    #[test]
+    fn defaults_are_off_text_and_grpc() {
+        let cfg = TelemetryConfig::default();
+        assert_eq!(cfg.level, "info");
+        assert_eq!(cfg.format, LogFormat::Text);
+        assert!(cfg.otel.is_none(), "export is off by default");
+        assert_eq!(OtelProtocol::default(), OtelProtocol::Grpc);
+    }
+
+    /// With no OTel config, `init` installs only the fmt subscriber: it must not
+    /// panic, must return a guard, and a second call is a harmless no-op (the
+    /// global subscriber is already set).
+    #[test]
+    fn init_without_export_is_noop_and_idempotent() {
+        let _g1 = init(&TelemetryConfig::default(), ServiceRole::Cli);
+        let _g2 = init(
+            &TelemetryConfig {
+                format: LogFormat::Json,
+                ..TelemetryConfig::default()
+            },
+            ServiceRole::Daemon,
+        );
+    }
+}
