@@ -44,6 +44,9 @@ sources:                   # the data sources
 semantic:                  # optional; business models over the sources
   models:
     - <model>              # see docs/semantic.md
+
+observability:             # optional; logging, OpenTelemetry export, activity log
+  # ...                    # see "Observability"
 ```
 
 Only `version` and `sources` are needed for a useful config; everything else is optional.
@@ -221,6 +224,47 @@ As a workspace grows, split `pawrly.yaml` so sources can live in their own files
   ```
 
 Includes can chain; `from:` is not transitive. Cycles are detected and reported. Model `source:` references and relationships are validated against the **merged** config, so a model in one file may reference a source declared in another. `pawrly config show --tree` prints the assembled tree, and `pawrly source list` annotates each source with the file it came from. A runnable layout lives under `examples/multi-file/`.
+
+## Observability
+
+`observability:` is optional. Absent, Pawrly logs to stderr as before and exports nothing. The block has three parts; CLI flags (`--log-level`, `--log-format`, `--otel-endpoint`, `--otel-protocol`, `--prometheus-listen`) override the matching settings.
+
+```yaml
+observability:
+  tracing:
+    level: info            # EnvFilter directive; RUST_LOG still wins
+    format: text           # text | json
+  otel:
+    enabled: false         # master switch for OTLP export
+    endpoint: http://localhost:4317
+    protocol: grpc         # grpc | http
+    service_name: pawrly
+    traces: true
+    metrics: true
+    logs: true             # bridge tracing events to OTel logs
+    sample_ratio: 1.0      # parent-based ratio sampler
+    prometheus:
+      enabled: false       # serve a /metrics pull endpoint (independent of OTLP push)
+      listen: 127.0.0.1:9090
+  activity:
+    enabled: false         # one structured record per operation
+    sinks: [tracing]       # any of: tracing, table
+    redact_sql: false      # false | literals | true
+    ring_capacity: 10000   # in-memory rows kept for the `table` sink
+```
+
+- **Traces & logs** are emitted as `tracing` spans/events and, when `otel.enabled`, exported over OTLP. W3C `traceparent` is propagated across the gRPC and MCP boundaries, so a CLI→daemon request is a single trace.
+- **Metrics** (query/cache/source counters and histograms) export over OTLP push when `otel.metrics` is on, and/or a Prometheus pull endpoint when `otel.prometheus.enabled` is on.
+- **Activity log** records one row per operation. The `tracing` sink emits a structured event; the `table` sink exposes the recent rows as the `system.activity` SQL table:
+
+  ```sql
+  SELECT interface, status, count(*), avg(duration_ms)
+  FROM system.activity
+  WHERE at > now() - INTERVAL '1 hour'
+  GROUP BY 1, 2;
+  ```
+
+  `redact_sql` controls SQL capture: `false` stores it verbatim, `literals` replaces literal values with `$REDACTED` (keeping shape), and `true` stores only the statement kind and tables. Parameter values are never stored. A runnable config lives at `examples/observability.yaml`.
 
 ## Defaults
 
