@@ -92,6 +92,21 @@ pub(crate) struct LocalEngineInner {
     activity: crate::activity::ActivitySink,
     /// SQL redaction policy for activity records.
     redact_sql: crate::redact::RedactMode,
+    /// Durable activity store, when configured. Held so its buffered tail is
+    /// flushed to disk when the engine is torn down.
+    activity_durable: Option<crate::durable_activity::DurableActivityStore>,
+}
+
+impl Drop for LocalEngineInner {
+    fn drop(&mut self) {
+        // Persist the not-yet-flushed buffer on shutdown so the records recorded
+        // since the last threshold/timer flush aren't lost.
+        if let Some(store) = &self.activity_durable
+            && let Err(e) = store.flush()
+        {
+            tracing::warn!(error = %e, "activity: flush on shutdown failed");
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -219,22 +234,26 @@ impl LocalEngine {
 
         let duckdb = Arc::new(DuckDbPool::new(cfg.resolved_pool_size())?);
 
-        let (activity, redact_sql, activity_store) =
-            build_activity(cfg.config.observability.as_ref());
+        let (activity, redact_sql, activity_backing) =
+            build_activity(cfg.config.observability.as_ref())?;
 
         // Expose `system.activity` when the table sink is on. The `system`
         // schema is reserved (no source may take the name), mirroring
         // `materialized`.
-        if let Some(store) = &activity_store {
+        if let Some(backing) = &activity_backing {
             let system_schema = Arc::new(datafusion::catalog::MemorySchemaProvider::new());
             let _ = system_schema.register_table(
                 "activity".to_string(),
                 Arc::new(crate::system_table::ActivityTableProvider::new(
-                    store.clone(),
+                    backing.clone(),
                 )),
             );
             let _ = catalog.register_schema(pawrly_core::SYSTEM_SCHEMA, system_schema);
         }
+        let activity_durable = match &activity_backing {
+            Some(crate::system_table::ActivityBacking::Durable(store)) => Some(store.clone()),
+            _ => None,
+        };
 
         // Build the semantic catalog before the config is consumed into
         // engine-side sources below.
@@ -260,6 +279,7 @@ impl LocalEngine {
             active_queries: Arc::new(AtomicI64::new(0)),
             activity,
             redact_sql,
+            activity_durable,
         });
 
         // Move config into engine-side SourceDefs.
@@ -1207,23 +1227,28 @@ impl EngineService for LocalEngine {
 }
 
 /// Build the activity sink, redaction policy, and (when the `table` sink is on)
-/// the in-memory store backing `system.activity`. Disabled (a no-op sink) unless
-/// `activity.enabled` and a supported sink is configured.
+/// the backing for `system.activity` — the durable on-disk store when
+/// `activity.store` is set, otherwise the in-memory ring. Disabled (a no-op
+/// sink) unless `activity.enabled` and a supported sink is configured.
 fn build_activity(
     obs: Option<&pawrly_config::ObservabilityConfig>,
-) -> (
-    crate::activity::ActivitySink,
-    crate::redact::RedactMode,
-    Option<crate::system_table::ActivityStore>,
-) {
+) -> Result<
+    (
+        crate::activity::ActivitySink,
+        crate::redact::RedactMode,
+        Option<crate::system_table::ActivityBacking>,
+    ),
+    EngineError,
+> {
+    use crate::system_table::ActivityBacking;
     use pawrly_config::{ActivitySinkKind, RedactSql};
 
     let Some(act) = obs.map(|o| &o.activity).filter(|a| a.enabled) else {
-        return (
+        return Ok((
             crate::activity::ActivitySink::disabled(),
             crate::redact::RedactMode::Off,
             None,
-        );
+        ));
     };
     let redact = match act.redact_sql {
         RedactSql::Off => crate::redact::RedactMode::Off,
@@ -1235,11 +1260,27 @@ fn build_activity(
     if act.sinks.contains(&ActivitySinkKind::Tracing) {
         recorders.push(Arc::new(crate::activity::TracingRecorder));
     }
-    let mut store = None;
+    let mut backing = None;
     if act.sinks.contains(&ActivitySinkKind::Table) {
-        let s = crate::system_table::ActivityStore::new(act.ring_capacity);
-        recorders.push(Arc::new(s.clone()));
-        store = Some(s);
+        let b = match &act.store {
+            Some(dir) => {
+                let store = crate::durable_activity::DurableActivityStore::open(
+                    dir.clone(),
+                    act.partition_hours,
+                    act.flush_threshold,
+                    act.flush_interval,
+                    act.retention,
+                )?;
+                recorders.push(Arc::new(store.clone()));
+                ActivityBacking::Durable(store)
+            }
+            None => {
+                let ring = crate::system_table::ActivityStore::new(act.ring_capacity);
+                recorders.push(Arc::new(ring.clone()));
+                ActivityBacking::Ring(ring)
+            }
+        };
+        backing = Some(b);
     }
 
     let sink = if recorders.is_empty() {
@@ -1250,7 +1291,7 @@ fn build_activity(
             act.ring_capacity,
         )
     };
-    (sink, redact, store)
+    Ok((sink, redact, backing))
 }
 
 /// Extract the 32-hex trace-id from a W3C `traceparent` (`00-<trace>-<span>-..`).

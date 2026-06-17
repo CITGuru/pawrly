@@ -47,4 +47,12 @@ observability:
     sinks: [tracing, table]
     # Keep query shape but drop literal values from the recorded SQL.
     redact_sql: literals
+    # In-memory ring size when no durable `store` is set.
     ring_capacity: 10000
+    # Persist records to date/hour-partitioned Parquet so `system.activity`
+    # survives restarts. Omit `store` to keep only the in-memory ring.
+    store: ~/.pawrly/activity
+    partition_hours: 4        # `hr=` bucket width
+    flush_threshold: 1000     # records buffered before a file is written
+    flush_interval: 60s       # or this, whichever comes first
+    retention: 30d            # prune files older than this (omit to keep all)

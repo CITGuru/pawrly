@@ -54,7 +54,7 @@ pub fn activity_schema() -> SchemaRef {
 }
 
 /// Convert a slice of records into one Arrow batch matching [`activity_schema`].
-fn records_to_batch(
+pub(crate) fn records_to_batch(
     records: &[ActivityRecord],
     schema: &SchemaRef,
 ) -> Result<RecordBatch, DataFusionError> {
@@ -148,20 +148,46 @@ impl ActivityRecorder for ActivityStore {
     }
 }
 
-/// DataFusion table backed by an [`ActivityStore`]. Each scan snapshots the ring
-/// into a single batch, so a query sees a consistent point-in-time view.
-#[derive(Debug)]
+/// What `system.activity` reads from: the in-memory ring, or the durable
+/// on-disk store (which serves its own pending buffer plus Parquet files).
+#[derive(Clone)]
+pub enum ActivityBacking {
+    /// In-memory ring only (durable store disabled).
+    Ring(ActivityStore),
+    /// Durable on-disk store.
+    Durable(crate::durable_activity::DurableActivityStore),
+}
+
+impl ActivityBacking {
+    fn batches(&self, schema: &SchemaRef) -> Result<Vec<RecordBatch>, DataFusionError> {
+        match self {
+            ActivityBacking::Ring(store) => Ok(vec![records_to_batch(&store.snapshot(), schema)?]),
+            ActivityBacking::Durable(store) => store
+                .read_batches(schema)
+                .map_err(|e| DataFusionError::Execution(e.to_string())),
+        }
+    }
+}
+
+/// DataFusion table over an [`ActivityBacking`]. Each scan gathers a consistent
+/// point-in-time set of batches from the backing.
 pub struct ActivityTableProvider {
-    store: ActivityStore,
+    backing: ActivityBacking,
     schema: SchemaRef,
 }
 
 impl ActivityTableProvider {
-    pub fn new(store: ActivityStore) -> Self {
+    pub fn new(backing: ActivityBacking) -> Self {
         Self {
-            store,
+            backing,
             schema: activity_schema(),
         }
+    }
+}
+
+impl std::fmt::Debug for ActivityTableProvider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ActivityTableProvider").finish()
     }
 }
 
@@ -186,9 +212,9 @@ impl TableProvider for ActivityTableProvider {
         _filters: &[Expr],
         _limit: Option<usize>,
     ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
-        let batch = records_to_batch(&self.store.snapshot(), &self.schema)?;
+        let batches = self.backing.batches(&self.schema)?;
         let exec = MemorySourceConfig::try_new_exec(
-            &[vec![batch]],
+            &[batches],
             self.schema.clone(),
             projection.cloned(),
         )

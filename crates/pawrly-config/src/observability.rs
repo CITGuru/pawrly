@@ -2,6 +2,9 @@
 //! activity log. An absent block means today's behaviour. CLI flags override
 //! the `tracing:`/`otel:` settings.
 
+use std::path::PathBuf;
+use std::time::Duration;
+
 use schemars::JsonSchema;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -130,6 +133,23 @@ pub struct ActivityConfig {
     pub redact_sql: RedactSql,
     /// In-memory ring-buffer capacity for the `table` sink.
     pub ring_capacity: usize,
+    /// Durable store directory for the `table` sink. Set to persist records as
+    /// date/hour-partitioned Parquet; omit to keep only the in-memory ring.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub store: Option<PathBuf>,
+    /// `hr=` partition bucket width in hours (clamped to 1..=24).
+    pub partition_hours: u32,
+    /// Records buffered before a Parquet file is flushed.
+    pub flush_threshold: usize,
+    /// Maximum time a record waits in the buffer before a flush. `0` disables
+    /// the timer (flush only on threshold / shutdown).
+    #[serde(with = "humantime_serde")]
+    #[schemars(with = "String")]
+    pub flush_interval: Duration,
+    /// Prune durable files older than this. Omit to keep all history.
+    #[serde(default, with = "humantime_serde::option", skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Option<String>")]
+    pub retention: Option<Duration>,
 }
 
 impl Default for ActivityConfig {
@@ -139,6 +159,11 @@ impl Default for ActivityConfig {
             sinks: vec![ActivitySinkKind::Tracing],
             redact_sql: RedactSql::Off,
             ring_capacity: 10_000,
+            store: None,
+            partition_hours: 4,
+            flush_threshold: 1_000,
+            flush_interval: Duration::from_secs(60),
+            retention: Some(Duration::from_secs(30 * 24 * 60 * 60)),
         }
     }
 }

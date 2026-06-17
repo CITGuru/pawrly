@@ -111,10 +111,36 @@
           "default": false,
           "type": "boolean"
         },
+        "flush_interval": {
+          "description": "Maximum time a record waits in the buffer before a flush. `0` disables the timer (flush only on threshold / shutdown).",
+          "default": "1m",
+          "type": "string"
+        },
+        "flush_threshold": {
+          "description": "Records buffered before a Parquet file is flushed.",
+          "default": 1000,
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0.0
+        },
+        "partition_hours": {
+          "description": "`hr=` partition bucket width in hours (clamped to 1..=24).",
+          "default": 4,
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0.0
+        },
         "redact_sql": {
           "description": "How much of the submitted SQL to capture.",
           "default": "false",
           "type": "string"
+        },
+        "retention": {
+          "description": "Prune durable files older than this. Omit to keep all history.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "ring_capacity": {
           "description": "In-memory ring-buffer capacity for the `table` sink.",
@@ -132,6 +158,13 @@
           "items": {
             "$ref": "#/definitions/ActivitySinkKind"
           }
+        },
+        "store": {
+          "description": "Durable store directory for the `table` sink. Set to persist records as date/hour-partitioned Parquet; omit to keep only the in-memory ring.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "additionalProperties": false
@@ -593,7 +626,11 @@
           "description": "Activity log settings.",
           "default": {
             "enabled": false,
+            "flush_interval": "1m",
+            "flush_threshold": 1000,
+            "partition_hours": 4,
             "redact_sql": "false",
+            "retention": "30days",
             "ring_capacity": 10000,
             "sinks": [
               "tracing"
