@@ -98,10 +98,14 @@ impl Drop for QueryGuard {
         self.active.fetch_sub(1, Ordering::Relaxed);
         pawrly_telemetry::metrics::query_active().add(-1, &[]);
 
-        let attrs = [KeyValue::new("status", self.status)];
-        pawrly_telemetry::metrics::query_total().add(1, &attrs);
+        let status_attrs = [KeyValue::new("status", self.status)];
+        let mut total_attrs = vec![KeyValue::new("status", self.status)];
+        if let Some(code) = &self.error_code {
+            total_attrs.push(KeyValue::new("error_code", code.clone()));
+        }
+        pawrly_telemetry::metrics::query_total().add(1, &total_attrs);
         pawrly_telemetry::metrics::query_duration()
-            .record(self.start.elapsed().as_secs_f64() * 1000.0, &attrs);
+            .record(self.start.elapsed().as_secs_f64() * 1000.0, &status_attrs);
         if self.status == "ok" {
             pawrly_telemetry::metrics::query_rows_returned().record(self.rows, &[]);
         }
