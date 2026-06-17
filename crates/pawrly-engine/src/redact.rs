@@ -1,4 +1,4 @@
-//! SQL redaction for the activity log (`docs/internal/22-observability.md` §6.4).
+//! SQL redaction for the activity log.
 //!
 //! Redaction runs on the SQL the user wrote, before `${param:..}` substitution,
 //! so param values can never leak. Three modes:

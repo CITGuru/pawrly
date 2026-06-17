@@ -3,8 +3,8 @@
 //!
 //! Recording is off the hot path: [`ActivitySink::emit`] does a non-blocking
 //! `try_send` onto a bounded channel and, when full, drops the record and bumps
-//! `pawrly.activity.dropped` rather than ever blocking a query (§6.2). A
-//! background task drains the channel into the configured recorder.
+//! `pawrly.activity.dropped` rather than ever blocking a query. A background
+//! task drains the channel into the configured recorder.
 
 use std::sync::Arc;
 
@@ -70,7 +70,7 @@ impl ActivityRecorder for MultiRecorder {
 
 /// Sink 1: emit each record as a structured `tracing` event on the
 /// `pawrly.activity` target. With the JSON fmt layer this is line-delimited
-/// JSON; with the OTel logs bridge it becomes an OTel log record (§6.5).
+/// JSON; with the OTel logs bridge it becomes an OTel log record.
 pub struct TracingRecorder;
 
 #[async_trait]

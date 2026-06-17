@@ -710,8 +710,7 @@ fn remove_source_inner(inner: &Arc<LocalEngineInner>, name: &str) -> bool {
 #[async_trait]
 impl EngineService for LocalEngine {
     // Root engine span. `skip_all` keeps SQL text and param values off the span
-    // (cardinality + secrets, per docs/internal/22-observability.md §4.2); only
-    // low-cardinality attributes are attached.
+    // (cardinality + secrets); only low-cardinality attributes are attached.
     #[tracing::instrument(
         name = "pawrly.engine.query",
         skip_all,

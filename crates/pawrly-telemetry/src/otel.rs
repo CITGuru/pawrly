@@ -9,7 +9,7 @@
 //! Init never aborts a process: a failed exporter build degrades to a warning
 //! and a reduced pipeline; an already-installed subscriber degrades to a no-op.
 //! Emitting telemetry (the `tracing` macros and [`crate::metrics`]) stays no-op
-//! until this runs. See `docs/internal/22-observability.md`.
+//! until this runs.
 
 use std::net::SocketAddr;
 

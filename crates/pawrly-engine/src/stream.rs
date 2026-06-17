@@ -1,7 +1,7 @@
 //! Adapt DataFusion's `SendableRecordBatchStream` (which yields
 //! `Result<RecordBatch, DataFusionError>`) into the trait's `QueryStream`
 //! (which yields `Result<RecordBatch, EngineError>`), and instrument it with the
-//! query lifecycle metrics (`docs/internal/22-observability.md` §5.1).
+//! query lifecycle metrics.
 
 use std::pin::Pin;
 use std::sync::Arc;

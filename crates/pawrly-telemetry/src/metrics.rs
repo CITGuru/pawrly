@@ -8,9 +8,8 @@
 //!
 //! This module depends only on the lightweight `opentelemetry` facade — never
 //! the SDK/exporters — so the engine and source crates can emit metrics without
-//! pulling the heavy exporter tree (see `docs/internal/22-observability.md`
-//! §3.1). Keep attributes low-cardinality: never SQL, full URLs, query ids, or
-//! param values (§12).
+//! pulling the heavy exporter tree. Keep attributes low-cardinality: never SQL,
+//! full URLs, query ids, or param values.
 
 use std::sync::OnceLock;
 
@@ -134,7 +133,7 @@ pub fn source_request_duration() -> &'static Histogram<f64> {
 }
 
 /// Activity records dropped because the recorder's queue was full (back-pressure
-/// is never applied to a query; §6.2).
+/// is never applied to a query).
 pub fn activity_dropped() -> &'static Counter<u64> {
     static I: OnceLock<Counter<u64>> = OnceLock::new();
     I.get_or_init(|| {
@@ -147,7 +146,7 @@ pub fn activity_dropped() -> &'static Counter<u64> {
 }
 
 /// SQL redaction had to degrade (a redacting mode could not fully apply); the
-/// stored capture is reduced, never the raw text (§6.4).
+/// stored capture is reduced, never the raw text.
 pub fn redaction_failed() -> &'static Counter<u64> {
     static I: OnceLock<Counter<u64>> = OnceLock::new();
     I.get_or_init(|| {

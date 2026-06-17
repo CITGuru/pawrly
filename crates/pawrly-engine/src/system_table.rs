@@ -3,8 +3,7 @@
 //! An [`ActivityStore`] keeps a bounded in-memory ring of recent records and is
 //! itself an [`ActivityRecorder`], so the activity sink feeds it. The
 //! [`ActivityTableProvider`] exposes the ring as a DataFusion table, letting
-//! operators query their own activity with SQL (`docs/internal/22-observability.md`
-//! §6.6).
+//! operators query their own activity with SQL.
 
 use std::any::Any;
 use std::collections::VecDeque;

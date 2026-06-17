@@ -11,7 +11,7 @@
 //!   call [`init`] once and hold the returned [`TelemetryGuard`].
 //!
 //! Everything is no-op until [`init`] runs, so absent configuration means
-//! today's behaviour. See `docs/internal/22-observability.md`.
+//! today's behaviour.
 
 pub mod metrics;
 

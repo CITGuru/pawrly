@@ -1,6 +1,6 @@
 //! The `observability:` config block: logging, OpenTelemetry export, and the
 //! activity log. An absent block means today's behaviour. CLI flags override
-//! the `tracing:`/`otel:` settings. See `docs/internal/22-observability.md` §7.
+//! the `tracing:`/`otel:` settings.
 
 use std::path::PathBuf;
 

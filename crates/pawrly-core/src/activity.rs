@@ -3,8 +3,7 @@
 //! The engine builds an [`ActivityRecord`] at the completion of each operation
 //! and hands it to an [`ActivityRecorder`]. The default [`NoopRecorder`] drops
 //! everything, matching "off by default" — real recorders (the `tracing` event
-//! sink and the `system.activity` table) live in `pawrly-engine`. See
-//! `docs/internal/22-observability.md` §6.
+//! sink and the `system.activity` table) live in `pawrly-engine`.
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -90,7 +89,7 @@ impl Status {
 
 /// One record per engine operation, emitted from a single choke point so every
 /// sink sees identical data. SQL is redacted per policy before it reaches here;
-/// only param **keys** are ever recorded, never values (§6.4).
+/// only param **keys** are ever recorded, never values.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ActivityRecord {
     /// Operation id; equals the `query_id` where applicable.
