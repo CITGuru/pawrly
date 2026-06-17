@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use arrow_schema::SchemaRef;
 use async_trait::async_trait;
 use chrono::Utc;
-use datafusion::catalog::{CatalogProvider, MemoryCatalogProvider};
+use datafusion::catalog::{CatalogProvider, MemoryCatalogProvider, SchemaProvider};
 use datafusion::execution::context::SessionContext;
 use parking_lot::{Mutex, RwLock};
 use pawrly_core::semantic::{SemanticModelDescription, SemanticModelInfo, SemanticQuery};
@@ -219,7 +219,20 @@ impl LocalEngine {
 
         let duckdb = Arc::new(DuckDbPool::new(cfg.resolved_pool_size())?);
 
-        let (activity, redact_sql) = build_activity(cfg.config.observability.as_ref());
+        let (activity, redact_sql, activity_store) =
+            build_activity(cfg.config.observability.as_ref());
+
+        // Expose `system.activity` when the table sink is on. The `system`
+        // schema is reserved (no source may take the name), mirroring
+        // `materialized`.
+        if let Some(store) = &activity_store {
+            let system_schema = Arc::new(datafusion::catalog::MemorySchemaProvider::new());
+            let _ = system_schema.register_table(
+                "activity".to_string(),
+                Arc::new(crate::system_table::ActivityTableProvider::new(store.clone())),
+            );
+            let _ = catalog.register_schema(pawrly_core::SYSTEM_SCHEMA, system_schema);
+        }
 
         // Build the semantic catalog before the config is consumed into
         // engine-side sources below.
@@ -587,6 +600,11 @@ async fn register_source(inner: &Arc<LocalEngineInner>, def: SourceDef) -> Resul
     if name == pawrly_core::MATERIALIZED_SCHEMA {
         return Err(EngineError::Internal(format!(
             "source name `{name}` is reserved for materialized tables"
+        )));
+    }
+    if name == pawrly_core::SYSTEM_SCHEMA {
+        return Err(EngineError::Internal(format!(
+            "source name `{name}` is reserved for engine system tables"
         )));
     }
 
@@ -1187,19 +1205,23 @@ impl EngineService for LocalEngine {
     }
 }
 
-/// Build the activity sink and redaction policy from the observability config.
-/// Disabled (a no-op sink) unless `activity.enabled` and a supported sink is
-/// configured. Only the `tracing` sink is wired; the `table` sink is not yet
-/// implemented.
+/// Build the activity sink, redaction policy, and (when the `table` sink is on)
+/// the in-memory store backing `system.activity`. Disabled (a no-op sink) unless
+/// `activity.enabled` and a supported sink is configured.
 fn build_activity(
     obs: Option<&pawrly_config::ObservabilityConfig>,
-) -> (crate::activity::ActivitySink, crate::redact::RedactMode) {
+) -> (
+    crate::activity::ActivitySink,
+    crate::redact::RedactMode,
+    Option<crate::system_table::ActivityStore>,
+) {
     use pawrly_config::{ActivitySinkKind, RedactSql};
 
     let Some(act) = obs.map(|o| &o.activity).filter(|a| a.enabled) else {
         return (
             crate::activity::ActivitySink::disabled(),
             crate::redact::RedactMode::Off,
+            None,
         );
     };
     let redact = match act.redact_sql {
@@ -1207,15 +1229,33 @@ fn build_activity(
         RedactSql::Literals => crate::redact::RedactMode::Literals,
         RedactSql::Tables => crate::redact::RedactMode::TablesOnly,
     };
-    let sink = if act.sinks.contains(&ActivitySinkKind::Tracing) {
+
+    let mut recorders: Vec<Arc<dyn pawrly_core::activity::ActivityRecorder>> = Vec::new();
+    if act.sinks.contains(&ActivitySinkKind::Tracing) {
+        recorders.push(Arc::new(crate::activity::TracingRecorder));
+    }
+    let mut store = None;
+    if act.sinks.contains(&ActivitySinkKind::Table) {
+        let s = crate::system_table::ActivityStore::new(act.ring_capacity);
+        recorders.push(Arc::new(s.clone()));
+        store = Some(s);
+    }
+    if act.store.is_some() {
+        tracing::warn!(
+            "observability.activity.store (durable Parquet) is not yet supported; \
+             using the in-memory ring only"
+        );
+    }
+
+    let sink = if recorders.is_empty() {
+        crate::activity::ActivitySink::disabled()
+    } else {
         crate::activity::ActivitySink::spawn(
-            Arc::new(crate::activity::TracingRecorder),
+            Arc::new(crate::activity::MultiRecorder(recorders)),
             act.ring_capacity,
         )
-    } else {
-        crate::activity::ActivitySink::disabled()
     };
-    (sink, redact)
+    (sink, redact, store)
 }
 
 /// Extract the 32-hex trace-id from a W3C `traceparent` (`00-<trace>-<span>-..`).

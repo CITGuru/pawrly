@@ -141,40 +141,14 @@ fn main() -> ExitCode {
             return ExitCode::from(64);
         }
     };
-    // Build OTel config when either OTLP export or the Prometheus pull endpoint
-    // is requested. Traces/logs/metrics-push ride on the OTLP endpoint;
-    // Prometheus pull is independent.
-    let otel = if cli.otel_endpoint.is_some() || cli.prometheus_listen.is_some() {
-        let has_otlp = cli.otel_endpoint.is_some();
-        Some(pawrly_telemetry::OtelConfig {
-            endpoint: cli.otel_endpoint.clone().unwrap_or_default(),
-            protocol: cli.otel_protocol.into(),
-            service_name: "pawrly".to_string(),
-            traces: has_otlp,
-            logs: has_otlp,
-            metrics: has_otlp,
-            sample_ratio: 1.0,
-            prometheus: cli
-                .prometheus_listen
-                .map(|listen| pawrly_telemetry::PrometheusConfig { listen }),
-        })
-    } else {
-        None
-    };
+    let telemetry_config = resolve_telemetry(&cli, load_observability(&cli).as_ref());
     // Hold the guard for the whole process: it flushes the OTel exporters on
     // drop. Declared after `runtime` so it drops (and flushes) before the
     // runtime is torn down. Init runs inside the runtime so the OTLP exporters
     // can spawn their background workers.
     let _telemetry = {
         let _enter = runtime.enter();
-        pawrly_telemetry::init(
-            &pawrly_telemetry::TelemetryConfig {
-                level: cli.log_level.clone(),
-                format: cli.log_format.into(),
-                otel,
-            },
-            role_for(&cli.command),
-        )
+        pawrly_telemetry::init(&telemetry_config, role_for(&cli.command))
     };
     match runtime.block_on(run(cli)) {
         Ok(()) => ExitCode::from(0),
@@ -237,6 +211,101 @@ async fn print_version(
         h.version, h.ok, h.sources_ok
     );
     Ok(())
+}
+
+/// Best-effort read of the `observability:` block from the workspace config,
+/// without resolving secrets (which could prompt or fail) or running
+/// validation — telemetry must initialize before, and independently of, the
+/// command. Returns `None` if no config is found or it cannot be parsed.
+fn load_observability(cli: &Cli) -> Option<pawrly_config::ObservabilityConfig> {
+    /// Parse only the observability block, ignoring every other config field.
+    #[derive(serde::Deserialize)]
+    struct ObsOnly {
+        observability: Option<pawrly_config::ObservabilityConfig>,
+    }
+    let path = cli.config.clone().or_else(|| {
+        let default = std::path::PathBuf::from("pawrly.yaml");
+        default.exists().then_some(default)
+    })?;
+    let text = std::fs::read_to_string(&path).ok()?;
+    serde_yaml::from_str::<ObsOnly>(&text).ok()?.observability
+}
+
+/// Resolve the telemetry config from CLI flags and the config block. Flags take
+/// precedence over their config-default counterparts; `RUST_LOG` still wins for
+/// the level inside [`pawrly_telemetry::init`].
+fn resolve_telemetry(
+    cli: &Cli,
+    obs: Option<&pawrly_config::ObservabilityConfig>,
+) -> pawrly_telemetry::TelemetryConfig {
+    // Logging: a non-default flag overrides config, which overrides the default.
+    let level = if cli.log_level == "info" {
+        obs.map_or_else(|| cli.log_level.clone(), |o| o.tracing.level.clone())
+    } else {
+        cli.log_level.clone()
+    };
+    let format = if matches!(cli.log_format, LogFormat::Text) {
+        obs.map_or(pawrly_telemetry::LogFormat::Text, |o| match o.tracing.format {
+            pawrly_config::LogFormat::Text => pawrly_telemetry::LogFormat::Text,
+            pawrly_config::LogFormat::Json => pawrly_telemetry::LogFormat::Json,
+        })
+    } else {
+        cli.log_format.into()
+    };
+
+    pawrly_telemetry::TelemetryConfig {
+        level,
+        format,
+        otel: resolve_otel(cli, obs),
+    }
+}
+
+/// Resolve OTLP export settings. Passing any of `--otel-endpoint` or
+/// `--prometheus-listen` builds the config from flags entirely; otherwise an
+/// enabled `observability.otel` block drives it. `None` means no export.
+fn resolve_otel(
+    cli: &Cli,
+    obs: Option<&pawrly_config::ObservabilityConfig>,
+) -> Option<pawrly_telemetry::OtelConfig> {
+    if cli.otel_endpoint.is_some() || cli.prometheus_listen.is_some() {
+        let has_otlp = cli.otel_endpoint.is_some();
+        return Some(pawrly_telemetry::OtelConfig {
+            endpoint: cli.otel_endpoint.clone().unwrap_or_default(),
+            protocol: cli.otel_protocol.into(),
+            service_name: "pawrly".to_string(),
+            traces: has_otlp,
+            logs: has_otlp,
+            metrics: has_otlp,
+            sample_ratio: 1.0,
+            prometheus: cli
+                .prometheus_listen
+                .map(|listen| pawrly_telemetry::PrometheusConfig { listen }),
+        });
+    }
+
+    let otel = obs.map(|o| &o.otel)?;
+    if !otel.enabled && !otel.prometheus.enabled {
+        return None;
+    }
+    let prometheus = otel
+        .prometheus
+        .enabled
+        .then(|| otel.prometheus.listen.parse().ok())
+        .flatten()
+        .map(|listen| pawrly_telemetry::PrometheusConfig { listen });
+    Some(pawrly_telemetry::OtelConfig {
+        endpoint: otel.endpoint.clone(),
+        protocol: match otel.protocol {
+            pawrly_config::OtelProtocol::Grpc => pawrly_telemetry::OtelProtocol::Grpc,
+            pawrly_config::OtelProtocol::Http => pawrly_telemetry::OtelProtocol::Http,
+        },
+        service_name: otel.service_name.clone(),
+        traces: otel.enabled && otel.traces,
+        logs: otel.enabled && otel.logs,
+        metrics: otel.enabled && otel.metrics,
+        sample_ratio: otel.sample_ratio,
+        prometheus,
+    })
 }
 
 /// Pick the telemetry role from the subcommand: long-running servers report

@@ -21,6 +21,7 @@ mod preagg;
 mod redact;
 mod registry;
 mod stream;
+mod system_table;
 
 pub use cache::{CacheManager, CachedTableProvider, ManifestEntry};
 pub use duckdb_pool::DuckDbPool;

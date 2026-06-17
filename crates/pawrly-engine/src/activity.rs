@@ -55,6 +55,19 @@ impl ActivitySink {
     }
 }
 
+/// Fan a record out to several recorders (e.g. the tracing sink and the
+/// `system.activity` store) from the single drain task.
+pub struct MultiRecorder(pub Vec<Arc<dyn ActivityRecorder>>);
+
+#[async_trait]
+impl ActivityRecorder for MultiRecorder {
+    async fn record(&self, rec: ActivityRecord) {
+        for recorder in &self.0 {
+            recorder.record(rec.clone()).await;
+        }
+    }
+}
+
 /// Sink 1: emit each record as a structured `tracing` event on the
 /// `pawrly.activity` target. With the JSON fmt layer this is line-delimited
 /// JSON; with the OTel logs bridge it becomes an OTel log record (§6.5).

@@ -13,7 +13,10 @@ pub mod types;
 pub mod validator;
 
 pub use defaults::{Defaults, EngineDefaults, HttpDefaults, OptimizerDefaults, SafetyDefaults};
-pub use observability::{ActivityConfig, ActivitySinkKind, ObservabilityConfig, RedactSql};
+pub use observability::{
+    ActivityConfig, ActivitySinkKind, LogFormat, ObservabilityConfig, OtelConfig, OtelProtocol,
+    PrometheusConfig, RedactSql, TracingConfig,
+};
 pub use loader::{
     IncludeNode, MaskedConfig, assemble_config, include_tree, load, load_auto, load_str,
     resolve_secret, secret_store,

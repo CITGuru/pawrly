@@ -80,6 +80,11 @@ pub type QueryStream = Pin<Box<dyn Stream<Item = Result<RecordBatch, EngineError
 /// materialized table is addressable as `<namespace>.materialized.<name>`.
 pub const MATERIALIZED_SCHEMA: &str = "materialized";
 
+/// The reserved schema name for engine-internal system tables (e.g.
+/// `system.activity`). Like [`MATERIALIZED_SCHEMA`], no data source may use it,
+/// keeping the namespace disjoint.
+pub const SYSTEM_SCHEMA: &str = "system";
+
 /// Tabular format of a `File` / `Url` / `Inline` materialize origin.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]

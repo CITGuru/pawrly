@@ -1,8 +1,6 @@
-//! The `observability:` config block.
-//!
-//! Currently carries the `activity:` sub-block (the activity log). Export
-//! settings (`tracing:`/`otel:`) are configured via CLI flags. An absent block
-//! means today's behaviour. See `docs/internal/22-observability.md` §7.
+//! The `observability:` config block: logging, OpenTelemetry export, and the
+//! activity log. An absent block means today's behaviour. CLI flags override
+//! the `tracing:`/`otel:` settings. See `docs/internal/22-observability.md` §7.
 
 use std::path::PathBuf;
 
@@ -13,8 +11,112 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, default)]
 pub struct ObservabilityConfig {
+    /// Logging level and format.
+    pub tracing: TracingConfig,
+    /// OpenTelemetry export (OTLP push and/or Prometheus pull).
+    pub otel: OtelConfig,
     /// Activity log settings.
     pub activity: ActivityConfig,
+}
+
+/// The `observability.tracing:` block.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, default)]
+pub struct TracingConfig {
+    /// `EnvFilter` directive (e.g. `info`, `pawrly=debug`). `RUST_LOG` wins.
+    pub level: String,
+    /// Log line format.
+    pub format: LogFormat,
+}
+
+impl Default for TracingConfig {
+    fn default() -> Self {
+        Self {
+            level: "info".to_string(),
+            format: LogFormat::Text,
+        }
+    }
+}
+
+/// Log line format.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum LogFormat {
+    /// Human-readable text.
+    #[default]
+    Text,
+    /// Line-delimited JSON.
+    Json,
+}
+
+/// The `observability.otel:` block.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, default)]
+pub struct OtelConfig {
+    /// Master switch for OTLP export.
+    pub enabled: bool,
+    /// Collector endpoint.
+    pub endpoint: String,
+    /// OTLP transport.
+    pub protocol: OtelProtocol,
+    /// `service.name` resource attribute.
+    pub service_name: String,
+    /// Export traces.
+    pub traces: bool,
+    /// Export metrics over OTLP push.
+    pub metrics: bool,
+    /// Bridge logs to OTel and export them.
+    pub logs: bool,
+    /// Parent-based ratio sampler probability in `[0.0, 1.0]`.
+    pub sample_ratio: f64,
+    /// Prometheus pull endpoint, independent of OTLP push.
+    pub prometheus: PrometheusConfig,
+}
+
+impl Default for OtelConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            endpoint: "http://localhost:4317".to_string(),
+            protocol: OtelProtocol::Grpc,
+            service_name: "pawrly".to_string(),
+            traces: true,
+            metrics: true,
+            logs: true,
+            sample_ratio: 1.0,
+            prometheus: PrometheusConfig::default(),
+        }
+    }
+}
+
+/// OTLP transport.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum OtelProtocol {
+    /// OTLP over gRPC.
+    #[default]
+    Grpc,
+    /// OTLP over HTTP/protobuf.
+    Http,
+}
+
+/// The `observability.otel.prometheus:` block.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, default)]
+pub struct PrometheusConfig {
+    /// Serve a `/metrics` pull endpoint.
+    pub enabled: bool,
+    /// Address the endpoint listens on.
+    pub listen: String,
+}
+
+impl Default for PrometheusConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            listen: "127.0.0.1:9090".to_string(),
+        }
+    }
 }
 
 /// The `observability.activity:` block — one structured record per operation.
