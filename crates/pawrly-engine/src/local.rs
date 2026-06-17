@@ -1241,12 +1241,6 @@ fn build_activity(
         recorders.push(Arc::new(s.clone()));
         store = Some(s);
     }
-    if act.store.is_some() {
-        tracing::warn!(
-            "observability.activity.store (durable Parquet) is not yet supported; \
-             using the in-memory ring only"
-        );
-    }
 
     let sink = if recorders.is_empty() {
         crate::activity::ActivitySink::disabled()

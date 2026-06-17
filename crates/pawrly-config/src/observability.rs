@@ -2,8 +2,6 @@
 //! activity log. An absent block means today's behaviour. CLI flags override
 //! the `tracing:`/`otel:` settings.
 
-use std::path::PathBuf;
-
 use schemars::JsonSchema;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -132,9 +130,6 @@ pub struct ActivityConfig {
     pub redact_sql: RedactSql,
     /// In-memory ring-buffer capacity for the `table` sink.
     pub ring_capacity: usize,
-    /// Durable store directory for the `table` sink. Omit for in-memory only.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub store: Option<PathBuf>,
 }
 
 impl Default for ActivityConfig {
@@ -144,7 +139,6 @@ impl Default for ActivityConfig {
             sinks: vec![ActivitySinkKind::Tracing],
             redact_sql: RedactSql::Off,
             ring_capacity: 10_000,
-            store: None,
         }
     }
 }

@@ -132,13 +132,6 @@
           "items": {
             "$ref": "#/definitions/ActivitySinkKind"
           }
-        },
-        "store": {
-          "description": "Durable store directory for the `table` sink. Omit for in-memory only.",
-          "type": [
-            "string",
-            "null"
-          ]
         }
       },
       "additionalProperties": false
