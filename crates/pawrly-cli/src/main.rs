@@ -122,6 +122,8 @@ enum Command {
     Semantic(commands::semantic::Args),
     /// Run the Pawrly daemon (gRPC server).
     Serve(commands::serve::Args),
+    /// Serve the web Console (gRPC-Web + embedded UI) for the workspace.
+    Console(commands::console::Args),
     /// Stop a running Pawrly daemon.
     Stop(commands::stop::Args),
     /// Show running Pawrly daemons.
@@ -191,6 +193,9 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             commands::semantic::run(cli.home, cli.config, cli.remote, cli.no_remote, args).await
         }
         Command::Serve(args) => commands::serve::run(cli.home, cli.config, args).await,
+        Command::Console(args) => {
+            commands::console::run(cli.home, cli.config, cli.remote, cli.no_remote, args).await
+        }
         Command::Stop(args) => commands::stop::run(cli.home, args).await,
         Command::Status(args) => commands::status::run(cli.home, args).await,
         Command::McpStdio(args) => {
@@ -321,7 +326,7 @@ fn resolve_otel(
 fn role_for(command: &Command) -> pawrly_telemetry::ServiceRole {
     use pawrly_telemetry::ServiceRole;
     match command {
-        Command::Serve(_) => ServiceRole::Daemon,
+        Command::Serve(_) | Command::Console(_) => ServiceRole::Daemon,
         Command::McpStdio(_) => ServiceRole::McpStdio,
         Command::McpHttp(_) => ServiceRole::McpHttp,
         _ => ServiceRole::Cli,

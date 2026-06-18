@@ -63,6 +63,7 @@ impl MockEngine {
                 kind,
                 status: SourceStatus::Ok,
                 status_detail: None,
+                sub_kind: None,
                 table_count: 0,
                 registered_at: Utc::now(),
             },
@@ -302,6 +303,7 @@ impl EngineService for MockEngine {
             kind: def.kind,
             status: SourceStatus::Ok,
             status_detail: None,
+            sub_kind: None,
             table_count: def.tables.len() as u64,
             registered_at: Utc::now(),
         };

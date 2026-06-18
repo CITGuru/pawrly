@@ -3,6 +3,7 @@
 pub mod cache;
 pub mod check;
 pub mod config;
+pub mod console;
 pub mod format;
 pub mod init;
 pub mod materialize;

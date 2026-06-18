@@ -74,6 +74,9 @@ message SourceInfo {
   string status_detail = 4;
   uint64 table_count = 5;
   google.protobuf.Timestamp registered_at = 6;
+  // Finer-grained variant of `kind` for display (e.g. "openapi" for a
+  // spec-driven HTTP source, "object_storage" for a remote file source).
+  optional string sub_kind = 7;
 }
 
 message TableInfo {

@@ -1,0 +1,74 @@
+name: Console
+
+# Web Console (apps/console) build + the `console` embed feature on
+# pawrly-server. Split from ci.yml so it only runs when the Console, the proto
+# it generates its client from, or the crates that serve/embed it change.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "apps/console/**"
+      - "crates/pawrly-proto/proto/**"
+      - "crates/pawrly-server/**"
+      - "crates/pawrly-cli/**"
+      - ".github/workflows/console.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "apps/console/**"
+      - "crates/pawrly-proto/proto/**"
+      - "crates/pawrly-server/**"
+      - "crates/pawrly-cli/**"
+      - ".github/workflows/console.yml"
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  build:
+    name: console (web UI)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: apps/console/pnpm-lock.yaml
+      - name: Install deps
+        working-directory: apps/console
+        run: pnpm install --frozen-lockfile
+      # Generates the gRPC-Web client from the proto, type-checks (tsc -b), and
+      # bundles to apps/console/dist — the same `build` the embed job consumes.
+      - name: Build
+        working-directory: apps/console
+        run: pnpm run build
+      - name: Upload dist
+        uses: actions/upload-artifact@v4
+        with:
+          name: console-dist
+          path: apps/console/dist
+
+  embed:
+    name: console embed build
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: Swatinem/rust-cache@v2
+      # The `console` feature embeds apps/console/dist via rust-embed, so the
+      # built assets from the `build` job must be present before cargo build.
+      - name: Fetch built console assets
+        uses: actions/download-artifact@v4
+        with:
+          name: console-dist
+          path: apps/console/dist
+      - run: cargo build -p pawrly-cli --features console

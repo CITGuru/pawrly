@@ -157,6 +157,19 @@ pub async fn register_source(
     Ok(report)
 }
 
+/// Finer-grained display variant of a source's `kind`, when the bare kind
+/// hides a meaningful mode. `None` when the kind already says it all.
+#[must_use]
+pub fn sub_kind(def: &SourceDef) -> Option<&'static str> {
+    match def.kind {
+        SourceKind::Http if def.config.get("type").and_then(|v| v.as_str()) == Some("openapi") => {
+            Some("openapi")
+        }
+        SourceKind::File if file_is_remote(def) => Some("object_storage"),
+        _ => None,
+    }
+}
+
 /// A `file` source reads from an object store / http (vs the local filesystem)
 /// when it declares a `config.storage` block or any path uses a remote URL
 /// scheme (`http(s)://`, `s3://`, `gs://`/`gcs://`, `az://`/`azure://`/`abfss://`).

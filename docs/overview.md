@@ -163,10 +163,21 @@ pawrly sql "SELECT COUNT(*) FROM data.orders"   # auto-discovers the daemon
 
 Local mode and daemon mode return identical output by design.
 
+### 4. (Optional) Open the Console
+
+Prefer a browser? Launch the web [Console](./console.md) for the same workspace — browse sources, the catalog, and semantic models, and run SQL with live-streaming results:
+
+```bash
+pawrly console        # → http://127.0.0.1:8787
+```
+
+It's read-only and binds loopback by default (no token needed).
+
 ## Where to next
 
 - Add more sources — see **[Sources](./sources.md)**.
 - Shape `pawrly.yaml` — see **[Configuration](./config.md)**.
 - Define business models for humans and agents — see **[Semantic layer](./semantic.md)**.
 - Connect an AI assistant — see **[MCP server](./mcp.md)**.
+- Browse and query in the browser — see **[Console](./console.md)**.
 - Full command reference — see **[CLI](./cli.md)**.

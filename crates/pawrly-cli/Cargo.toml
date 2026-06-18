@@ -14,6 +14,12 @@ path = "src/main.rs"
 [lints]
 workspace = true
 
+[features]
+# Bundle the built web Console UI into the `pawrly` binary. Off by default so a
+# normal build needs no JS toolchain; `pawrly console` / `serve --console` still
+# work without it (serving gRPC-Web for a separately-hosted SPA).
+console = ["pawrly-server/console"]
+
 [dependencies]
 pawrly-core = { workspace = true, features = ["test-support"] }
 pawrly-config = { workspace = true }

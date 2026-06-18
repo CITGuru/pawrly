@@ -22,18 +22,19 @@ pawrly [OPTIONS] <COMMAND>
 
 | Command | What it does |
 |---|---|
-| [`sql`](#pawrly-sql) | Run a SQL query. |
-| [`semantic`](#pawrly-semantic) | Browse and query the semantic layer. |
-| [`schema`](#pawrly-schema) | List the catalog or describe a table. |
-| [`source`](#pawrly-source) | Manage workspace sources. |
-| [`cache`](#pawrly-cache) | Inspect and manage the cache. |
-| [`config`](#pawrly-config) | Inspect the assembled config. |
-| [`init`](#pawrly-init) / [`validate`](#pawrly-validate) | Create / check a `pawrly.yaml`. |
-| [`materialize`](#pawrly-materialize) | Persist data as a named table. |
-| [`check`](#pawrly-check) | Run each source's `examples:` as live probes. |
-| [`serve`](#pawrly-serve) / [`stop`](#pawrly-stop) / [`status`](#pawrly-status) | Run and manage the daemon. |
-| [`mcp-stdio`](#pawrly-mcp-stdio) | Run the MCP server over stdio. |
-| [`mcp-http`](#pawrly-mcp-http) | Run the MCP server over HTTP. |
+| [sql](#pawrly-sql) | Run a SQL query. |
+| [semantic](#pawrly-semantic) | Browse and query the semantic layer. |
+| [schema](#pawrly-schema) | List the catalog or describe a table. |
+| [source](#pawrly-source) | Manage workspace sources. |
+| [cache](#pawrly-cache) | Inspect and manage the cache. |
+| [config](#pawrly-config) | Inspect the assembled config. |
+| [init](#pawrly-init) / [validate](#pawrly-validate) | Create / check a `pawrly.yaml`. |
+| [materialize](#pawrly-materialize) | Persist data as a named table. |
+| [check](#pawrly-check) | Run each source's `examples:` as live probes. |
+| [serve](#pawrly-serve) / [stop](#pawrly-stop) / [status](#pawrly-status) | Run and manage the daemon. |
+| [console](#pawrly-console) | Serve the web [Console](./console.md) (gRPC-Web + embedded UI). |
+| [mcp-stdio](#pawrly-mcp-stdio) | Run the MCP server over stdio. |
+| [mcp-http](#pawrly-mcp-http) | Run the MCP server over HTTP. |
 | `version` | Print the engine version and health. |
 
 ---
@@ -229,6 +230,7 @@ Run the daemon. Subsequent CLI commands auto-discover it over its socket.
 ```
 pawrly serve [--addr <ADDR>] [--socket <PATH>] [--bearer-token-from <NAME>]
              [--tls-cert <PEM> --tls-key <PEM>] [--idle-timeout <DUR>] [--pid-file <PATH>]
+             [--console [--cors-origin <ORIGIN>]]
 ```
 
 - `--addr <ADDR>` — bind address; accepts `unix:///path` (or `uds://`) and `tcp://host:port`. Defaults to `unix://$PAWRLY_HOME/sockets/pawrly.sock`.
@@ -237,6 +239,7 @@ pawrly serve [--addr <ADDR>] [--socket <PATH>] [--bearer-token-from <NAME>]
 - `--tls-cert <PEM>` / `--tls-key <PEM>` — serve TLS; both must be given together.
 - `--idle-timeout <DUR>` — shut down after idle (humantime, e.g. `30m`; `0` = never).
 - `--pid-file <PATH>` — write the daemon PID here.
+- `--console` — serve the web [Console](./console.md) (gRPC-Web + embedded UI) over TCP instead of the machine wire; with `--addr` use `tcp://host:port` or `host:port` (default `127.0.0.1:8787`). `--cors-origin <ORIGIN>` allows a cross-origin browser origin. Equivalent to `pawrly console`.
 
 (The workspace config comes from the global `-c, --config`.)
 
@@ -271,6 +274,27 @@ pawrly status [--endpoint <ENDPOINT>] [--json]
 
 - `--endpoint <ENDPOINT>` — endpoint to probe. Defaults to the default UDS path under `$PAWRLY_HOME`.
 - `--json` — emit machine-readable JSON.
+
+---
+
+### `pawrly console`
+
+Serve the web [Console](./console.md) for the discovered workspace — gRPC-Web plus the embedded UI — so a browser can inspect sources, the catalog, semantic models, the cache, and run SQL. A convenience for the same path as `serve --console`; honors the global `--remote` / `--config` / `--home`.
+
+```
+pawrly console [--addr <ADDR>] [--bearer-token-from <NAME>] [--cors-origin <ORIGIN>]
+```
+
+- `--addr <ADDR>` — TCP address to bind (default `127.0.0.1:8787`). Loopback needs no token; a non-loopback bind requires `--bearer-token-from`.
+- `--bearer-token-from <NAME>` — require a bearer token, resolved from the config's secret backend or an env var of the same name; the browser sends it as gRPC-Web metadata.
+- `--cors-origin <ORIGIN>` — allow this browser origin for standalone (cross-origin) hosting, e.g. `https://console.example.com`. Omit for same-origin (embedded) use.
+
+```bash
+pawrly console                                   # http://127.0.0.1:8787
+pawrly console --remote uds:///path/to/pawrly.sock   # local UI, proxied to a remote daemon
+```
+
+A non-loopback Console must be fronted with TLS (the token and results otherwise cross the wire in cleartext); the UI assets are bundled only when the binary is built with the `console` feature. See the [Console guide](./console.md).
 
 ---
 

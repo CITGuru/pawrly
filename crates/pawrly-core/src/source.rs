@@ -86,6 +86,11 @@ pub struct SourceInfo {
     pub status: SourceStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status_detail: Option<String>,
+    /// Finer-grained variant of `kind` for display, when the bare kind hides a
+    /// meaningful mode — e.g. `"openapi"` for a spec-driven HTTP source, or
+    /// `"object_storage"` for a file source backed by a remote object store.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sub_kind: Option<String>,
     pub table_count: u64,
     pub registered_at: DateTime<Utc>,
 }

@@ -286,6 +286,7 @@ impl From<core::SourceInfo> for v1::SourceInfo {
             status_detail: s.status_detail.unwrap_or_default(),
             table_count: s.table_count,
             registered_at: Some(timestamp_from(s.registered_at)),
+            sub_kind: s.sub_kind,
         }
     }
 }
@@ -311,6 +312,7 @@ impl TryFrom<v1::SourceInfo> for core::SourceInfo {
             } else {
                 Some(s.status_detail)
             },
+            sub_kind: s.sub_kind,
             table_count: s.table_count,
             registered_at: s
                 .registered_at

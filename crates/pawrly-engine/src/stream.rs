@@ -81,6 +81,15 @@ impl QueryGuard {
         self
     }
 
+    /// Set the recorded SQL on the attached activity context once it is known
+    /// (e.g. after compiling a semantic query to SQL). No-op when activity
+    /// logging is off.
+    pub fn set_activity_sql(&mut self, sql: Option<String>) {
+        if let Some(ctx) = self.activity.as_mut() {
+            ctx.sql = sql;
+        }
+    }
+
     fn mark_ok(&mut self, rows: u64) {
         self.status = "ok";
         self.rows = rows;
