@@ -89,10 +89,16 @@ bytes = "1"
 # gRPC / tonic
 tonic = { version = "0.12", features = ["transport", "tls"] }
 tonic-build = "0.12"
+tonic-web = "0.12"
 prost = "0.13"
 prost-types = "0.13"
 tower = "0.5"
+tower-http = { version = "0.6", features = ["cors", "fs"] }
 hyper-util = "0.1"
+http = "1"
+
+# Console (web UI) — embedded SPA assets behind the `console` feature
+rust-embed = { version = "8", features = ["mime-guess"] }
 
 # Serde / config
 serde = { version = "1", features = ["derive"] }

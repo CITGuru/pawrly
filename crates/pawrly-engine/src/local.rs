@@ -122,6 +122,16 @@ impl LocalEngine {
     /// Build the activity context for an operation, or `None` when activity
     /// logging is off. `sql` is the user-submitted text (pre-substitution); it
     /// is redacted here per policy. `None` for operations without SQL text.
+    /// Redact a SQL string for the activity log per the configured policy,
+    /// bumping the failure metric if redaction degraded.
+    fn redact_activity_sql(&self, sql: &str) -> Option<String> {
+        let redacted = crate::redact::redact(sql, self.inner.redact_sql);
+        if redacted.degraded {
+            pawrly_telemetry::metrics::redaction_failed().add(1, &[]);
+        }
+        redacted.sql
+    }
+
     fn activity_context(
         &self,
         ctx: &pawrly_core::activity::RequestContext,
@@ -132,13 +142,7 @@ impl LocalEngine {
         if !self.inner.activity.is_enabled() {
             return None;
         }
-        let sql = sql.and_then(|s| {
-            let redacted = crate::redact::redact(s, self.inner.redact_sql);
-            if redacted.degraded {
-                pawrly_telemetry::metrics::redaction_failed().add(1, &[]);
-            }
-            redacted.sql
-        });
+        let sql = sql.and_then(|s| self.redact_activity_sql(s));
         let mut param_keys: Vec<String> = params.keys().cloned().collect();
         param_keys.sort();
         Some(crate::stream::ActivityContext {
@@ -695,6 +699,7 @@ async fn register_source(inner: &Arc<LocalEngineInner>, def: SourceDef) -> Resul
         kind,
         status: SourceStatus::Ok,
         status_detail: None,
+        sub_kind: registry::sub_kind(&def).map(str::to_string),
         table_count: report.table_count,
         registered_at: Utc::now(),
     };
@@ -1189,6 +1194,9 @@ impl EngineService for LocalEngine {
             .compile_semantic(&q)
             .await
             .inspect_err(|e| guard.mark_error(e))?;
+        // Record the compiled SQL on the activity record now that it's known,
+        // so `system.activity` shows what a semantic_query actually executed.
+        guard.set_activity_sql(self.redact_activity_sql(&sql));
         let df = self
             .inner
             .ctx

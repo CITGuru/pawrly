@@ -1,0 +1,10 @@
+version: v2
+clean: true
+plugins:
+  # protoc-gen-es v2 emits messages *and* service descriptors usable directly by
+  # Connect-ES (createClient(Service, transport)) — no separate connect plugin.
+  - local: protoc-gen-es
+    out: src/gen
+    opt:
+      - target=ts
+      - import_extension=js

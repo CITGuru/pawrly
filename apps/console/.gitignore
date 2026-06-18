@@ -1,0 +1,7 @@
+node_modules
+# Generated: `pnpm build` writes dist/ (embedded by the `console` feature) and
+# `buf generate` writes src/gen/. Both are produced in CI before they're used.
+dist
+src/gen
+*.local
+.DS_Store

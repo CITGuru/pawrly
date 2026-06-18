@@ -14,4 +14,7 @@ pub enum ServerError {
 
     #[error("non-loopback TCP requires AuthMode::Bearer")]
     AuthRequiredForNonLoopback,
+
+    #[error("invalid CORS origin `{0}`")]
+    InvalidCorsOrigin(String),
 }

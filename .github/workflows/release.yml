@@ -53,8 +53,26 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
+      # Build the web Console first so the `console` feature can embed
+      # apps/console/dist into the binary via rust-embed.
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: apps/console/pnpm-lock.yaml
+
+      - name: Build web Console
+        working-directory: apps/console
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm run build
+
       - name: Build release binary
-        run: cargo build --release --locked --bin "$BIN_NAME" --target ${{ matrix.target }}
+        run: cargo build --release --locked -p pawrly-cli --bin "$BIN_NAME" --features console --target ${{ matrix.target }}
 
       - name: Package tarball + checksum
         shell: bash

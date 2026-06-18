@@ -20,20 +20,61 @@ use bytes::Bytes;
 /// Returns an error if the IPC writer fails (would only happen on a
 /// schema/batch mismatch which is impossible by construction here).
 pub fn encode_batch(batch: &RecordBatch) -> Result<Bytes, ArrowIpcError> {
+    let batch = normalize_for_ipc(batch)?;
     let schema = batch.schema();
-    let mut buf = Vec::with_capacity(estimate_size(batch));
+    let mut buf = Vec::with_capacity(estimate_size(&batch));
     {
         let options = IpcWriteOptions::default();
         let mut writer = StreamWriter::try_new_with_options(&mut buf, schema.as_ref(), options)
             .map_err(|e| ArrowIpcError::Encode(e.to_string()))?;
         writer
-            .write(batch)
+            .write(&batch)
             .map_err(|e| ArrowIpcError::Encode(e.to_string()))?;
         writer
             .finish()
             .map_err(|e| ArrowIpcError::Encode(e.to_string()))?;
     }
     Ok(Bytes::from(buf))
+}
+
+/// Coerce Arrow view layouts (`Utf8View` / `BinaryView`) to classic `Utf8` /
+/// `Binary` before IPC encoding: DataFusion emits view types, but some consumers
+/// (e.g. apache-arrow JS) can't decode them. No-view batches are an `Arc` clone.
+fn normalize_for_ipc(batch: &RecordBatch) -> Result<RecordBatch, ArrowIpcError> {
+    use arrow_schema::{DataType, Field};
+
+    let schema = batch.schema();
+    let has_view = schema
+        .fields()
+        .iter()
+        .any(|f| matches!(f.data_type(), DataType::Utf8View | DataType::BinaryView));
+    if !has_view {
+        return Ok(batch.clone());
+    }
+
+    let mut fields: Vec<Arc<Field>> = Vec::with_capacity(schema.fields().len());
+    let mut columns = Vec::with_capacity(batch.num_columns());
+    for (i, field) in schema.fields().iter().enumerate() {
+        let target = match field.data_type() {
+            DataType::Utf8View => Some(DataType::Utf8),
+            DataType::BinaryView => Some(DataType::Binary),
+            _ => None,
+        };
+        match target {
+            Some(dt) => {
+                let casted = arrow_cast::cast(batch.column(i), &dt)
+                    .map_err(|e| ArrowIpcError::Encode(e.to_string()))?;
+                fields.push(Arc::new(Field::new(field.name(), dt, field.is_nullable())));
+                columns.push(casted);
+            }
+            None => {
+                fields.push(field.clone());
+                columns.push(batch.column(i).clone());
+            }
+        }
+    }
+    let new_schema = Arc::new(Schema::new_with_metadata(fields, schema.metadata().clone()));
+    RecordBatch::try_new(new_schema, columns).map_err(|e| ArrowIpcError::Encode(e.to_string()))
 }
 
 /// Decode a single Arrow IPC frame back into one or more `RecordBatch`es.
@@ -118,5 +159,20 @@ mod tests {
     fn empty_decoder_input_errs() {
         let r = decode_frame(&[]);
         assert!(r.is_err());
+    }
+
+    #[test]
+    fn utf8view_is_normalized_to_utf8() {
+        use arrow_array::StringViewArray;
+        let schema = Arc::new(Schema::new(vec![Field::new("v", DataType::Utf8View, true)]));
+        let col = Arc::new(StringViewArray::from(vec![Some("x"), None, Some("zz")]));
+        let batch = RecordBatch::try_new(schema, vec![col]).unwrap();
+
+        // Encoding must downgrade the view type so non-Rust IPC readers can
+        // decode it (apache-arrow JS rejects Utf8View).
+        let bytes = encode_batch(&batch).unwrap();
+        let decoded = &decode_frame(&bytes).unwrap()[0];
+        assert_eq!(decoded.schema().field(0).data_type(), &DataType::Utf8);
+        assert_eq!(decoded.num_rows(), 3);
     }
 }

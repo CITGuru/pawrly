@@ -42,6 +42,17 @@ pub struct Args {
     /// PID file path.
     #[arg(long)]
     pub pid_file: Option<PathBuf>,
+
+    /// Serve the web Console (gRPC-Web + embedded UI) instead of the machine
+    /// gRPC wire. Binds TCP; with `--addr` use `tcp://host:port` or `host:port`
+    /// (default `127.0.0.1:8787`).
+    #[arg(long)]
+    pub console: bool,
+
+    /// Allow this browser origin for the Console (standalone / cross-origin
+    /// hosting). Only meaningful with `--console`.
+    #[arg(long)]
+    pub cors_origin: Option<String>,
 }
 
 pub async fn run(home: Option<PathBuf>, config: Option<PathBuf>, args: Args) -> anyhow::Result<()> {
@@ -69,6 +80,31 @@ pub async fn run(home: Option<PathBuf>, config: Option<PathBuf>, args: Args) -> 
     // clap's `requires` guarantees both flags appear together.
     if let (Some(cert), Some(key)) = (&args.tls_cert, &args.tls_key) {
         builder = builder.tls(cert.clone(), key.clone());
+    }
+
+    // Console mode: gRPC-Web + embedded assets over TCP, instead of the machine
+    // wire. axum::serve does not carry tonic's TLS, so `--tls-*` is ignored here
+    // (front a non-loopback Console with a TLS-terminating proxy).
+    if args.console {
+        let addr: std::net::SocketAddr = match args.addr.as_deref() {
+            Some(a) => {
+                let a = a.strip_prefix("tcp://").unwrap_or(a);
+                a.parse()
+                    .map_err(|e| anyhow::anyhow!("bad console --addr `{a}`: {e}"))?
+            }
+            None => std::net::SocketAddr::from(([127, 0, 0, 1], 8787)),
+        };
+        if let Some(pid) = &args.pid_file {
+            write_pid_file(pid)?;
+        }
+        tracing::info!(%addr, "starting pawrly console (gRPC-Web + assets)");
+        builder
+            .serve_console(pawrly_server::ConsoleOpts {
+                addr,
+                cors_origin: args.cors_origin.clone(),
+            })
+            .await?;
+        return Ok(());
     }
 
     if let Some(addr) = args.addr.as_deref() {

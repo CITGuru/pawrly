@@ -166,16 +166,30 @@ pub async fn register_http_source(
         });
     }
 
-    // Optional raw HTTP table named after the source — registered in the
-    // *default* schema so `SELECT * FROM <source>` resolves to it.
+    // Optional raw HTTP table named after the source, registered in two places:
+    //   * the `default` schema, so the unqualified `SELECT * FROM <source>`
+    //     convenience resolves to it; and
+    //   * the source's own schema as `<source>.<source>`, which is how the
+    //     catalog lists it — so the advertised name is also the queryable name
+    //     (and `describe_table` finds it directly).
     let raw_table_registered = if def.raw_table {
         let default_schema = catalog
             .schema("default")
             .ok_or_else(|| HttpBuildError::DataFusion("default schema missing".into()))?;
-        let raw = RawHttpTableProvider::new(source.clone());
         default_schema
-            .register_table(def.name.clone(), Arc::new(raw))
+            .register_table(
+                def.name.clone(),
+                Arc::new(RawHttpTableProvider::new(source.clone())),
+            )
             .map_err(|e| HttpBuildError::DataFusion(format!("register raw table: {e}")))?;
+        schema
+            .register_table(
+                def.name.clone(),
+                Arc::new(RawHttpTableProvider::new(source.clone())),
+            )
+            .map_err(|e| {
+                HttpBuildError::DataFusion(format!("register raw table (qualified): {e}"))
+            })?;
         true
     } else {
         false
