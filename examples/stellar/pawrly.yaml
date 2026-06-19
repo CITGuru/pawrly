@@ -24,7 +24,7 @@ name: stellar-horizon
 defaults:
   http:
     timeout: 30s
-    user_agent: pawrly-stellar-example/0.0.1
+    user_agent: pawrly-stellar-example/0.1.0
 
 sources:
   - name: stellar

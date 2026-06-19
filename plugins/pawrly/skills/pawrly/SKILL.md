@@ -1,7 +1,7 @@
 ---
 name: pawrly
 description: Query live, federated data through Pawrly's MCP tools — files, REST/GraphQL APIs, Postgres/MySQL/SQLite/DuckDB, Snowflake, Iceberg/Delta, and other MCP servers, joined in one SQL plan, plus a governed semantic layer. Use this as the entrypoint whenever a task needs real data from connected sources before answering from assumptions or editing code. For authoring config, see pawrly-add-source and pawrly-semantic-model; to pin results, see pawrly-materialize.
-version: 0.0.1
+version: 0.1.0
 ---
 
 # Pawrly

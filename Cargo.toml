@@ -22,7 +22,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.0.1"
+version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
 license = "Apache-2.0"
@@ -30,23 +30,23 @@ repository = "https://github.com/CITGuru/pawrly"
 
 [workspace.dependencies]
 # Internal crates
-pawrly-core = { path = "crates/pawrly-core", version = "0.0.1" }
+pawrly-core = { path = "crates/pawrly-core", version = "0.1.0" }
 # Default to the lightweight metrics facade; binaries opt into `otel` for init.
-pawrly-telemetry = { path = "crates/pawrly-telemetry", version = "0.0.1", default-features = false }
-pawrly-config = { path = "crates/pawrly-config", version = "0.0.1" }
-pawrly-secrets = { path = "crates/pawrly-secrets", version = "0.0.1" }
-pawrly-proto = { path = "crates/pawrly-proto", version = "0.0.1" }
-pawrly-semantic = { path = "crates/pawrly-semantic", version = "0.0.1" }
-pawrly-engine = { path = "crates/pawrly-engine", version = "0.0.1" }
-pawrly-server = { path = "crates/pawrly-server", version = "0.0.1" }
-pawrly-client = { path = "crates/pawrly-client", version = "0.0.1" }
-pawrly-flight = { path = "crates/pawrly-flight", version = "0.0.1" }
-pawrly-schema = { path = "crates/pawrly-schema", version = "0.0.1" }
-pawrly-sources-http = { path = "crates/pawrly-sources/http", version = "0.0.1" }
-pawrly-sources-duckdb = { path = "crates/pawrly-sources/duckdb", version = "0.0.1" }
-pawrly-sources-mcp = { path = "crates/pawrly-sources/mcp", version = "0.0.1" }
-pawrly-cli = { path = "crates/pawrly-cli", version = "0.0.1" }
-pawrly-mcp = { path = "crates/pawrly-mcp", version = "0.0.1" }
+pawrly-telemetry = { path = "crates/pawrly-telemetry", version = "0.1.0", default-features = false }
+pawrly-config = { path = "crates/pawrly-config", version = "0.1.0" }
+pawrly-secrets = { path = "crates/pawrly-secrets", version = "0.1.0" }
+pawrly-proto = { path = "crates/pawrly-proto", version = "0.1.0" }
+pawrly-semantic = { path = "crates/pawrly-semantic", version = "0.1.0" }
+pawrly-engine = { path = "crates/pawrly-engine", version = "0.1.0" }
+pawrly-server = { path = "crates/pawrly-server", version = "0.1.0" }
+pawrly-client = { path = "crates/pawrly-client", version = "0.1.0" }
+pawrly-flight = { path = "crates/pawrly-flight", version = "0.1.0" }
+pawrly-schema = { path = "crates/pawrly-schema", version = "0.1.0" }
+pawrly-sources-http = { path = "crates/pawrly-sources/http", version = "0.1.0" }
+pawrly-sources-duckdb = { path = "crates/pawrly-sources/duckdb", version = "0.1.0" }
+pawrly-sources-mcp = { path = "crates/pawrly-sources/mcp", version = "0.1.0" }
+pawrly-cli = { path = "crates/pawrly-cli", version = "0.1.0" }
+pawrly-mcp = { path = "crates/pawrly-mcp", version = "0.1.0" }
 
 # Async / runtime
 tokio = { version = "1", features = ["full"] }

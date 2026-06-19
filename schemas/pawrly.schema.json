@@ -23,7 +23,7 @@
         },
         "http": {
           "timeout": "30s",
-          "user_agent": "pawrly/0.0.1"
+          "user_agent": "pawrly/0.1.0"
         },
         "materialize": {
           "allow_inline": false
@@ -347,7 +347,7 @@
         "http": {
           "default": {
             "timeout": "30s",
-            "user_agent": "pawrly/0.0.1"
+            "user_agent": "pawrly/0.1.0"
           },
           "allOf": [
             {
@@ -506,7 +506,7 @@
           "type": "string"
         },
         "user_agent": {
-          "default": "pawrly/0.0.1",
+          "default": "pawrly/0.1.0",
           "type": "string"
         }
       }

@@ -36,7 +36,7 @@ mod tests {
         };
         let _ = v1::HealthResponse {
             ok: true,
-            version: "0.0.1".into(),
+            version: "0.1.0".into(),
             ..Default::default()
         };
     }

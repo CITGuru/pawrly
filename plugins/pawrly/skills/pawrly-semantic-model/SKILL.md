@@ -1,7 +1,7 @@
 ---
 name: pawrly-semantic-model
 description: Author or update Pawrly semantic models in pawrly.yaml — dimensions, measures, relationships, segments, row-level security, and pre-aggregations — so agents query a curated, governed business vocabulary (orders.revenue by orders.status) instead of raw SQL. Use when adding a model, exposing a new metric/dimension, wiring cross-model joins or RLS, or tuning pre-aggregations. To run an existing model, use the `pawrly` skill's semantic_query flow.
-version: 0.0.1
+version: 0.1.0
 ---
 
 # Pawrly: semantic models

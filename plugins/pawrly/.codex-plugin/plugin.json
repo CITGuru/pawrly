@@ -1,6 +1,6 @@
 {
   "name": "pawrly",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "Query, materialize, and model your data with Pawrly — SQL over files, APIs, databases, warehouses, lakehouses, and MCP servers, plus a governed semantic layer.",
   "author": {
       "name": "oyetoketoby",

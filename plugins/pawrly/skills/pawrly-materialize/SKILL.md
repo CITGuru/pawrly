@@ -1,7 +1,7 @@
 ---
 name: pawrly-materialize
 description: Persist a Pawrly query result, a local file, or a remote URL as a pinned, self-backed table queryable as materialized.<name>. Use to cache an expensive or slow query, snapshot data at a point in time, load an external file as a table or manage/drop existing materialized tables. For ad-hoc reads use the `pawrly` skill instead; reach here when the result must persist and be reused.
-version: 0.0.1
+version: 0.1.0
 ---
 
 # Pawrly: materialize tables

@@ -13,7 +13,7 @@ defaults:
     mode: { mode: none }
   http:
     timeout: 30s
-    user_agent: pawrly/0.0.1
+    user_agent: pawrly/0.1.0
   safety:
     max_unfiltered_rows: 1000000
   engine:

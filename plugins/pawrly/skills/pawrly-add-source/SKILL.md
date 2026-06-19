@@ -1,7 +1,7 @@
 ---
 name: pawrly-add-source
 description: Author or repair a Pawrly source in pawrly.yaml so its data becomes queryable SQL tables — local/object-store files, REST/GraphQL & OpenAPI HTTP APIs, Postgres/MySQL/SQLite/DuckDB, Snowflake, Iceberg/Delta/DuckLake, or another MCP server. Use when adding, connecting, editing, or troubleshooting a source, wiring credentials via secrets, or setting caching and safety guards. After it resolves, query through the `pawrly` skill.
-version: 0.0.1
+version: 0.1.0
 ---
 
 # Pawrly: add a source

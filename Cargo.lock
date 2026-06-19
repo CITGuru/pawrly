@@ -3226,14 +3226,14 @@ checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
 
 [[package]]
 name = "pawrly"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "pawrly-core",
 ]
 
 [[package]]
 name = "pawrly-cli"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "arrow-array",
@@ -3265,7 +3265,7 @@ dependencies = [
 
 [[package]]
 name = "pawrly-client"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -3291,7 +3291,7 @@ dependencies = [
 
 [[package]]
 name = "pawrly-config"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "chrono",
  "futures",
@@ -3313,7 +3313,7 @@ dependencies = [
 
 [[package]]
 name = "pawrly-core"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "arrow-array",
  "arrow-schema",
@@ -3337,7 +3337,7 @@ dependencies = [
 
 [[package]]
 name = "pawrly-engine"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "arrow-array",
  "arrow-schema",
@@ -3378,7 +3378,7 @@ dependencies = [
 
 [[package]]
 name = "pawrly-flight"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "arrow-array",
  "arrow-flight",
@@ -3396,7 +3396,7 @@ dependencies = [
 
 [[package]]
 name = "pawrly-mcp"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "arrow-array",
  "arrow-cast",
@@ -3419,7 +3419,7 @@ dependencies = [
 
 [[package]]
 name = "pawrly-proto"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "arrow-array",
  "arrow-cast",
@@ -3438,14 +3438,14 @@ dependencies = [
 
 [[package]]
 name = "pawrly-schema"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "pawrly-secrets"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "keyring",
  "parking_lot",
@@ -3460,7 +3460,7 @@ dependencies = [
 
 [[package]]
 name = "pawrly-semantic"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "pawrly-core",
  "thiserror 1.0.69",
@@ -3469,7 +3469,7 @@ dependencies = [
 
 [[package]]
 name = "pawrly-server"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -3503,7 +3503,7 @@ dependencies = [
 
 [[package]]
 name = "pawrly-sources-duckdb"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "arrow-array",
  "arrow-schema",
@@ -3524,7 +3524,7 @@ dependencies = [
 
 [[package]]
 name = "pawrly-sources-http"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "arrow-array",
  "arrow-json",
@@ -3555,7 +3555,7 @@ dependencies = [
 
 [[package]]
 name = "pawrly-sources-mcp"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "arrow-array",
  "arrow-schema",
@@ -3577,7 +3577,7 @@ dependencies = [
 
 [[package]]
 name = "pawrly-telemetry"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "axum 0.7.9",
  "opentelemetry",
@@ -6053,7 +6053,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "arrow-array",
