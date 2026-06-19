@@ -34,6 +34,9 @@ pub enum SqliteBuildError {
     #[error("`path` is required for kind: sqlite (use ':memory:' for in-process)")]
     MissingPath,
 
+    #[error("database file not found: `{0}` (use ':memory:' for an in-process database)")]
+    MissingFile(String),
+
     #[error("rusqlite: {0}")]
     Sqlite(String),
 
@@ -53,6 +56,16 @@ pub struct SqliteTableSummary {
     pub description: Option<String>,
 }
 
+/// Resolve a relative path against the config dir; absolute paths and URLs pass through.
+fn resolve_local(workspace_dir: &std::path::Path, raw: &str) -> PathBuf {
+    let p = std::path::Path::new(raw);
+    if raw.contains("://") || p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        workspace_dir.join(raw)
+    }
+}
+
 /// Register a SQLite source. Each entry in `tables[]` becomes a
 /// `SqliteTableProvider`. If `tables[]` is empty, every user table found in
 /// `sqlite_master` is registered with its native name.
@@ -60,6 +73,7 @@ pub async fn register_sqlite_source(
     def: &SourceDef,
     _ctx: &SessionContext,
     catalog: &dyn CatalogProvider,
+    workspace_dir: &std::path::Path,
 ) -> Result<SqliteSourceReport, SqliteBuildError> {
     let path_str = def
         .config
@@ -69,7 +83,14 @@ pub async fn register_sqlite_source(
     let conn = if path_str == ":memory:" {
         Connection::open_in_memory()
     } else {
-        Connection::open(PathBuf::from(path_str))
+        let path = resolve_local(workspace_dir, path_str);
+        // Fail loudly instead of letting rusqlite create an empty database.
+        if !path.exists() {
+            return Err(SqliteBuildError::MissingFile(
+                path.to_string_lossy().into_owned(),
+            ));
+        }
+        Connection::open(path)
     }
     .map_err(|e| SqliteBuildError::Sqlite(e.to_string()))?;
 

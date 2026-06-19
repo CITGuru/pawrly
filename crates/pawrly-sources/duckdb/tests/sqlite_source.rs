@@ -73,7 +73,7 @@ async fn sqlite_count_and_filter_pushdown() {
         raw_table: false,
         raw_table_safety: None,
     };
-    let report = register_sqlite_source(&def, &ctx, catalog.as_ref())
+    let report = register_sqlite_source(&def, &ctx, catalog.as_ref(), std::path::Path::new(""))
         .await
         .unwrap();
     assert_eq!(
@@ -132,7 +132,7 @@ async fn sqlite_explicit_table_with_query() {
         raw_table: false,
         raw_table_safety: None,
     };
-    register_sqlite_source(&def, &ctx, catalog.as_ref())
+    register_sqlite_source(&def, &ctx, catalog.as_ref(), std::path::Path::new(""))
         .await
         .unwrap();
 

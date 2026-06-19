@@ -160,7 +160,7 @@ fn main() -> ExitCode {
     match runtime.block_on(run(cli)) {
         Ok(()) => ExitCode::from(0),
         Err(e) => {
-            eprintln!("error: {e:#}");
+            eprintln!("error: {e}");
             ExitCode::from(exit_code_for(&e))
         }
     }

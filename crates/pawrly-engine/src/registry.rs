@@ -113,9 +113,10 @@ pub async fn register_source(
             })
         }
         SourceKind::Sqlite => {
-            let report = pawrly_sources_duckdb::register_sqlite_source(def, ctx, catalog)
-                .await
-                .map_err(|e| RegisterError::Other(e.to_string()))?;
+            let report =
+                pawrly_sources_duckdb::register_sqlite_source(def, ctx, catalog, workspace_dir)
+                    .await
+                    .map_err(|e| RegisterError::Other(e.to_string()))?;
             Ok(RegisterReport {
                 table_count: report.table_count,
                 tables: report

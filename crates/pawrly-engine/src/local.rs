@@ -1283,7 +1283,7 @@ fn build_activity(
         let b = match &act.store {
             Some(dir) => {
                 let store = crate::durable_activity::DurableActivityStore::open(
-                    dir.clone(),
+                    expand_tilde(dir),
                     act.partition_hours,
                     act.flush_threshold,
                     act.flush_interval,
