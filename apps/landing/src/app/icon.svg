@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="120" height="120" viewBox="0 0 120 120" role="img" aria-label="Pawrly">
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="120" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#16456a"/>
+      <stop offset="1" stop-color="#081d2f"/>
+    </linearGradient>
+  </defs>
+  <rect width="120" height="120" rx="28" fill="url(#tile)"/>
+  <g transform="translate(0,-4) scale(0.86) translate(10,10)">
+    <ellipse cx="30" cy="58" rx="9" ry="12" fill="#f4efe4" transform="rotate(-20 30 58)"/>
+    <ellipse cx="48" cy="40" rx="9.5" ry="13" fill="#f4efe4" transform="rotate(-8 48 40)"/>
+    <ellipse cx="72" cy="40" rx="9.5" ry="13" fill="#f4efe4" transform="rotate(8 72 40)"/>
+    <ellipse cx="90" cy="58" rx="9" ry="12" fill="#f4efe4" transform="rotate(20 90 58)"/>
+    <path d="M60 60 C78 60 92 72 92 88 C92 104 78 112 60 112 C42 112 28 104 28 88 C28 72 42 60 60 60 Z" fill="#f4efe4"/>
+    <g fill="none" stroke="#081d2f" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M52 80 L60 88 L52 96"/>
+      <path d="M64 96 L72 96"/>
+    </g>
+  </g>
+</svg>
