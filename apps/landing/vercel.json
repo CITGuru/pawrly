@@ -1,0 +1,13 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "redirects": [
+    {
+      "source": "/:path*",
+      "has": [
+        { "type": "host", "value": "pawrly.dev" }
+      ],
+      "destination": "https://www.pawrly.dev/:path*",
+      "permanent": true
+    }
+  ]
+}

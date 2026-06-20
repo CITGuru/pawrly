@@ -1,0 +1,298 @@
+@import "tailwindcss";
+
+/* ----------------------------------------------------------------------------
+   Pawrly — design tokens
+   A deep, filmic ocean: cool blue water with warm sun-glint highlights,
+   cream type, and a serif display voice. The mood reference is light on
+   water at golden hour — calm, premium, a little hand-made.
+---------------------------------------------------------------------------- */
+:root {
+  /* Ocean — darkest at the floor, lighter toward the surface */
+  --ocean-950: #05121f;
+  --ocean-900: #07192a;
+  --ocean-850: #0a2236;
+  --ocean-800: #0c2a42;
+  --ocean-700: #103851;
+  --ocean-600: #164a66;
+  --ocean-500: #1f6184;
+
+  /* Warm light on the water */
+  --gold: #e7c389;
+  --gold-2: #f1dcb0;
+  --sand: #e6d6b8;
+  --coral: #e8a06a;
+
+  /* Type + cool foam tones */
+  --cream: #f4efe4;
+  --ink: #f4efe4;
+  --foam: #bcd2e6;
+  --muted: rgba(195, 214, 232, 0.66);
+  --muted-2: rgba(195, 214, 232, 0.42);
+
+  /* Lines + surfaces (translucent so the grain/glints read through) */
+  --line: rgba(206, 224, 240, 0.12);
+  --line-2: rgba(206, 224, 240, 0.22);
+  --card: rgba(255, 255, 255, 0.04);
+  --card-2: rgba(255, 255, 255, 0.06);
+}
+
+@theme inline {
+  --color-background: var(--ocean-950);
+  --color-foreground: var(--ink);
+
+  --color-ink: var(--ink);
+  --color-cream: var(--cream);
+  --color-foam: var(--foam);
+  --color-muted: var(--muted);
+  --color-muted-2: var(--muted-2);
+
+  --color-ocean-950: var(--ocean-950);
+  --color-ocean-900: var(--ocean-900);
+  --color-ocean-850: var(--ocean-850);
+  --color-ocean-800: var(--ocean-800);
+  --color-ocean-700: var(--ocean-700);
+  --color-ocean-600: var(--ocean-600);
+  --color-ocean-500: var(--ocean-500);
+
+  --color-gold: var(--gold);
+  --color-gold-2: var(--gold-2);
+  --color-sand: var(--sand);
+  --color-coral: var(--coral);
+
+  --color-line: var(--line);
+  --color-line-2: var(--line-2);
+  --color-card: var(--card);
+  --color-card-2: var(--card-2);
+
+  --font-display: var(--font-display);
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-mono);
+}
+
+html,
+body {
+  background: var(--ocean-950);
+  color: var(--ink);
+  font-family: var(--font-sans), ui-sans-serif, system-ui, -apple-system, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* Serif display voice for headlines */
+.font-display {
+  font-family: var(--font-display), ui-serif, Georgia, "Times New Roman", serif;
+  font-weight: 400;
+  letter-spacing: -0.01em;
+}
+
+/* ----------------------------------------------------------------------------
+   Water + light
+---------------------------------------------------------------------------- */
+
+/* The deep base gradient — floor of the ocean up to a lit surface. */
+.bg-ocean {
+  background:
+    radial-gradient(120% 90% at 50% -10%, #14405f 0%, #0c2a42 32%, #081d2f 60%, #05121f 100%);
+}
+
+/* Hero water: a sun band with warm glints, layered over the deep base. */
+.bg-water {
+  background:
+    radial-gradient(40% 30% at 50% 6%, rgba(241, 220, 176, 0.30), rgba(241, 220, 176, 0) 70%),
+    radial-gradient(60% 40% at 72% 18%, rgba(231, 195, 137, 0.18), rgba(231, 195, 137, 0) 72%),
+    radial-gradient(55% 38% at 24% 26%, rgba(120, 180, 220, 0.16), rgba(120, 180, 220, 0) 70%),
+    radial-gradient(130% 90% at 50% -8%, #18496a 0%, #0e3149 34%, #081f31 64%, #05121f 100%);
+}
+
+/* A soft horizon band used to separate sections without a hard line. */
+.bg-surface-soft {
+  background:
+    radial-gradient(100% 60% at 50% 0%, rgba(31, 97, 132, 0.28), rgba(5, 18, 31, 0) 70%);
+}
+
+/* Film grain — feTurbulence baked into a data-URI so it costs zero requests.
+   Sits over everything at low opacity to give the filmic, hand-made water. */
+.grain {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  background-size: 160px 160px;
+}
+
+/* Caustic shimmer — slow wander of the sun glints across the hero. */
+@keyframes caustics {
+  0% { transform: translate3d(0, 0, 0) scale(1); opacity: 0.9; }
+  50% { transform: translate3d(-2%, 1.5%, 0) scale(1.06); opacity: 1; }
+  100% { transform: translate3d(0, 0, 0) scale(1); opacity: 0.9; }
+}
+.animate-caustics { animation: caustics 18s ease-in-out infinite; }
+
+/* ----------------------------------------------------------------------------
+   Surfaces
+---------------------------------------------------------------------------- */
+.glass {
+  background: rgba(8, 24, 38, 0.55);
+  backdrop-filter: blur(16px) saturate(140%);
+  -webkit-backdrop-filter: blur(16px) saturate(140%);
+}
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--line);
+}
+.card-hover {
+  transition: background 200ms ease, border-color 200ms ease, transform 200ms ease;
+}
+.card-hover:hover {
+  background: var(--card-2);
+  border-color: var(--line-2);
+}
+
+.soft-shadow {
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.04) inset,
+    0 18px 40px -18px rgba(0, 0, 0, 0.65);
+}
+.soft-shadow-lg {
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.05) inset,
+    0 40px 90px -30px rgba(0, 0, 0, 0.7);
+}
+
+/* Hairline divider that fades at the edges, like a horizon. */
+.rule-horizon {
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--line-2) 18%, var(--line-2) 82%, transparent);
+}
+
+/* ----------------------------------------------------------------------------
+   Motion
+---------------------------------------------------------------------------- */
+@keyframes marquee {
+  from { transform: translateX(0); }
+  to { transform: translateX(-50%); }
+}
+.marquee-track { animation: marquee 42s linear infinite; }
+
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes fade-up {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.animate-fade-in { animation: fade-in 260ms ease-out forwards; }
+.animate-fade-up { animation: fade-up 320ms cubic-bezier(0.2, 0.7, 0.2, 1) forwards; }
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-caustics,
+  .marquee-track { animation: none; }
+}
+
+::selection {
+  background: var(--gold);
+  color: var(--ocean-950);
+}
+
+/* ----------------------------------------------------------------------------
+   Design switcher variants (temporary — for choosing a direction).
+   Default (:root, no data-theme) is the cool palette we shipped. Adding
+   data-theme="warm" on <html> swaps the warm light + tints the water toward a
+   tropical teal. Adding data-mark="palm" swaps the paw glyph for the palm-paw.
+   Driven entirely by attributes so nothing needs prop-drilling.
+---------------------------------------------------------------------------- */
+[data-theme="warm"] {
+  --gold: #efb56a;
+  --gold-2: #ffd9a3;
+  --sand: #efdcb6;
+  --coral: #ee9a5c;
+  --foam: #c4d3cb;
+  --muted: rgba(200, 216, 206, 0.68);
+  --muted-2: rgba(200, 216, 206, 0.44);
+}
+
+[data-theme="warm"] .bg-ocean {
+  background:
+    radial-gradient(120% 90% at 50% -10%, #1a4f55 0%, #103a3a 30%, #0a2629 58%, #07171a 100%);
+}
+
+[data-theme="warm"] .bg-water {
+  background:
+    radial-gradient(40% 30% at 50% 6%, rgba(255, 216, 154, 0.32), rgba(255, 216, 154, 0) 70%),
+    radial-gradient(60% 40% at 72% 18%, rgba(240, 168, 108, 0.20), rgba(240, 168, 108, 0) 72%),
+    radial-gradient(55% 38% at 24% 26%, rgba(126, 200, 194, 0.16), rgba(126, 200, 194, 0) 70%),
+    radial-gradient(130% 90% at 50% -8%, #1e5a5c 0%, #134544 34%, #0b2c2c 64%, #07181a 100%);
+}
+
+[data-theme="warm"] .bg-surface-soft {
+  background:
+    radial-gradient(100% 60% at 50% 0%, rgba(38, 120, 116, 0.26), rgba(7, 24, 26, 0) 70%);
+}
+
+/* Mark swap: paw is the default, palm appears only under data-mark="palm".
+   display:contents keeps the chosen glyph as the direct flex child (preserves
+   the logo's gap layout). */
+.mark-paw { display: contents; }
+.mark-palm { display: none; }
+[data-mark="palm"] .mark-paw { display: none; }
+[data-mark="palm"] .mark-palm { display: contents; }
+
+/* ----------------------------------------------------------------------------
+   Code blocks — terminal carved into the water
+---------------------------------------------------------------------------- */
+.code-surface {
+  background:
+    linear-gradient(180deg, rgba(7, 22, 36, 0.9), rgba(5, 16, 28, 0.92));
+  border: 1px solid var(--line);
+}
+.tok-key { color: var(--gold); }
+.tok-fn { color: #9ed0f0; }
+.tok-str { color: #b7e0c0; }
+.tok-num { color: #f1dcb0; }
+.tok-com { color: var(--muted-2); font-style: italic; }
+.tok-punc { color: var(--foam); }
+.tok-id { color: var(--cream); }
+
+/* ----------------------------------------------------------------------------
+   Prose (blog / legal)
+---------------------------------------------------------------------------- */
+.prose-pawrly { color: var(--muted); line-height: 1.75; font-size: 17px; }
+.prose-pawrly h2 {
+  color: var(--cream);
+  font-family: var(--font-display), ui-serif, Georgia, serif;
+  font-size: 28px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  margin-top: 2em;
+  margin-bottom: 0.6em;
+}
+.prose-pawrly h3 { color: var(--cream); font-size: 20px; font-weight: 600; margin-top: 1.6em; margin-bottom: 0.5em; }
+.prose-pawrly p { margin-bottom: 1.1em; }
+.prose-pawrly a { color: var(--gold); text-decoration: underline; text-underline-offset: 3px; }
+.prose-pawrly img {
+  width: 100%;
+  height: auto;
+  border: 1px solid var(--line);
+  border-radius: 22px;
+  margin: 0 0 2em;
+}
+.prose-pawrly code {
+  background: rgba(255, 255, 255, 0.06);
+  padding: 0.15em 0.4em;
+  border-radius: 6px;
+  font-size: 0.9em;
+  font-family: var(--font-mono), ui-monospace, monospace;
+  color: var(--gold-2);
+}
+.prose-pawrly pre {
+  background: rgba(5, 16, 28, 0.9);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 0.9em 1em;
+  margin: 1.3em 0;
+  overflow-x: auto;
+  font-size: 13.5px;
+  line-height: 1.6;
+  color: var(--cream);
+  font-family: var(--font-mono), ui-monospace, monospace;
+}
+.prose-pawrly pre code { background: transparent; padding: 0; color: inherit; }
