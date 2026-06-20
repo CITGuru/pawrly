@@ -3,6 +3,7 @@
 use std::path::PathBuf;
 
 use clap::Args as ClapArgs;
+use comfy_table::{ContentArrangement, Table};
 use pawrly_core::TableName;
 
 #[derive(ClapArgs, Debug)]
@@ -33,10 +34,17 @@ pub async fn run(
             println!("{}", serde_json::to_string_pretty(&desc)?);
         } else {
             println!("{}: {}", desc.table.name, desc.table.kind);
+            let mut table = Table::new();
+            table.set_content_arrangement(ContentArrangement::Dynamic);
+            table.set_header(vec!["column", "type", "nullable"]);
             for c in &desc.columns {
-                let null = if c.nullable { "" } else { " NOT NULL" };
-                println!("  {} {}{null}", c.name, c.data_type);
+                table.add_row(vec![
+                    c.name.clone(),
+                    c.data_type.to_string(),
+                    if c.nullable { "yes" } else { "no" }.to_string(),
+                ]);
             }
+            println!("{table}");
             if let Some(wiki) = &desc.wiki {
                 println!("\nnotes:\n{wiki}");
             }
@@ -48,15 +56,17 @@ pub async fn run(
     if args.json {
         println!("{}", serde_json::to_string_pretty(&tables)?);
     } else {
-        println!("{:<20} {:<10} description", "table", "kind");
+        let mut table = Table::new();
+        table.set_content_arrangement(ContentArrangement::Dynamic);
+        table.set_header(vec!["table", "kind", "description"]);
         for t in tables {
-            println!(
-                "{:<20} {:<10} {}",
-                t.name,
-                t.kind,
-                t.description.unwrap_or_default()
-            );
+            table.add_row(vec![
+                t.name.to_string(),
+                t.kind.to_string(),
+                t.description.unwrap_or_default(),
+            ]);
         }
+        println!("{table}");
     }
 
     Ok(())
