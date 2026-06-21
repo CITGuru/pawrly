@@ -1,5 +1,6 @@
 import type { MetadataRoute } from "next";
 import { getPosts } from "@/lib/posts";
+import { features } from "@/lib/features";
 
 const SITE = "https://pawrly.dev";
 
@@ -21,6 +22,13 @@ export default function sitemap(): MetadataRoute.Sitemap {
     },
   ];
 
+  const featureRoutes: MetadataRoute.Sitemap = features.map((f) => ({
+    url: `${SITE}/features/${f.slug}`,
+    lastModified: now,
+    changeFrequency: "monthly",
+    priority: 0.8,
+  }));
+
   const blogRoutes: MetadataRoute.Sitemap = getPosts().map((p) => ({
     url: `${SITE}/blog/${p.slug}`,
     lastModified: now,
@@ -28,5 +36,5 @@ export default function sitemap(): MetadataRoute.Sitemap {
     priority: 0.7,
   }));
 
-  return [...staticRoutes, ...blogRoutes];
+  return [...staticRoutes, ...featureRoutes, ...blogRoutes];
 }

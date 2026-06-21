@@ -35,6 +35,7 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
-# generated from repo-root scripts/* by scripts/sync-install.mjs
+# generated from repo-root assets by scripts/sync-install.mjs
 /public/install.sh
 /public/install.ps1
+/public/pawrly.schema.json

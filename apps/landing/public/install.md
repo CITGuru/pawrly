@@ -162,3 +162,16 @@ can query and join.
 - Sources reference: https://github.com/CITGuru/pawrly/blob/main/docs/sources.md
 - MCP guide: https://github.com/CITGuru/pawrly/blob/main/docs/mcp.md
 - Semantic layer: https://github.com/CITGuru/pawrly/blob/main/docs/semantic.md
+- JSON Schema for `pawrly.yaml`: https://pawrly.dev/pawrly.schema.json
+
+## Editor completion & validation
+
+The JSON Schema for `pawrly.yaml` is published at **https://pawrly.dev/pawrly.schema.json**.
+Reference it once at the top of your config and most editors (via the YAML
+language server) will give you inline completion, hover docs, and validation:
+
+```yaml
+# yaml-language-server: $schema=https://pawrly.dev/pawrly.schema.json
+version: 1
+name: my-workspace
+```

@@ -1,13 +1,12 @@
 import Link from "next/link";
 import { Logo } from "../Logo";
+import { features } from "@/lib/features";
 
 const cols: { heading: string; links: { label: string; href: string; external?: boolean }[] }[] = [
   {
     heading: "Product",
     links: [
-      { label: "How it works", href: "/#how" },
-      { label: "Sources", href: "/#sources" },
-      { label: "For agents", href: "/#agents" },
+      ...features.map((f) => ({ label: f.label, href: `/features/${f.slug}` })),
       { label: "Get started", href: "/#install" },
     ],
   },
@@ -75,7 +74,7 @@ export function Footer() {
 
       <div className="border-t border-line">
         <div className="mx-auto flex max-w-6xl flex-col items-center justify-between gap-3 px-6 py-5 text-xs text-muted-2 md:flex-row">
-          <span>© {new Date().getFullYear()} Pawrly · Apache-2.0</span>
+          <span>© {new Date().getFullYear()} Pawrly</span>
           <span>Connect once. Query from anywhere.</span>
         </div>
       </div>
