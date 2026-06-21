@@ -852,7 +852,10 @@ mod tests {
         a.url = Some("https://api.github.com".into());
         let def = build_source_def(&a, SourceKind::Http, "gh").unwrap();
         assert_eq!(def.config["base_url"], "https://api.github.com");
-        assert!(def.config.get("url").is_none(), "http must not set config.url");
+        assert!(
+            def.config.get("url").is_none(),
+            "http must not set config.url"
+        );
     }
 
     #[test]
@@ -885,7 +888,10 @@ mod tests {
             }
         );
         assert_eq!(classify_target("http"), AddTarget::Kind(SourceKind::Http));
-        assert_eq!(classify_target("postgres"), AddTarget::Kind(SourceKind::Postgres));
+        assert_eq!(
+            classify_target("postgres"),
+            AddTarget::Kind(SourceKind::Postgres)
+        );
         assert_eq!(
             classify_target("github"),
             AddTarget::Catalog {

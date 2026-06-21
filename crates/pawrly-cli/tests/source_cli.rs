@@ -106,7 +106,10 @@ fn source_remove_deletes_file_and_drops_glob() {
     assert!(add.status.success(), "add failed");
 
     let source_file = tmp.path().join("sources").join("data.yaml");
-    assert!(source_file.exists(), "sources/data.yaml should exist after add");
+    assert!(
+        source_file.exists(),
+        "sources/data.yaml should exist after add"
+    );
 
     let rm = run_pawrly(&cfg, &["source", "remove", "data"]);
     let rm_stderr = String::from_utf8_lossy(&rm.stderr);
@@ -140,7 +143,10 @@ fn source_add_from_local_file_imports_spec() {
 
     let add = run_pawrly(&cfg, &["source", "add", spec.to_str().unwrap()]);
     let stderr = String::from_utf8_lossy(&add.stderr);
-    assert!(add.status.success(), "import-from-file add failed: {stderr}");
+    assert!(
+        add.status.success(),
+        "import-from-file add failed: {stderr}"
+    );
 
     // Lands as its own per-source file, named from the spec's own `name:`.
     let imported = tmp.path().join("sources").join("imported.yaml");
@@ -187,9 +193,18 @@ fn source_add_rejects_build_flags_with_import() {
 
     let out = run_pawrly(
         &cfg,
-        &["source", "add", spec.to_str().unwrap(), "--path", "./b.parquet"],
+        &[
+            "source",
+            "add",
+            spec.to_str().unwrap(),
+            "--path",
+            "./b.parquet",
+        ],
     );
-    assert!(!out.status.success(), "build flags + import should be rejected");
+    assert!(
+        !out.status.success(),
+        "build flags + import should be rejected"
+    );
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         stderr.contains("can't be combined"),
@@ -203,7 +218,7 @@ fn source_add_no_verify_skips_validation() {
     let cfg = write_empty_workspace(tmp.path());
 
     // An http source with only base_url — no live engine check, so --no-verify
-    // writes it without touching the network, and --url lands as base_url (B1).
+    // writes it without touching the network, and --url lands as base_url.
     let add = run_pawrly(
         &cfg,
         &[

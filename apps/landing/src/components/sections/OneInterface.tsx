@@ -1,5 +1,6 @@
 import { SectionHeader } from "../UI";
 import { CodeBlock } from "../CodeBlock";
+import { QueryCard } from "../QueryCard";
 
 const YAML = `version: 1
 name: my-workspace
@@ -22,14 +23,27 @@ sources:
         response:
           path: $.data
           schema:
-            - { name: email,   type: varchar }
-            - { name: balance, type: bigint }`;
+            - { name: email,      type: varchar }
+            - { name: name,       type: varchar }
+            - { name: delinquent, type: bool }
 
-const SQL = `pawrly sql "
-  SELECT email, balance
-  FROM stripe.customers
-  WHERE delinquent = true
-"`;
+  - name: intercom
+    kind: http
+    config:
+      base_url: https://api.intercom.io
+      auth:
+        type: header
+        headers:
+          - name: Authorization
+            bearer: \${secret:INTERCOM_TOKEN}
+    tables:
+      - name: contacts
+        endpoint: /contacts
+        response:
+          path: $.data
+          schema:
+            - { name: email,        type: varchar }
+            - { name: last_seen_at, type: bigint }`;
 
 export function OneInterface() {
   return (
@@ -46,34 +60,31 @@ export function OneInterface() {
           description="Add the source to pawrly.yaml, give the fields clear names, and query it like a table. The next person, script, or agent uses the same names without learning another API."
         />
 
-        <div className="mt-14 grid items-start gap-5 lg:grid-cols-[1.15fr_1fr]">
-          <CodeBlock lang="yaml" title="pawrly.yaml" code={YAML} />
+        <div className="mt-14 grid gap-5 lg:grid-cols-[1.15fr_1fr]">
+          {/* The spec is taller than the column; pull the card out of flow so the
+              right column (query + note) sets the row height and the YAML fills
+              it and scrolls. Fixed height on mobile where there's no sibling. */}
+          <div className="relative h-[520px] lg:h-auto">
+            <CodeBlock
+              lang="yaml"
+              title="pawrly.yaml"
+              code={YAML}
+              className="absolute inset-0 flex flex-col"
+              bodyClassName="min-h-0 flex-1 overflow-y-auto"
+            />
+          </div>
 
           <div className="flex flex-col gap-5">
-            <div className="card rounded-2xl p-6">
-              <p className="text-sm leading-relaxed text-muted">
-                The vendor already wrote the contract. Point an{" "}
-                <code className="rounded bg-white/5 px-1.5 py-0.5 font-mono text-[12px] text-gold-2">
-                  http
-                </code>{" "}
-                source at an OpenAPI 3.0 spec and Pawrly synthesizes one typed table per{" "}
-                <code className="rounded bg-white/5 px-1.5 py-0.5 font-mono text-[12px] text-gold-2">
-                  GET
-                </code>{" "}
-                — no hand-written schema needed.
-              </p>
-            </div>
-
-            <CodeBlock lang="bash" title="now it's a table" code={SQL} />
+            <QueryCard />
 
             <div className="card rounded-2xl p-6">
               <p className="text-sm leading-relaxed text-muted">
-                Run the query from the CLI, an MCP client, or a long-running{" "}
+                Run the same query from the CLI, an MCP client, or a long-running{" "}
                 <code className="rounded bg-white/5 px-1.5 py-0.5 font-mono text-[12px] text-gold-2">
                   pawrly serve
                 </code>{" "}
-                process. The interface stays the same, so a query that works locally is the same
-                query an agent can use later.
+                process. The interface stays the same, so a query that works locally is the one an
+                agent uses later.
               </p>
             </div>
           </div>

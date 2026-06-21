@@ -1,18 +1,16 @@
 import Link from "next/link";
-import { GhostCTA, ArrowRight } from "../UI";
+import { ArrowRight } from "../UI";
 import { CopyCommand } from "../CopyCommand";
 import { CodeBlock } from "../CodeBlock";
+import { AgentInstall } from "../AgentInstall";
 
 const INSTALL = "curl -fsSL https://pawrly.dev/install.sh | sh";
 
 const HERO_SQL = `-- two live APIs, joined in one statement
-SELECT c.email,
-       c.name,
-       i.last_seen_at
+SELECT c.email,c.name, i.last_seen_at
 FROM stripe.customers c
-JOIN intercom.contacts i
-  ON i.email = c.email
-WHERE c.delinquent = false
+JOIN intercom.contacts i ON i.email = c.email
+WHERE c.delinquent = false 
 ORDER BY i.last_seen_at ASC`;
 
 export function Hero() {
@@ -62,16 +60,16 @@ export function Hero() {
         </div>
 
         <div className="mt-1 flex flex-col items-center gap-3 sm:flex-row">
+          <AgentInstall />
           <a
-            href="https://github.com/CITGuru/pawrly"
+            href="https://github.com/CITGuru/pawrly#quickstart"
             target="_blank"
             rel="noreferrer"
             className="inline-flex items-center gap-2 rounded-full bg-sand px-5 py-3 text-sm font-semibold text-ocean-950 transition-colors hover:bg-gold-2"
           >
-            Get started
+            Read the docs
             <ArrowRight />
           </a>
-          <GhostCTA href="/#how">See it query</GhostCTA>
         </div>
 
         <p className="mt-2 text-xs tracking-wide text-muted-2">
@@ -79,9 +77,9 @@ export function Hero() {
         </p>
 
         {/* The query, sitting on the water */}
-        <div className="mt-8 w-full max-w-2xl text-left md:mt-10">
+        {/* <div className="mt-8 w-full max-w-2xl text-left md:mt-10">
           <CodeBlock lang="sql" title="pawrly sql" code={HERO_SQL} />
-        </div>
+        </div> */}
       </div>
     </section>
   );
