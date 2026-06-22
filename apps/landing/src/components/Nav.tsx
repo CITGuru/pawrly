@@ -7,13 +7,11 @@ import { ArrowRight } from "./UI";
 import { features } from "@/lib/features";
 
 const GITHUB = "https://github.com/CITGuru/pawrly";
-const DOCS = `${GITHUB}#quickstart`;
-
 type NavLink = { label: string; href?: string; external?: boolean; menu?: "features" };
 
 const links: NavLink[] = [
   { label: "Features", menu: "features" },
-  { label: "Docs", href: DOCS, external: true },
+  { label: "Docs", href: "/docs" },
   { label: "Blog", href: "/blog" },
 ];
 
@@ -223,15 +221,13 @@ export function Nav() {
                 ) : null}
               </li>
               <li>
-                <a
-                  href={DOCS}
-                  target="_blank"
-                  rel="noreferrer"
+                <Link
+                  href="/docs"
                   onClick={closeAll}
                   className="block rounded-2xl px-4 py-3 text-base text-cream hover:bg-card-2"
                 >
                   Docs
-                </a>
+                </Link>
               </li>
               <li>
                 <Link

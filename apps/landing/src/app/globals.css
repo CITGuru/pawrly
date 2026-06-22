@@ -296,3 +296,119 @@ body {
   font-family: var(--font-mono), ui-monospace, monospace;
 }
 .prose-pawrly pre code { background: transparent; padding: 0; color: inherit; }
+
+/* ----------------------------------------------------------------------------
+   Docs prose — rendered markdown under /docs (shiki code, callouts, tables)
+---------------------------------------------------------------------------- */
+.doc-prose { color: var(--muted); font-size: 15.5px; line-height: 1.7; }
+.doc-prose > *:first-child { margin-top: 0; }
+.doc-prose p { margin: 1em 0; }
+.doc-prose a { color: var(--gold); text-decoration: underline; text-underline-offset: 3px; }
+.doc-prose a:hover { color: var(--gold-2); }
+.doc-prose strong { color: var(--cream); font-weight: 600; }
+
+.doc-prose h2 {
+  color: var(--cream);
+  font-family: var(--font-display), ui-serif, Georgia, serif;
+  font-size: 26px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  margin: 2.2em 0 0.7em;
+  scroll-margin-top: 6rem;
+}
+.doc-prose h3 { color: var(--cream); font-size: 18px; font-weight: 600; margin: 1.8em 0 0.5em; scroll-margin-top: 6rem; }
+.doc-prose h4 { color: var(--cream); font-size: 15px; font-weight: 600; margin: 1.5em 0 0.4em; scroll-margin-top: 6rem; }
+.doc-prose .heading-anchor { color: inherit; text-decoration: none; }
+.doc-prose .heading-anchor:hover { text-decoration: none; color: var(--gold); }
+
+.doc-prose ul, .doc-prose ol { margin: 1em 0; padding-left: 1.3em; }
+.doc-prose li { margin: 0.4em 0; }
+.doc-prose ul li { list-style: disc; }
+.doc-prose ol li { list-style: decimal; }
+.doc-prose li::marker { color: var(--muted-2); }
+
+/* inline code only (not inside a shiki block) */
+.doc-prose :not(pre) > code {
+  background: rgba(255, 255, 255, 0.06);
+  padding: 0.12em 0.4em;
+  border-radius: 6px;
+  font-size: 0.86em;
+  font-family: var(--font-mono), ui-monospace, monospace;
+  color: var(--gold-2);
+}
+
+.doc-prose hr { border: 0; border-top: 1px solid var(--line); margin: 2em 0; }
+
+/* Code blocks (shiki) */
+.doc-prose .code-block {
+  position: relative;
+  margin: 1.3em 0;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: rgba(5, 16, 28, 0.92);
+  overflow: hidden;
+}
+.doc-prose .code-block pre.shiki {
+  background: transparent !important;
+  margin: 0;
+  padding: 0.95em 1.05em;
+  overflow-x: auto;
+  font-size: 13px;
+  line-height: 1.6;
+  font-family: var(--font-mono), ui-monospace, monospace;
+}
+.doc-prose .code-block pre.shiki code { background: transparent; padding: 0; font-family: inherit; }
+
+.doc-prose .code-copy {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 30px;
+  width: 30px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: rgba(8, 24, 38, 0.7);
+  color: var(--foam);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 150ms ease, color 150ms ease, background 150ms ease;
+}
+.doc-prose .code-block:hover .code-copy { opacity: 1; }
+.doc-prose .code-copy:hover { color: var(--cream); background: rgba(8, 24, 38, 0.95); }
+@media (hover: none) { .doc-prose .code-copy { opacity: 1; } }
+
+/* Blockquotes as callouts */
+.doc-prose blockquote {
+  margin: 1.4em 0;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--gold);
+  border-radius: 10px;
+  background: rgba(231, 195, 137, 0.06);
+  padding: 0.6em 1em;
+  color: var(--foam);
+}
+.doc-prose blockquote p { margin: 0.4em 0; }
+.doc-prose blockquote p:first-child { margin-top: 0; }
+.doc-prose blockquote p:last-child { margin-bottom: 0; }
+
+/* Tables (GFM) */
+.doc-prose table {
+  display: block;
+  width: 100%;
+  border-collapse: collapse;
+  margin: 1.4em 0;
+  font-size: 14px;
+  overflow-x: auto;
+}
+.doc-prose th, .doc-prose td {
+  border: 1px solid var(--line);
+  padding: 0.5em 0.75em;
+  text-align: left;
+  vertical-align: top;
+}
+.doc-prose th { color: var(--cream); font-weight: 600; background: rgba(255, 255, 255, 0.03); }
+.doc-prose td { color: var(--muted); }
+.doc-prose th code, .doc-prose td code { white-space: nowrap; }

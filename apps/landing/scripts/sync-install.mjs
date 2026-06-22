@@ -3,7 +3,7 @@
 // originals as the single source of truth and never hand-edit the generated
 // copies. No-ops gracefully on any file that is absent (e.g. a standalone deploy
 // that didn't bundle the repo root).
-import { copyFileSync, mkdirSync, existsSync } from "node:fs";
+import { copyFileSync, mkdirSync, existsSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -28,4 +28,26 @@ for (const [srcRel, destName] of ASSETS) {
   }
   copyFileSync(src, join(destDir, destName));
   console.log(`[sync-assets] copied ${srcRel} -> public/${destName}`);
+}
+
+// Sync the repo docs into the app so /docs can render them. Single source of
+// truth stays in repo docs/; the copy here is a build artifact (gitignored).
+// README.md (a plain TOC) and the internal/ dir are excluded from the site.
+const docsSrc = join(repoRoot, "docs");
+const docsDest = join(here, "..", "public", "docs");
+const DOCS_EXCLUDE = new Set(["README.md"]);
+
+if (existsSync(docsSrc)) {
+  mkdirSync(docsDest, { recursive: true });
+  const docs = readdirSync(docsSrc).filter(
+    (f) => f.endsWith(".md") && !DOCS_EXCLUDE.has(f)
+  );
+  for (const f of docs) {
+    copyFileSync(join(docsSrc, f), join(docsDest, f));
+  }
+  // Lives under public/ so the raw markdown is also served verbatim at
+  // /docs/<slug>.md (handy for LLMs) — the /docs pages render the same files.
+  console.log(`[sync-assets] copied ${docs.length} docs -> public/docs/`);
+} else {
+  console.warn(`[sync-assets] docs not found: ${docsSrc} — skipping`);
 }
