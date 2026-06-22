@@ -24,6 +24,7 @@ Pawrly lets a team describe each source once in pawrly.yaml, then query APIs, fi
 - [Install guide for LLMs (Markdown)](${BASE}/install.md): the fastest path from nothing to a working binary and a first query, copy-pasteable.
 - [install.sh](${BASE}/install.sh): macOS/Linux installer — \`curl -fsSL https://pawrly.dev/install.sh | sh\`.
 - [install.ps1](${BASE}/install.ps1): Windows PowerShell installer — \`irm https://pawrly.dev/install.ps1 | iex\`.
+- [pawrly.schema.json](${BASE}/pawrly.schema.json): JSON Schema for pawrly.yaml — reference it with \`# yaml-language-server: $schema=https://pawrly.dev/pawrly.schema.json\` for editor completion + validation.
 
 ## Documentation
 - [Quickstart](${REPO}#quickstart): install, first query over files, first query over live APIs.
@@ -43,7 +44,6 @@ ${blog}
 ## Optional
 - [GitHub repository](${REPO}): source, issues, and releases (Apache-2.0).
 - [Example configurations](${REPO}/tree/main/examples): a kitchen-sink workspace covering every source kind.
-- [JSON Schema for pawrly.yaml](${REPO}/tree/main/schemas): wire into your editor for completion + validation.
 `;
 
   return new Response(body, {
