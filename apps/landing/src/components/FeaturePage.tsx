@@ -6,7 +6,7 @@ import { Footer } from "./sections/Footer";
 import { Install } from "./sections/Install";
 import { Eyebrow, ArrowRight } from "./UI";
 
-const DOCS = "https://github.com/CITGuru/pawrly#quickstart";
+const DOCS = "/docs";
 
 /** Shared chrome for a feature page: hero + body + closing CTA. */
 export function FeaturePage({
@@ -49,15 +49,13 @@ export function FeaturePage({
             </h1>
             <p className="max-w-2xl text-lg leading-relaxed text-muted">{description}</p>
             <div className="mt-1 flex flex-col items-center gap-3 sm:flex-row">
-              <a
+              <Link
                 href={DOCS}
-                target="_blank"
-                rel="noreferrer"
                 className="inline-flex items-center gap-2 rounded-full bg-sand px-5 py-3 text-sm font-semibold text-ocean-950 transition-colors hover:bg-gold-2"
               >
                 Read the docs
                 <ArrowRight />
-              </a>
+              </Link>
             </div>
           </div>
         </section>

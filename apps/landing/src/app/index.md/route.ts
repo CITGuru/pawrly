@@ -44,7 +44,7 @@ ${feats}
 - Config JSON Schema: ${BASE}/pawrly.schema.json
 
 ## Links
-- Documentation / quickstart: ${REPO}#quickstart
+- Documentation: ${BASE}/docs
 - Source code: ${REPO}
 - Blog: ${BASE}/blog
 `;
