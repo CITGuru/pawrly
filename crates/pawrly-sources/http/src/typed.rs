@@ -90,11 +90,19 @@ impl HttpTableProvider {
 
     /// Whether a filter can be pushed into the request: an equality on a
     /// declared param, a comparison the param's `accepts`/`emit` covers, or an
-    /// `IN (...)` on an `explode` param.
+    /// `IN (...)` on a param that either explodes into repeated query pairs or
+    /// fans out into one request per value.
     fn can_push_down(&self, expr: &Expr) -> bool {
-        // `col IN (...)` pushes down exactly when the param opts into explode.
+        // `col IN (...)` pushes down when the param opts into `explode` (repeated
+        // `?k=a&k=b` query pairs in one request) or is a path placeholder / a
+        // `required` param (fanned out to one request per value, like the raw
+        // table). Otherwise DataFusion keeps the filter above the scan.
         if let Some((col, _)) = extract_in_list(expr) {
-            return self.spec.params.iter().any(|p| p.name == col && p.explode);
+            return self
+                .spec
+                .params
+                .iter()
+                .any(|p| p.name == col && (p.explode || p.required || self.is_path_param(&col)));
         }
         let Some((col, op, _)) = extract_cmp(expr) else {
             return false;
@@ -103,6 +111,20 @@ impl HttpTableProvider {
             return false;
         };
         op == "=" || (param.accepts.iter().any(|a| a == op) && param.emit.contains_key(op))
+    }
+
+    /// Whether `name` appears as a `{name}` placeholder in the table's endpoint
+    /// (the default or any conditional request) — i.e. it is substituted into the
+    /// URL path rather than sent as a query parameter. A path param can never be
+    /// satisfied by repeated query pairs, so an `IN (...)` on one must fan out.
+    fn is_path_param(&self, name: &str) -> bool {
+        let needle = format!("{{{name}}}");
+        self.spec.endpoint.contains(&needle)
+            || self
+                .spec
+                .requests
+                .iter()
+                .any(|r| r.endpoint.contains(&needle))
     }
 
     /// Select the request shape (endpoint, method, body) for this scan: the
@@ -137,109 +159,19 @@ impl HttpTableProvider {
                 .keys()
                 .any(|k| k.eq_ignore_ascii_case("content-type"))
     }
-}
 
-#[async_trait]
-impl TableProvider for HttpTableProvider {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
-    fn schema(&self) -> SchemaRef {
-        self.schema.clone()
-    }
-
-    fn table_type(&self) -> TableType {
-        TableType::Base
-    }
-
-    fn supports_filters_pushdown(
+    /// Run the full paginated fetch for one fully-bound parameter set, returning
+    /// the collected JSON rows (truncated to `limit`). This is the per-request
+    /// unit `scan` drives once for a normal query, and once per value when an
+    /// `IN (...)` on a path / required param fans out.
+    async fn fetch_rows(
         &self,
-        filters: &[&Expr],
-    ) -> datafusion::common::Result<Vec<TableProviderFilterPushDown>> {
-        Ok(filters
-            .iter()
-            .map(|f| {
-                if self.can_push_down(f) {
-                    TableProviderFilterPushDown::Exact
-                } else {
-                    TableProviderFilterPushDown::Unsupported
-                }
-            })
-            .collect())
-    }
-
-    async fn scan(
-        &self,
-        state: &dyn Session,
-        projection: Option<&Vec<usize>>,
-        filters: &[Expr],
+        params: &BTreeMap<String, String>,
+        explode_params: &BTreeMap<String, Vec<String>>,
         limit: Option<usize>,
-    ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
-        let _ = state;
-        let mut params: BTreeMap<String, String> = BTreeMap::new();
-        for f in filters {
-            let Some((col, op, val)) = extract_cmp(f) else {
-                continue;
-            };
-            let Some(param) = self.spec.params.iter().find(|p| p.name == col) else {
-                continue;
-            };
-            if op == "=" {
-                params.insert(col, val);
-            } else if let Some(query_param) = param.emit.get(op) {
-                // A comparison maps to the emit-declared query parameter.
-                params.insert(query_param.clone(), val);
-            }
-        }
-        // Defaults
-        for p in &self.spec.params {
-            if let Some(default) = &p.default
-                && !params.contains_key(&p.name)
-            {
-                params.insert(p.name.clone(), default.clone());
-            }
-        }
-        // Derived params: compute from the clock or another (already bound) param
-        // when the query didn't supply a value.
-        let now_epoch = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
-        let mut derived: Vec<(String, String)> = Vec::new();
-        for p in &self.spec.params {
-            if params.contains_key(&p.name) {
-                continue;
-            }
-            if let Some(d) = &p.derive
-                && let Some(v) = d.resolve(&params, now_epoch)
-            {
-                derived.push((p.name.clone(), v));
-            }
-        }
-        params.extend(derived);
-        // `IN (...)` filters on explode params -> repeated query pairs.
-        let mut explode_params: BTreeMap<String, Vec<String>> = BTreeMap::new();
-        for f in filters {
-            let Some((col, vals)) = extract_in_list(f) else {
-                continue;
-            };
-            if self.spec.params.iter().any(|p| p.name == col && p.explode) {
-                explode_params.insert(col, vals);
-            }
-        }
-        // Required
-        for p in &self.spec.params {
-            if p.required && !params.contains_key(&p.name) && !explode_params.contains_key(&p.name)
-            {
-                return Err(DataFusionError::Plan(format!(
-                    "table `{}` requires filter `{} = ...` (PAWRLY_SAFETY_REQUIRED_FILTER)",
-                    self.spec.name, p.name
-                )));
-            }
-        }
-
-        // Pick the request shape (endpoint/method/body) for this scan.
-        let (endpoint, method_str, body) = self.select_request(&params);
+    ) -> datafusion::common::Result<Vec<Value>> {
+        // Pick the request shape (endpoint/method/body) for this binding.
+        let (endpoint, method_str, body) = self.select_request(params);
         let method = method_str.parse().unwrap_or(reqwest::Method::GET);
         let body_template = body.map(|b| b.template.as_str());
 
@@ -298,7 +230,7 @@ impl TableProvider for HttpTableProvider {
                     endpoint,
                     &next_params,
                     body_template,
-                    &explode_params,
+                    explode_params,
                 )?,
             };
 
@@ -409,7 +341,7 @@ impl TableProvider for HttpTableProvider {
                     "reading response body failed (status {status}): {e}"
                 ))))
             })?;
-            let body: Value = match serde_json::from_str(&text) {
+            let body_json: Value = match serde_json::from_str(&text) {
                 Ok(v) => v,
                 Err(e) => {
                     // A non-JSON body is only an error if we can't otherwise
@@ -427,13 +359,13 @@ impl TableProvider for HttpTableProvider {
 
             // Explicit error detection, when declared.
             if let Some(spec) = &self.spec.response.error
-                && let Some(msg) = detect_error(spec, status_code, &body)
+                && let Some(msg) = detect_error(spec, status_code, &body_json)
             {
                 return Err(scan_error(msg));
             }
 
             let page_start = all_rows.len();
-            all_rows.extend(extract_rows(&body, &self.spec.response)?);
+            all_rows.extend(extract_rows(&body_json, &self.spec.response)?);
 
             // Stop early once enough rows are collected to satisfy a LIMIT.
             if let Some(lim) = limit
@@ -462,8 +394,14 @@ impl TableProvider for HttpTableProvider {
             };
 
             let page_rows = &all_rows[page_start..];
-            match paginate::next_page(config, &next_params, &body, &headers, page_rows, page_index)
-            {
+            match paginate::next_page(
+                config,
+                &next_params,
+                &body_json,
+                &headers,
+                page_rows,
+                page_index,
+            ) {
                 Some(NextPage::Params(p)) => {
                     next_params = p;
                     next_url = None;
@@ -486,28 +424,221 @@ impl TableProvider for HttpTableProvider {
         if let Some(lim) = limit {
             all_rows.truncate(lim);
         }
+        Ok(all_rows)
+    }
 
-        let batch = build_batch(&self.schema, &self.out_columns, &all_rows, &params)?;
+    /// Resolve filters into request params, fetch (fanning out `IN (...)` on a
+    /// path / required param), and build the result batches — the Session-free
+    /// core shared by [`TableProvider::scan`] and the dependent-join bind step.
+    ///
+    /// `allow_defer` controls the unbound-required-param case: `true` returns a
+    /// [`DeferredHttpScanExec`] placeholder (the scan's required column becomes a
+    /// candidate join key); `false` fails with `PAWRLY_SAFETY_REQUIRED_FILTER`.
+    /// The dependent-join operator calls this with the key bound and
+    /// `allow_defer = false`, so it never re-defers.
+    pub async fn scan_bound(
+        &self,
+        projection: Option<&Vec<usize>>,
+        filters: &[Expr],
+        limit: Option<usize>,
+        allow_defer: bool,
+    ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
+        // Equality / comparison filters bind their param directly.
+        let mut params: BTreeMap<String, String> = BTreeMap::new();
+        for f in filters {
+            let Some((col, op, val)) = extract_cmp(f) else {
+                continue;
+            };
+            let Some(param) = self.spec.params.iter().find(|p| p.name == col) else {
+                continue;
+            };
+            if op == "=" {
+                params.insert(col, val);
+            } else if let Some(query_param) = param.emit.get(op) {
+                // A comparison maps to the emit-declared query parameter.
+                params.insert(query_param.clone(), val);
+            }
+        }
+
+        // `IN (...)` filters split two ways: an `explode` query param repeats as
+        // `?k=a&k=b` within a single request; a path placeholder or a `required`
+        // param fans out to one request per value (the raw table's behavior),
+        // with the results unioned.
+        let mut explode_params: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        let mut fanout: Vec<(String, Vec<String>)> = Vec::new();
+        for f in filters {
+            let Some((col, vals)) = extract_in_list(f) else {
+                continue;
+            };
+            let Some(param) = self.spec.params.iter().find(|p| p.name == col) else {
+                continue;
+            };
+            if param.explode && !self.is_path_param(&col) {
+                explode_params.insert(col, vals);
+            } else if param.required || self.is_path_param(&col) {
+                fanout.push((col, vals));
+            }
+        }
+
+        // Defaults for params the query left unbound (and didn't explode/fan out).
+        for p in &self.spec.params {
+            if let Some(default) = &p.default
+                && !params.contains_key(&p.name)
+                && !bound_elsewhere(&p.name, &explode_params, &fanout)
+            {
+                params.insert(p.name.clone(), default.clone());
+            }
+        }
+        // Derived params: compute from the clock or another (already bound) param
+        // when the query didn't supply a value.
+        let now_epoch = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
+        let mut derived: Vec<(String, String)> = Vec::new();
+        for p in &self.spec.params {
+            if params.contains_key(&p.name) || bound_elsewhere(&p.name, &explode_params, &fanout) {
+                continue;
+            }
+            if let Some(d) = &p.derive
+                && let Some(v) = d.resolve(&params, now_epoch)
+            {
+                derived.push((p.name.clone(), v));
+            }
+        }
+        params.extend(derived);
+
+        // Required params must be bound directly, exploded, or fanned out. Any
+        // still-unbound required params are the dependent-join key candidates.
+        let unbound: Vec<String> = self
+            .spec
+            .params
+            .iter()
+            .filter(|p| {
+                p.required
+                    && !params.contains_key(&p.name)
+                    && !bound_elsewhere(&p.name, &explode_params, &fanout)
+            })
+            .map(|p| p.name.clone())
+            .collect();
+        if let Some(first) = unbound.first() {
+            if allow_defer {
+                return Ok(Arc::new(crate::deferred::DeferredHttpScanExec::new(
+                    self, projection, filters, unbound,
+                )));
+            }
+            return Err(DataFusionError::Plan(format!(
+                "table `{}` requires filter `{} = ...` (PAWRLY_SAFETY_REQUIRED_FILTER)",
+                self.spec.name, first
+            )));
+        }
+
+        // One binding set per fan-out combination (the Cartesian product of the
+        // fan-out params' value lists); a query with no fan-out yields exactly one.
+        let binding_sets = expand_fanout(&params, &fanout);
+
+        // Fetch each binding set, accumulating batches and stopping once `limit`
+        // rows are collected across the whole union.
+        let mut out_batches: Vec<RecordBatch> = Vec::new();
+        let mut total_rows: usize = 0;
+        for bind in &binding_sets {
+            if let Some(l) = limit
+                && total_rows >= l
+            {
+                break;
+            }
+            let remaining = limit.map(|l| l.saturating_sub(total_rows));
+            let rows = self.fetch_rows(bind, &explode_params, remaining).await?;
+            // Safety ceiling across the union of fan-out requests.
+            if let Some(max) = self.max_rows
+                && (total_rows as u64).saturating_add(rows.len() as u64) > max
+            {
+                let err = pawrly_core::SafetyError::TooManyRows {
+                    table: self.spec.name.clone(),
+                    max_rows: max,
+                };
+                return Err(DataFusionError::External(Box::new(std::io::Error::other(
+                    err.to_string(),
+                ))));
+            }
+            if rows.is_empty() {
+                continue;
+            }
+            let mut batch = build_batch(&self.schema, &self.out_columns, &rows, bind)?;
+            // Trim the final batch so the union never overshoots the LIMIT.
+            if let Some(l) = limit
+                && total_rows + batch.num_rows() > l
+            {
+                batch = batch.slice(0, l - total_rows);
+            }
+            total_rows += batch.num_rows();
+            if batch.num_rows() > 0 {
+                out_batches.push(batch);
+            }
+        }
+        // Always emit at least one (possibly empty) batch so the schema is present.
+        if out_batches.is_empty() {
+            out_batches.push(build_batch(&self.schema, &self.out_columns, &[], &params)?);
+        }
+
         let projected_schema = if let Some(p) = projection {
             let fields: Vec<Field> = p.iter().map(|i| self.schema.field(*i).clone()).collect();
             Arc::new(Schema::new(fields))
         } else {
             self.schema.clone()
         };
-        let projected: RecordBatch = if let Some(p) = projection {
-            let cols: Vec<ArrayRef> = p.iter().map(|i| batch.column(*i).clone()).collect();
-            // A zero-column projection (e.g. COUNT(*)) has no array to infer the
-            // row count from, so carry it explicitly.
-            let options = RecordBatchOptions::new().with_row_count(Some(batch.num_rows()));
-            RecordBatch::try_new_with_options(projected_schema.clone(), cols, &options)
-                .map_err(|e| DataFusionError::ArrowError(Box::new(e), None))?
-        } else {
-            batch
-        };
+        let projected_batches: Vec<RecordBatch> = out_batches
+            .iter()
+            .map(|b| project_batch(b, projection, &projected_schema))
+            .collect::<datafusion::common::Result<Vec<_>>>()?;
 
-        let exec = MemorySourceConfig::try_new_exec(&[vec![projected]], projected_schema, None)
+        let exec = MemorySourceConfig::try_new_exec(&[projected_batches], projected_schema, None)
             .map_err(|e| DataFusionError::Plan(e.to_string()))?;
         Ok(exec)
+    }
+}
+
+#[async_trait]
+impl TableProvider for HttpTableProvider {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn schema(&self) -> SchemaRef {
+        self.schema.clone()
+    }
+
+    fn table_type(&self) -> TableType {
+        TableType::Base
+    }
+
+    fn supports_filters_pushdown(
+        &self,
+        filters: &[&Expr],
+    ) -> datafusion::common::Result<Vec<TableProviderFilterPushDown>> {
+        Ok(filters
+            .iter()
+            .map(|f| {
+                if self.can_push_down(f) {
+                    TableProviderFilterPushDown::Exact
+                } else {
+                    TableProviderFilterPushDown::Unsupported
+                }
+            })
+            .collect())
+    }
+
+    async fn scan(
+        &self,
+        state: &dyn Session,
+        projection: Option<&Vec<usize>>,
+        filters: &[Expr],
+        limit: Option<usize>,
+    ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
+        let _ = state;
+        // `allow_defer = true`: an unbound required param yields a
+        // `DeferredHttpScanExec` placeholder (so a dependent join can bind it at
+        // runtime) rather than failing the plan outright.
+        self.scan_bound(projection, filters, limit, true).await
     }
 }
 
@@ -779,6 +910,58 @@ fn extract_cmp(expr: &Expr) -> Option<(String, &'static str, String)> {
         _ => return None,
     };
     Some((col.name.clone(), token, scalar_to_string(scalar)?))
+}
+
+/// Whether `name` is already satisfied by an `explode` (repeated query pairs) or
+/// a fan-out (one request per value) binding, so it shouldn't also be defaulted,
+/// derived, or flagged as a missing required param.
+fn bound_elsewhere(
+    name: &str,
+    explode: &BTreeMap<String, Vec<String>>,
+    fanout: &[(String, Vec<String>)],
+) -> bool {
+    explode.contains_key(name) || fanout.iter().any(|(n, _)| n == name)
+}
+
+/// Expand the fan-out params into one fully-bound parameter set per combination
+/// (the Cartesian product of their value lists), each layered over `base`. With
+/// no fan-out params this returns exactly `[base]`, so the non-fan-out path stays
+/// a single request.
+fn expand_fanout(
+    base: &BTreeMap<String, String>,
+    fanout: &[(String, Vec<String>)],
+) -> Vec<BTreeMap<String, String>> {
+    let mut sets = vec![base.clone()];
+    for (name, vals) in fanout {
+        let mut next = Vec::with_capacity(sets.len().saturating_mul(vals.len()));
+        for s in &sets {
+            for v in vals {
+                let mut m = s.clone();
+                m.insert(name.clone(), v.clone());
+                next.push(m);
+            }
+        }
+        sets = next;
+    }
+    sets
+}
+
+/// Apply a column projection to a batch, preserving the row count for
+/// zero-column projections (e.g. `COUNT(*)`). A `None` projection clones as-is.
+fn project_batch(
+    batch: &RecordBatch,
+    projection: Option<&Vec<usize>>,
+    projected_schema: &SchemaRef,
+) -> datafusion::common::Result<RecordBatch> {
+    match projection {
+        Some(p) => {
+            let cols: Vec<ArrayRef> = p.iter().map(|i| batch.column(*i).clone()).collect();
+            let options = RecordBatchOptions::new().with_row_count(Some(batch.num_rows()));
+            RecordBatch::try_new_with_options(projected_schema.clone(), cols, &options)
+                .map_err(|e| DataFusionError::ArrowError(Box::new(e), None))
+        }
+        None => Ok(batch.clone()),
+    }
 }
 
 fn scalar_to_string(scalar: &datafusion::scalar::ScalarValue) -> Option<String> {

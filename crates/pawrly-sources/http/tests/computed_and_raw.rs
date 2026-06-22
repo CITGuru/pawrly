@@ -10,7 +10,7 @@
 
 use std::sync::Arc;
 
-use datafusion::arrow::array::{Int32Array, StringArray};
+use datafusion::arrow::array::{Array, Int32Array, StringArray};
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::catalog::{CatalogProvider, MemoryCatalogProvider};
 use datafusion::execution::config::SessionConfig;
@@ -166,6 +166,225 @@ async fn not_in_does_not_explode() {
             .unwrap_or_default()
             .contains("state="),
         "NOT IN must not be pushed down as exploded query pairs"
+    );
+}
+
+/// Total rows across a result set's batches.
+fn row_count(batches: &[RecordBatch]) -> usize {
+    batches.iter().map(RecordBatch::num_rows).sum()
+}
+
+/// Every value of a string column across all batches, sorted.
+fn str_values(batches: &[RecordBatch], name: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for b in batches {
+        let col = str_col(b, name);
+        for i in 0..col.len() {
+            out.push(col.value(i).to_string());
+        }
+    }
+    out.sort();
+    out
+}
+
+/// `IN (...)` on a required **path** param (`/items/{id}`) fans out to one
+/// request per value — repeated query pairs can't fill a path placeholder — and
+/// unions the results (the HN `live_item` / `items` shape).
+#[tokio::test]
+async fn in_list_on_path_param_fans_out() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/items/1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "id": 1, "val": "a" })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/items/2"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "id": 2, "val": "b" })))
+        .mount(&server)
+        .await;
+
+    let (ctx, catalog) = build_ctx().await;
+    register_http_source(
+        &typed_source(
+            server.uri(),
+            json!({
+                "endpoint": "/items/{id}",
+                "params": [ { "name": "id", "type": "bigint", "required": true } ],
+                "response": { "path": "$", "schema": [
+                    { "name": "id",  "type": "bigint" },
+                    { "name": "val", "type": "varchar" }
+                ] }
+            }),
+        ),
+        &ctx,
+        catalog.as_ref(),
+    )
+    .await
+    .expect("register");
+
+    let batches = query(&ctx, "SELECT id, val FROM api.data WHERE id IN (1, 2)").await;
+    assert_eq!(row_count(&batches), 2, "two ids should yield two rows");
+    assert_eq!(str_values(&batches, "val"), vec!["a", "b"]);
+
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 2, "one request per id");
+    let mut paths: Vec<String> = requests.iter().map(|r| r.url.path().to_string()).collect();
+    paths.sort();
+    assert_eq!(paths, vec!["/items/1", "/items/2"]);
+}
+
+/// `IN (...)` on a required **query** param (no path placeholder, not `explode`)
+/// also fans out — one request per value, each carrying its own `?q=` — rather
+/// than erroring on the unbound required filter.
+#[tokio::test]
+async fn in_list_on_required_query_param_fans_out() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/lookup"))
+        .and(wiremock::matchers::query_param("q", "a"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([ { "id": 1 } ])))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/lookup"))
+        .and(wiremock::matchers::query_param("q", "b"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([ { "id": 2 } ])))
+        .mount(&server)
+        .await;
+
+    let (ctx, catalog) = build_ctx().await;
+    register_http_source(
+        &typed_source(
+            server.uri(),
+            json!({
+                "endpoint": "/lookup",
+                "params": [ { "name": "q", "type": "varchar", "required": true, "filterable": true } ],
+                "response": { "path": "$", "schema": [ { "name": "id", "type": "bigint" } ] }
+            }),
+        ),
+        &ctx,
+        catalog.as_ref(),
+    )
+    .await
+    .expect("register");
+
+    let batches = query(&ctx, "SELECT id FROM api.data WHERE q IN ('a', 'b')").await;
+    assert_eq!(row_count(&batches), 2, "two values should yield two rows");
+
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 2, "one request per value");
+}
+
+/// A fan-out is bounded by `LIMIT`: with three ids but `LIMIT 2`, only two
+/// lookups are issued (the third never fires).
+#[tokio::test]
+async fn in_list_fanout_respects_limit() {
+    let server = MockServer::start().await;
+    for id in 1..=3 {
+        Mock::given(method("GET"))
+            .and(path(format!("/items/{id}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "id": id })))
+            .mount(&server)
+            .await;
+    }
+
+    let (ctx, catalog) = build_ctx().await;
+    register_http_source(
+        &typed_source(
+            server.uri(),
+            json!({
+                "endpoint": "/items/{id}",
+                "params": [ { "name": "id", "type": "bigint", "required": true } ],
+                "response": { "path": "$", "schema": [ { "name": "id", "type": "bigint" } ] }
+            }),
+        ),
+        &ctx,
+        catalog.as_ref(),
+    )
+    .await
+    .expect("register");
+
+    let batches = query(
+        &ctx,
+        "SELECT id FROM api.data WHERE id IN (1, 2, 3) LIMIT 2",
+    )
+    .await;
+    assert_eq!(row_count(&batches), 2, "LIMIT 2 keeps two rows");
+
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(
+        requests.len(),
+        2,
+        "fan-out must stop at the limit, not issue all three lookups"
+    );
+}
+
+/// Regression guard: a single equality on a required path param stays a single
+/// request (it must not be misread as a one-element fan-out).
+#[tokio::test]
+async fn single_eq_on_path_param_one_request() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/items/7"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "id": 7 })))
+        .mount(&server)
+        .await;
+
+    let (ctx, catalog) = build_ctx().await;
+    register_http_source(
+        &typed_source(
+            server.uri(),
+            json!({
+                "endpoint": "/items/{id}",
+                "params": [ { "name": "id", "type": "bigint", "required": true } ],
+                "response": { "path": "$", "schema": [ { "name": "id", "type": "bigint" } ] }
+            }),
+        ),
+        &ctx,
+        catalog.as_ref(),
+    )
+    .await
+    .expect("register");
+
+    let batches = query(&ctx, "SELECT id FROM api.data WHERE id = 7").await;
+    assert_eq!(row_count(&batches), 1);
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].url.path(), "/items/7");
+}
+
+/// Regression guard: a bare scan still rejects a missing required path param —
+/// the fan-out path must not weaken the required-filter safety check.
+#[tokio::test]
+async fn missing_required_path_param_still_errors() {
+    let server = MockServer::start().await;
+    let (ctx, catalog) = build_ctx().await;
+    register_http_source(
+        &typed_source(
+            server.uri(),
+            json!({
+                "endpoint": "/items/{id}",
+                "params": [ { "name": "id", "type": "bigint", "required": true } ],
+                "response": { "path": "$", "schema": [ { "name": "id", "type": "bigint" } ] }
+            }),
+        ),
+        &ctx,
+        catalog.as_ref(),
+    )
+    .await
+    .expect("register");
+
+    let err = ctx
+        .sql("SELECT id FROM api.data")
+        .await
+        .expect("plan")
+        .collect()
+        .await
+        .expect_err("missing required filter should error");
+    assert!(
+        err.to_string().contains("PAWRLY_SAFETY_REQUIRED_FILTER"),
+        "error should carry the safety code: {err}"
     );
 }
 

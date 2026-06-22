@@ -28,6 +28,11 @@ sources:
   - name: cats
     kind: http
     description: Cat Facts API (catfact.ninja) — public, no key.
+    # `pawrly check` runs these against the live API (no auth needed) — one per
+    # table, so a broken endpoint/schema is caught at check time.
+    examples:
+      - SELECT fact, length FROM cats.facts ORDER BY length DESC LIMIT 5
+      - SELECT breed, country FROM cats.breeds LIMIT 5
     config:
       base_url: https://catfact.ninja
 

@@ -6,6 +6,8 @@
 
 #![doc(html_root_url = "https://docs.rs/pawrly-sources-http")]
 
+mod deferred;
+mod dependent_join;
 mod expr;
 mod openapi;
 mod paginate;
@@ -14,6 +16,8 @@ mod register;
 mod source;
 mod typed;
 
+pub use deferred::DeferredHttpScanExec;
+pub use dependent_join::{DependentJoinExec, DependentJoinRule};
 pub use raw::RawHttpTableProvider;
 pub use register::{HttpBuildError, HttpSourceReport, HttpTableSummary, register_http_source};
 pub use source::{
