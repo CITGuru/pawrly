@@ -40,12 +40,7 @@ export function Install() {
               Star on GitHub
               <ArrowRight />
             </a>
-            <GhostCTA
-              href="https://github.com/CITGuru/pawrly#quickstart"
-              external
-            >
-              Read the docs
-            </GhostCTA>
+            <GhostCTA href="/docs">Read the docs</GhostCTA>
           </div>
         </div>
       </div>

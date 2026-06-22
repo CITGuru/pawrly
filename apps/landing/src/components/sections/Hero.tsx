@@ -61,15 +61,13 @@ export function Hero() {
 
         <div className="mt-1 flex flex-col items-center gap-3 sm:flex-row">
           <AgentInstall />
-          <a
-            href="https://github.com/CITGuru/pawrly#quickstart"
-            target="_blank"
-            rel="noreferrer"
+          <Link
+            href="/docs"
             className="inline-flex items-center gap-2 rounded-full bg-sand px-5 py-3 text-sm font-semibold text-ocean-950 transition-colors hover:bg-gold-2"
           >
             Read the docs
             <ArrowRight />
-          </a>
+          </Link>
         </div>
 
         <p className="mt-2 text-xs tracking-wide text-muted-2">
