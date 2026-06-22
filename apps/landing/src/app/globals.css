@@ -296,6 +296,25 @@ body {
   font-family: var(--font-mono), ui-monospace, monospace;
 }
 .prose-pawrly pre code { background: transparent; padding: 0; color: inherit; }
+.prose-pawrly strong { color: var(--cream); font-weight: 600; }
+.prose-pawrly ul, .prose-pawrly ol { margin: 1.1em 0; padding-left: 1.3em; }
+.prose-pawrly li { margin: 0.45em 0; }
+.prose-pawrly ul li { list-style: disc; }
+.prose-pawrly ol li { list-style: decimal; }
+.prose-pawrly li::marker { color: var(--muted-2); }
+.prose-pawrly hr { border: 0; border-top: 1px solid var(--line); margin: 2em 0; }
+.prose-pawrly blockquote {
+  margin: 1.5em 0;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--gold);
+  border-radius: 12px;
+  background: rgba(231, 195, 137, 0.06);
+  padding: 0.85em 1.15em;
+  color: var(--foam);
+}
+.prose-pawrly blockquote p { margin: 0.4em 0; }
+.prose-pawrly blockquote p:first-child { margin-top: 0; }
+.prose-pawrly blockquote p:last-child { margin-bottom: 0; }
 
 /* ----------------------------------------------------------------------------
    Docs prose — rendered markdown under /docs (shiki code, callouts, tables)
