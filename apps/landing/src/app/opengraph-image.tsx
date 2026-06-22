@@ -1,6 +1,6 @@
 import { ImageResponse } from "next/og";
 
-export const alt = "Pawrly — Query APIs, files, MCP tools, and databases with SQL";
+export const alt = "Pawrly — Query APIs, files, MCP servers, and databases with SQL";
 export const size = { width: 1200, height: 630 };
 export const contentType = "image/png";
 
@@ -70,7 +70,7 @@ export default function OpengraphImage() {
               maxWidth: 1000,
             }}
           >
-            Query&nbsp;<span style={{ color: "#f1dcb0" }}>APIs, files,</span>&nbsp;MCP tools, and
+            Query&nbsp;<span style={{ color: "#f1dcb0" }}>APIs, files,</span>&nbsp;MCP servers, and
             databases with SQL.
           </div>
         </div>

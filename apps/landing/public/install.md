@@ -1,8 +1,8 @@
 # Installing Pawrly
 
-> Query APIs, files, MCP tools, and databases with SQL. Describe each
+> Query APIs, files, MCP servers, and databases with SQL. Describe each
 > source once, then use the same table and column names from the CLI, scripts, or
-> MCP clients. Apache-2.0.
+> MCP clients.
 
 This document is written for LLMs and agents: it is the fastest path from nothing
 to a working `pawrly` binary and a first query. Everything here is POSIX-friendly
@@ -57,6 +57,17 @@ pawrly sql "SELECT 1 AS hello"
 ```
 
 A single-row table confirms a healthy install.
+
+## If you are an agent
+
+After install, inspect the workspace before querying:
+
+```sh
+pawrly schema
+```
+
+Then use `pawrly sql "<query>"` for reads, `pawrly mcp-stdio` when connecting an
+MCP client, and `pawrly validate` after editing `pawrly.yaml`.
 
 ## First query — join two local files
 

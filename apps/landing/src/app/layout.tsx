@@ -19,10 +19,10 @@ const display = Newsreader({
 const sans = Geist({ variable: "--font-sans", subsets: ["latin"] });
 const mono = Geist_Mono({ variable: "--font-mono", subsets: ["latin"] });
 
-const DOCUMENT_TITLE = "Pawrly — Query APIs, files, MCP tools, and databases with SQL";
-const SOCIAL_TITLE = "Query APIs, files, MCP tools, and databases with SQL";
+const DOCUMENT_TITLE = "Pawrly — Query APIs, files, MCP servers, and databases with SQL";
+const SOCIAL_TITLE = "Query APIs, files, MCP servers, and databases with SQL";
 const SHARED_DESCRIPTION =
-  "Pawrly lets teams connect APIs, files, MCP tools, and databases, query them with SQL, and give agents the same reviewed workspace.";
+  "Pawrly lets teams connect APIs, files, MCP servers, and databases, query them with SQL, and give agents the same reviewed workspace.";
 
 // Setting an openGraph block suppresses Next's auto-attached opengraph-image, so
 // thread the generated card through explicitly here and on pages that override OG.
@@ -45,7 +45,7 @@ export const metadata: Metadata = {
     "SQL over APIs",
     "query REST API with SQL",
     "OpenAPI to SQL",
-    "MCP tools",
+    "MCP servers",
     "MCP server",
     "agent data access",
     "SQL for agents",

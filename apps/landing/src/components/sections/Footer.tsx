@@ -28,8 +28,8 @@ export function Footer() {
         <div className="flex flex-col gap-4 lg:col-span-5">
           <Logo className="text-lg" />
           <p className="max-w-xs text-sm leading-relaxed text-muted">
-            Query APIs, files, MCPs and databases with SQL, then let agents use the same
-            reviewed workspace.
+            Query APIs, files, MCP servers, and databases with SQL, then let agents use the
+            same reviewed workspace.
           </p>
           <div className="mt-2 flex items-center gap-2">
             <Social href="https://github.com/CITGuru/pawrly" label="GitHub">
@@ -75,7 +75,14 @@ export function Footer() {
       <div className="border-t border-line">
         <div className="mx-auto flex max-w-6xl flex-col items-center justify-between gap-3 px-6 py-5 text-xs text-muted-2 md:flex-row">
           <span>© {new Date().getFullYear()} Pawrly</span>
-          <span>Connect once. Query from anywhere.</span>
+          <div className="flex items-center gap-5">
+            <Link href="/privacy" className="transition-colors hover:text-cream">
+              Privacy
+            </Link>
+            <Link href="/terms" className="transition-colors hover:text-cream">
+              Terms
+            </Link>
+          </div>
         </div>
       </div>
     </footer>

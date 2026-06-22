@@ -8,7 +8,7 @@ export function Sources() {
         <SectionHeader
           eyebrow="Sources"
           title="Query the data where it already lives."
-          description="Bring Stripe, Postgres, CSVs, Snowflake, Linear, and internal MCP tools and APIs into the same SQL question. Pawrly handles the source details so the query can focus on the answer."
+          description="Bring Stripe, CSVs, Linear, internal MCP servers, and Postgres into the same SQL question. Pawrly handles the source details so the query can focus on the answer."
         />
 
         <div className="mt-14 grid gap-5 md:grid-cols-2 lg:grid-cols-3">

@@ -53,7 +53,7 @@ The important context is not always in a warehouse. It is in Stripe, GitHub, Lin
 
 Pawrly takes that seriously. A REST or GraphQL endpoint can be exposed as a table. If there is an OpenAPI spec, Pawrly can use it to create tables from the documented GET operations. If there is an MCP server, Pawrly can consume it as a source too.
 
-That last part is important. Pawrly is not trying to replace MCP. It fits into the MCP world, so new or existing MCPs are supported out of the box.
+That last part is important. Pawrly is not trying to replace MCP. It fits into the MCP world, so new or existing MCP servers are supported out of the box.
 
 It can read from MCP servers as sources, and it can also run as an MCP server itself. So Cursor, Claude Desktop, Codex, or another client can ask Pawrly questions over the same workspace you use locally.
 

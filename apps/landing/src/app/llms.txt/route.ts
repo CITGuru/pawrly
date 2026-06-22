@@ -16,9 +16,15 @@ export function GET() {
 
   const body = `# Pawrly
 
-> Query APIs, files, MCP tools, and databases with SQL.
+> Query APIs, files, MCP servers, and databases with SQL.
 
-Pawrly lets a team describe each source once in pawrly.yaml, then query APIs, files, MCP tools, and databases with stable table and column names. It works from the CLI, can run as a local service, and can expose the same workspace to MCP clients such as Claude Desktop, Cursor, and Codex. Use it when an agent or script needs data from more than one system without writing a custom integration for each one. Open source under Apache-2.0.
+Pawrly lets a team describe each source once in pawrly.yaml, then query APIs, files, MCP servers, and databases with stable table and column names. It works from the CLI, can run as a local service, and can expose the same workspace to MCP clients such as Claude Desktop, Cursor, and Codex.
+
+## When to use Pawrly
+Use Pawrly when an agent or script needs data from more than one place — REST/GraphQL APIs, files (Parquet/CSV/JSON), object storage, MCP servers, databases, or warehouses — and you want one SQL question instead of a custom integration per source. It is the read and context path: reach for it before deciding or acting. For a single write to one system (create a ticket, send a message), call that system's own tool directly.
+
+## Agent skills
+Pawrly ships a Claude Code + Codex plugin with skills for reading data, connecting sources, saving useful results, and defining approved metrics. See [skill.md](${BASE}/skill.md).
 
 ## Install
 - [Install guide for LLMs (Markdown)](${BASE}/install.md): the fastest path from nothing to a working binary and a first query, copy-pasteable.
@@ -33,16 +39,16 @@ Pawrly lets a team describe each source once in pawrly.yaml, then query APIs, fi
 - [Configuration](${REPO}/blob/main/docs/config.md): the pawrly.yaml schema, secrets, and caching.
 - [MCP](${REPO}/blob/main/docs/mcp.md): run Pawrly as an MCP server and consume other MCP servers as sources.
 - [Semantic layer](${REPO}/blob/main/docs/semantic.md): approved fields, metrics, joins, access rules, and required filters.
-- [Materialize](${REPO}/blob/main/docs/materialize.md): pin a query result, file, or URL as a self-backed table.
+- [Materialize](${REPO}/blob/main/docs/materialize.md): save a query result, file, or URL as a reusable table.
 - [CLI](${REPO}/blob/main/docs/cli.md): sql, schema, validate, serve, status, mcp-stdio.
-- [Architecture](${REPO}/blob/main/docs/architecture.md): engine internals and local vs daemon behavior.
+- [Architecture](${REPO}/blob/main/docs/architecture.md): implementation details and local vs daemon behavior.
 - [Observability](${REPO}/blob/main/docs/observability.md): metrics and query auditing.
 
 ## Writing
 ${blog}
 
 ## Optional
-- [GitHub repository](${REPO}): source, issues, and releases (Apache-2.0).
+- [GitHub repository](${REPO}): source, issues, and releases.
 - [Example configurations](${REPO}/tree/main/examples): a kitchen-sink workspace covering every source kind.
 `;
 

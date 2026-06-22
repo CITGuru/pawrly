@@ -50,9 +50,9 @@ export function Hero() {
         </h1>
 
         <p className="max-w-2xl text-lg leading-relaxed text-muted md:text-xl">
-          Connect the APIs, files, MCPs and databases your team already uses. Pawrly gives them
-          table names, columns, and joins, so people and agents can ask one SQL question
-          instead of stitching together data from multiple sources.
+          Connect the APIs, files, MCP servers, and databases your team already uses. Pawrly
+          gives them table names, columns, and joins, so people and agents can ask one SQL
+          question instead of stitching together data from multiple sources.
         </p>
 
         <div className="mt-1 w-full max-w-md">
@@ -73,7 +73,7 @@ export function Hero() {
         </div>
 
         <p className="mt-2 text-xs tracking-wide text-muted-2">
-         Local SQL runtime over your APIs, files and MCPs for Agents
+          Local SQL runtime over your APIs, files, and MCP servers for agents
         </p>
 
         {/* The query, sitting on the water */}
