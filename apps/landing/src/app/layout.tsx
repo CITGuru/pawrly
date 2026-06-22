@@ -56,7 +56,11 @@ export const metadata: Metadata = {
     "no ETL",
   ],
   authors: [{ name: "Pawrly" }],
-  alternates: { canonical: "/" },
+  alternates: {
+    canonical: "/",
+    // Discovery hint for agents: <link rel="alternate" type="text/plain" href="/llms.txt">
+    types: { "text/plain": "/llms.txt" },
+  },
   robots: { index: true, follow: true },
   openGraph: {
     type: "website",

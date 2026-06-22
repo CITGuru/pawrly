@@ -22,6 +22,23 @@ export default function sitemap(): MetadataRoute.Sitemap {
     },
   ];
 
+  // Agent-facing resources (the /llms.txt hub + the LLM install guide), surfaced
+  // here so sitemap-consuming crawlers and AI tools can find them too.
+  const agentRoutes: MetadataRoute.Sitemap = [
+    {
+      url: `${SITE}/llms.txt`,
+      lastModified: now,
+      changeFrequency: "weekly",
+      priority: 0.6,
+    },
+    {
+      url: `${SITE}/install.md`,
+      lastModified: now,
+      changeFrequency: "weekly",
+      priority: 0.6,
+    },
+  ];
+
   const featureRoutes: MetadataRoute.Sitemap = features.map((f) => ({
     url: `${SITE}/features/${f.slug}`,
     lastModified: now,
@@ -36,5 +53,5 @@ export default function sitemap(): MetadataRoute.Sitemap {
     priority: 0.7,
   }));
 
-  return [...staticRoutes, ...featureRoutes, ...blogRoutes];
+  return [...staticRoutes, ...agentRoutes, ...featureRoutes, ...blogRoutes];
 }
