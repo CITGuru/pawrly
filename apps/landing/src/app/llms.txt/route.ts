@@ -33,16 +33,17 @@ Pawrly ships a Claude Code + Codex plugin with skills for reading data, connecti
 - [pawrly.schema.json](${BASE}/pawrly.schema.json): JSON Schema for pawrly.yaml — reference it with \`# yaml-language-server: $schema=https://pawrly.dev/pawrly.schema.json\` for editor completion + validation.
 
 ## Documentation
-- [Quickstart](${REPO}#quickstart): install, first query over files, first query over live APIs.
-- [Overview](${REPO}/blob/main/docs/overview.md): what Pawrly is and how the pieces fit.
-- [Sources reference](${REPO}/blob/main/docs/sources.md): configure APIs, files, MCP servers, databases, warehouses, and lakehouses.
-- [Configuration](${REPO}/blob/main/docs/config.md): the pawrly.yaml schema, secrets, and caching.
-- [MCP](${REPO}/blob/main/docs/mcp.md): run Pawrly as an MCP server and consume other MCP servers as sources.
-- [Semantic layer](${REPO}/blob/main/docs/semantic.md): approved fields, metrics, joins, access rules, and required filters.
-- [Materialize](${REPO}/blob/main/docs/materialize.md): save a query result, file, or URL as a reusable table.
-- [CLI](${REPO}/blob/main/docs/cli.md): sql, schema, validate, serve, status, mcp-stdio.
-- [Architecture](${REPO}/blob/main/docs/architecture.md): implementation details and local vs daemon behavior.
-- [Observability](${REPO}/blob/main/docs/observability.md): metrics and query auditing.
+- [Docs home](${BASE}/docs): all guides and reference, with a copyable markdown view per page.
+- [Docs index for LLMs](${BASE}/docs/llms.txt): every doc page linked as raw Markdown (.md).
+- [Overview](${BASE}/docs/overview): what Pawrly is and how the pieces fit.
+- [CLI](${BASE}/docs/cli): sql, schema, validate, serve, status, mcp-stdio.
+- [Configuration](${BASE}/docs/config): the pawrly.yaml schema, secrets, and caching.
+- [Sources reference](${BASE}/docs/sources): configure APIs, files, MCP servers, databases, warehouses, and lakehouses.
+- [Semantic layer](${BASE}/docs/semantic): approved fields, metrics, joins, access rules, and required filters.
+- [Materialized tables](${BASE}/docs/materialize): save a query result, file, or URL as a reusable table.
+- [MCP](${BASE}/docs/mcp): run Pawrly as an MCP server and consume other MCP servers as sources.
+- [Observability](${BASE}/docs/observability): metrics and query auditing.
+- [Architecture](${BASE}/docs/architecture): implementation details and local vs daemon behavior.
 
 ## Writing
 ${blog}

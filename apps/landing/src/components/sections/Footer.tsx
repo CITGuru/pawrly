@@ -13,7 +13,7 @@ const cols: { heading: string; links: { label: string; href: string; external?: 
   {
     heading: "Resources",
     links: [
-      { label: "Docs", href: "https://github.com/CITGuru/pawrly#quickstart", external: true },
+      { label: "Docs", href: "/docs" },
       { label: "Blog", href: "/blog" },
       { label: "GitHub", href: "https://github.com/CITGuru/pawrly", external: true },
       { label: "Examples", href: "https://github.com/CITGuru/pawrly/tree/main/examples", external: true },

@@ -1,6 +1,7 @@
 import type { MetadataRoute } from "next";
 import { getPosts } from "@/lib/posts";
 import { features } from "@/lib/features";
+import { docList } from "@/lib/docs-config";
 
 const SITE = "https://pawrly.dev";
 
@@ -61,6 +62,27 @@ export default function sitemap(): MetadataRoute.Sitemap {
       changeFrequency: "monthly",
       priority: 0.6,
     },
+    {
+      url: `${SITE}/docs/llms.txt`,
+      lastModified: now,
+      changeFrequency: "weekly",
+      priority: 0.6,
+    },
+  ];
+
+  const docsRoutes: MetadataRoute.Sitemap = [
+    {
+      url: `${SITE}/docs`,
+      lastModified: now,
+      changeFrequency: "weekly",
+      priority: 0.7,
+    },
+    ...docList.map((d) => ({
+      url: `${SITE}/docs/${d.slug}`,
+      lastModified: now,
+      changeFrequency: "weekly" as const,
+      priority: 0.7,
+    })),
   ];
 
   const featureRoutes: MetadataRoute.Sitemap = features.map((f) => ({
@@ -77,5 +99,5 @@ export default function sitemap(): MetadataRoute.Sitemap {
     priority: 0.7,
   }));
 
-  return [...staticRoutes, ...agentRoutes, ...featureRoutes, ...blogRoutes];
+  return [...staticRoutes, ...agentRoutes, ...docsRoutes, ...featureRoutes, ...blogRoutes];
 }
