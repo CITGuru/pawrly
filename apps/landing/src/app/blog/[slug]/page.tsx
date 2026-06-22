@@ -18,6 +18,9 @@ export async function generateMetadata({
   const { slug } = await params;
   const post = getPost(slug);
   if (!post) return { title: "Not found" };
+  // Use the post's own image when it has one; otherwise fall back to the
+  // generated card from blog/[slug]/opengraph-image.tsx (file convention).
+  const img = post.image?.src;
   return {
     title: post.title,
     description: post.excerpt,
@@ -25,13 +28,13 @@ export async function generateMetadata({
       title: post.title,
       description: post.excerpt,
       type: "article",
-      images: ["/opengraph-image"],
+      ...(img ? { images: [img] } : {}),
     },
     twitter: {
       card: "summary_large_image",
       title: post.title,
       description: post.excerpt,
-      images: ["/opengraph-image"],
+      ...(img ? { images: [img] } : {}),
     },
   };
 }

@@ -24,6 +24,7 @@ export async function generateMetadata({
     description: meta.blurb,
     // Advertise the raw markdown so agents can fetch /docs/<slug>.md directly.
     alternates: { types: { "text/markdown": `/docs/${slug}.md` } },
+    // Per-doc OG card comes from docs/[slug]/opengraph-image.tsx (file convention).
     openGraph: { title: `${meta.title} — Pawrly docs`, description: meta.blurb, type: "article" },
   };
 }
