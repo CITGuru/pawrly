@@ -35,7 +35,7 @@ export function Hero() {
       <div className="relative mx-auto flex max-w-6xl flex-col items-center gap-7 px-6 text-center">
         <Link
           href="/blog/agents-need-a-query-surface-not-more-tools"
-          className="glass inline-flex items-center gap-2 rounded-full border border-line px-3 py-1.5 text-xs text-foam transition-colors hover:text-cream"
+          className="glass inline-flex items-center gap-2 rounded-full border border-line px-2 py-1.5 text-xs text-foam transition-colors hover:text-cream"
         >
           <span className="rounded-full bg-gold px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-ocean-950">
             New

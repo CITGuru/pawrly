@@ -21,9 +21,9 @@ export function Sources() {
             >
               <div className="flex items-baseline justify-between gap-3">
                 <h3 className="font-display text-2xl text-cream">{group.kind}</h3>
-                <span className="font-mono text-[11px] uppercase tracking-[0.18em] text-gold/70">
+                {/* <span className="font-mono text-[11px] uppercase tracking-[0.18em] text-gold/70">
                   table
-                </span>
+                </span> */}
               </div>
               <p className="text-sm leading-relaxed text-muted">{group.blurb}</p>
               <div className="mt-auto flex flex-wrap gap-2 pt-1">
