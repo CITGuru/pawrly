@@ -20,6 +20,18 @@ export default function sitemap(): MetadataRoute.Sitemap {
       changeFrequency: "weekly",
       priority: 0.8,
     },
+    {
+      url: `${SITE}/privacy`,
+      lastModified: now,
+      changeFrequency: "yearly",
+      priority: 0.3,
+    },
+    {
+      url: `${SITE}/terms`,
+      lastModified: now,
+      changeFrequency: "yearly",
+      priority: 0.3,
+    },
   ];
 
   // Agent-facing resources (the /llms.txt hub + the LLM install guide), surfaced
@@ -32,9 +44,21 @@ export default function sitemap(): MetadataRoute.Sitemap {
       priority: 0.6,
     },
     {
+      url: `${SITE}/llms-full.txt`,
+      lastModified: now,
+      changeFrequency: "weekly",
+      priority: 0.6,
+    },
+    {
       url: `${SITE}/install.md`,
       lastModified: now,
       changeFrequency: "weekly",
+      priority: 0.6,
+    },
+    {
+      url: `${SITE}/skill.md`,
+      lastModified: now,
+      changeFrequency: "monthly",
       priority: 0.6,
     },
   ];

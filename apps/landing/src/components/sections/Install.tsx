@@ -22,7 +22,7 @@ export function Install() {
             One binary. One config. <span className="italic text-gold-2">Every source.</span>
           </h2>
           <p className="max-w-xl text-base leading-relaxed text-muted md:text-lg">
-            Start with one config file, then query APIs, files, MCP tools, and databases from
+            Start with one config file, then query APIs, files, MCP servers, and databases from
             the same command. Add MCP when you want agents to use that same workspace.
           </p>
 

@@ -53,7 +53,7 @@ export default function MaterializationPage() {
       <FeatureBlock
         eyebrow="Use it again"
         title="Query it like any other table"
-        body="Once a result is saved, use it in normal SQL beside live APIs, files, MCP tools, and databases. The query does not need to know whether the rows came from a fresh source or a saved result."
+        body="Once a result is saved, use it in normal SQL beside live APIs, files, MCP servers, and databases. The query does not need to know whether the rows came from a fresh source or a saved result."
         reverse
       >
         <CodeBlock lang="bash" title="pawrly sql" code={QUERY} />
