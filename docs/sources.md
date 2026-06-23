@@ -552,7 +552,7 @@ Each table's request is built from these flat fields:
 
 `params` declares the columns a table accepts as filters. Each is `{ name, type (default varchar), required (default false), default, accepts, emit, explode, derive, filterable }`:
 
-- `required: true` — the param must appear as a SQL filter, or the scan fails with a clear error (rather than fetching an unbounded result).
+- `required: true` — the param must be bound by a SQL filter — an equality, an `IN (...)` list, or a join key (see *dependent joins* below) — or the scan fails with a clear error (rather than fetching an unbounded result).
 - `default` — value used when the user doesn't filter on it.
 - `filterable: true` — let the param be used in a `WHERE` clause. Normally a param can only be filtered on if it's also a `response.schema` column; this exposes it as a column without declaring one. Use it for a filter the API accepts but doesn't return.
 
@@ -570,7 +570,8 @@ Each table's request is built from these flat fields:
             emit: { ">=": since, "<=": until }   # WHERE created >= X → ?since=X
 ```
 
-- **explode** — `explode: true` pushes a SQL `IN (a, b, c)` filter down as repeated query pairs (`?key=a&key=b&key=c`) instead of post-filtering. Equality still emits a single pair; a non-`explode` `IN` is filtered in-engine as before. Only honored for the query string (not path/body params).
+- **explode** — `explode: true` pushes a SQL `IN (a, b, c)` on a *query* param down as repeated query pairs (`?key=a&key=b&key=c`) in a single request. Equality still emits a single pair. Only honored for the query string (not path/body params).
+- **`IN (...)` on a path or `required` param** fans out to one request per value (no `explode` needed) and unions the results — the typed-table equivalent of the raw table's behavior — bounded by `LIMIT` and `safety.max_rows`. An `IN` on a plain (non-path, non-`required`, non-`explode`) param is still filtered in-engine.
 - **derive** — compute the param's value when the query doesn't supply one (a dynamic default), tagged by `kind`:
   - `ago` — `{ kind: ago, seconds: N }` → epoch seconds `now - N` (a relative time window, e.g. "last hour").
   - `split` — `{ kind: split, from: <other param>, separator: "-", part: 0 }` → a `part` (0-based) of another bound param's value split by `separator`. Useful to derive request fields from a composite filter (e.g. an issue key `ENG-123` → team `ENG` + number `123`). A derived param that feeds a body template stays out of the query string.
@@ -582,6 +583,8 @@ Each table's request is built from these flat fields:
 ```
 
 A param can also be surfaced as an output column with `source: param` on a `response.schema` entry (see below).
+
+**Dependent (bind) joins.** A `required` param can also be satisfied by a join key, so a get-by-id / detail table is driven from the ids another table produces — `ranked t JOIN detail d ON d.id = t.id LIMIT 10`. The driver runs once, its distinct keys feed the detail fetch (the `IN` fan-out above), and the lookup is bounded by an enclosing `LIMIT`. Works across sources and hosts; limited to inner joins on a single column key.
 
 #### Response
 

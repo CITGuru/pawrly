@@ -170,12 +170,21 @@ impl LocalEngine {
         config_path: Option<PathBuf>,
     ) -> Result<Self, EngineError> {
         use datafusion::execution::config::SessionConfig;
+        use datafusion::execution::session_state::SessionStateBuilder;
 
         let session_config = SessionConfig::new()
             .with_default_catalog_and_schema(PAWRLY_CATALOG, "default")
             .with_create_default_catalog_and_schema(false)
             .with_information_schema(true);
-        let mut ctx = SessionContext::new_with_config(session_config);
+        // Register the dependent-join rule (last, after the built-in physical
+        // rules) so a required-param HTTP table can be driven by another table's
+        // ids — e.g. a ranked-id list joined to a get-by-id detail endpoint.
+        let session_state = SessionStateBuilder::new()
+            .with_config(session_config)
+            .with_default_features()
+            .with_physical_optimizer_rule(Arc::new(pawrly_sources_http::DependentJoinRule::new()))
+            .build();
+        let mut ctx = SessionContext::new_with_state(session_state);
         // Register the JSON SQL functions so `json`-typed columns (stored as
         // Utf8) are queryable in SQL.
         crate::json_udf::register(&mut ctx)
