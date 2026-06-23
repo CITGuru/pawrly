@@ -373,9 +373,11 @@ async fn stream_response(
             }
             ([(header::CONTENT_TYPE, "application/x-ndjson")], body).into_response()
         }
-        "csv" => {
-            ([(header::CONTENT_TYPE, "text/csv")], rows_to_csv(&columns, &rows)).into_response()
-        }
+        "csv" => (
+            [(header::CONTENT_TYPE, "text/csv")],
+            rows_to_csv(&columns, &rows),
+        )
+            .into_response(),
         other => error_response(
             StatusCode::BAD_REQUEST,
             "PAWRLY_BAD_FORMAT",
@@ -506,7 +508,10 @@ mod tests {
         let engine = MockEngine::new();
         engine.canned("SELECT", vec![MockEngine::one_row(7, "z")]);
         let resp = app(engine, None)
-            .oneshot(post_json("/v1/sql", r#"{"sql":"SELECT 1","format":"ndjson"}"#))
+            .oneshot(post_json(
+                "/v1/sql",
+                r#"{"sql":"SELECT 1","format":"ndjson"}"#,
+            ))
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
@@ -520,7 +525,8 @@ mod tests {
         let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
             .await
             .unwrap();
-        let line: Value = serde_json::from_slice(bytes.split(|b| *b == b'\n').next().unwrap()).unwrap();
+        let line: Value =
+            serde_json::from_slice(bytes.split(|b| *b == b'\n').next().unwrap()).unwrap();
         assert_eq!(line["id"], "7");
     }
 
@@ -553,7 +559,12 @@ mod tests {
     #[tokio::test]
     async fn healthz_needs_no_auth() {
         let resp = app(MockEngine::new(), Some("s3cret"))
-            .oneshot(Request::builder().uri("/healthz").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/healthz")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
@@ -564,13 +575,22 @@ mod tests {
         let engine = MockEngine::new();
         engine.add_source("gh", SourceKind::Http);
         let resp = app(engine, None)
-            .oneshot(Request::builder().uri("/v1/sources").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/sources")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         let v = json_body(resp).await;
         assert!(
-            v["sources"].as_array().unwrap().iter().any(|s| s["name"] == "gh"),
+            v["sources"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|s| s["name"] == "gh"),
             "sources: {v}"
         );
     }
@@ -618,8 +638,14 @@ mod tests {
 
     #[tokio::test]
     async fn schema_models_cache_health_are_200() {
-        assert_eq!(get(MockEngine::new(), "/v1/schema").await.status(), StatusCode::OK);
-        assert_eq!(get(MockEngine::new(), "/v1/health").await.status(), StatusCode::OK);
+        assert_eq!(
+            get(MockEngine::new(), "/v1/schema").await.status(),
+            StatusCode::OK
+        );
+        assert_eq!(
+            get(MockEngine::new(), "/v1/health").await.status(),
+            StatusCode::OK
+        );
 
         let models = get(MockEngine::new(), "/v1/semantic/models").await;
         assert_eq!(models.status(), StatusCode::OK);
