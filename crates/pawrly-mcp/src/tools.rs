@@ -3,9 +3,7 @@
 
 use std::sync::Arc;
 
-use arrow_array::{Array, RecordBatch};
-use arrow_cast::display::{ArrayFormatter, FormatOptions};
-use pawrly_core::{EngineService, EngineServiceExt};
+use pawrly_core::{EngineService, EngineServiceExt, format_batches};
 use serde_json::{Value, json};
 
 /// Stable list of tool descriptors returned by `tools/list`.
@@ -689,57 +687,6 @@ fn row_bounded_sql(sql: &str, limit: u64) -> String {
     } else {
         trimmed.to_string()
     }
-}
-
-fn format_batches(
-    batches: &[RecordBatch],
-    max: usize,
-) -> (Vec<String>, Vec<Vec<Value>>, usize, bool) {
-    let columns: Vec<String> = batches
-        .first()
-        .map(|b| {
-            b.schema()
-                .fields()
-                .iter()
-                .map(|f| f.name().clone())
-                .collect()
-        })
-        .unwrap_or_default();
-    let opts = FormatOptions::default();
-    let mut rows: Vec<Vec<Value>> = Vec::new();
-    let mut total = 0usize;
-    let mut truncated = false;
-    'outer: for batch in batches {
-        let formatters: Vec<ArrayFormatter<'_>> = match batch
-            .columns()
-            .iter()
-            .map(|c| ArrayFormatter::try_new(c.as_ref(), &opts))
-            .collect::<Result<_, _>>()
-        {
-            Ok(fs) => fs,
-            Err(_) => continue,
-        };
-        for r in 0..batch.num_rows() {
-            if total >= max {
-                truncated = true;
-                break 'outer;
-            }
-            let row: Vec<Value> = formatters
-                .iter()
-                .enumerate()
-                .map(|(i, f)| {
-                    if batch.column(i).is_null(r) {
-                        Value::Null
-                    } else {
-                        Value::String(format!("{}", f.value(r)))
-                    }
-                })
-                .collect();
-            rows.push(row);
-            total += 1;
-        }
-    }
-    (columns, rows, total, truncated)
 }
 
 #[derive(Debug, thiserror::Error)]

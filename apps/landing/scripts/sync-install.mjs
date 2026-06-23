@@ -30,9 +30,6 @@ for (const [srcRel, destName] of ASSETS) {
   console.log(`[sync-assets] copied ${srcRel} -> public/${destName}`);
 }
 
-// Sync the repo docs into the app so /docs can render them. Single source of
-// truth stays in repo docs/; the copy here is a build artifact (gitignored).
-// README.md (a plain TOC) and the internal/ dir are excluded from the site.
 const docsSrc = join(repoRoot, "docs");
 const docsDest = join(here, "..", "public", "docs");
 const DOCS_EXCLUDE = new Set(["README.md"]);

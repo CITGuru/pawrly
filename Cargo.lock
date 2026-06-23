@@ -3317,6 +3317,7 @@ name = "pawrly-core"
 version = "0.1.0"
 dependencies = [
  "arrow-array",
+ "arrow-cast",
  "arrow-schema",
  "async-stream",
  "async-trait",
@@ -3399,8 +3400,6 @@ dependencies = [
 name = "pawrly-mcp"
 version = "0.1.0"
 dependencies = [
- "arrow-array",
- "arrow-cast",
  "arrow-schema",
  "async-trait",
  "axum 0.7.9",
@@ -3487,6 +3486,7 @@ dependencies = [
  "prost-types 0.13.5",
  "rcgen",
  "rust-embed",
+ "serde",
  "serde_json",
  "serde_yaml",
  "tempfile",

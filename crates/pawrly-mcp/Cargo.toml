@@ -12,9 +12,7 @@ workspace = true
 
 [dependencies]
 pawrly-core = { workspace = true }
-arrow-array = { workspace = true }
 arrow-schema = { workspace = true }
-arrow-cast = "58"
 async-trait = { workspace = true }
 axum = { workspace = true }
 serde = { workspace = true }
