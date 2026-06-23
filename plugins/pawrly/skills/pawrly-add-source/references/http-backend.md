@@ -69,13 +69,15 @@ auth:
 
 Each: `{ name, type, required, default, accepts, emit, explode, derive }`.
 
-- `required: true` — must appear as a SQL filter or the scan fails (no unbounded fetch).
+- `required: true` — must be bound by an equality, an `IN (...)` list, or a join key, or the scan fails (no unbounded fetch).
 - Equality pushes down by default (`WHERE state = 'open'` → `?state=open`).
 - **Comparisons** — list operators in `accepts`, map each to a query param in `emit`:
   ```yaml
   - { name: created, accepts: [">=", "<="], emit: { ">=": since, "<=": until } }
   ```
-- **`explode: true`** — push `IN (a,b,c)` down as repeated pairs `?key=a&key=b&key=c`.
+- **`explode: true`** — push `IN (a,b,c)` on a *query* param down as repeated pairs `?key=a&key=b&key=c` (one request).
+- **`IN (...)` on a path / `required` param** fans out to one request per value (no `explode` needed), unioned and bounded by `LIMIT`.
+- **Dependent joins** — a `required` param can be bound by a join key, so a get-by-id table is driven from another table's ids (`ranked t JOIN detail d ON d.id = t.id LIMIT 10`), bounded by the `LIMIT`.
 - **`derive`** — dynamic default: `{ kind: ago, seconds: 3600 }` (epoch `now-N`), or `{ kind: split, from: <param>, separator: "-", part: 0 }`.
 
 ## Response
