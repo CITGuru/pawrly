@@ -57,6 +57,21 @@ impl Interceptor for AuthInterceptor {
     }
 }
 
+/// Bearer check for the REST surface, mirroring [`AuthInterceptor`] but over an
+/// `http::HeaderMap` instead of tonic metadata. `expected == None` means auth is
+/// disabled (loopback only) and every request passes; otherwise the presented
+/// `Authorization: Bearer <token>` must match in constant time.
+pub(crate) fn check_bearer(expected: Option<&str>, headers: &http::HeaderMap) -> bool {
+    let Some(expected) = expected else {
+        return true;
+    };
+    let presented = headers
+        .get(http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(bearer_token);
+    matches!(presented, Some(tok) if constant_time_eq(tok.as_bytes(), expected.as_bytes()))
+}
+
 /// Extract the token from an `Authorization` header value, matching the
 /// `Bearer` scheme case-insensitively.
 fn bearer_token(header: &str) -> Option<&str> {

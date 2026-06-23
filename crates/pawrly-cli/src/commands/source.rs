@@ -150,8 +150,6 @@ async fn run_add(
     no_remote: bool,
     args: AddArgs,
 ) -> anyhow::Result<()> {
-    // 1. Classify the target into a source definition. Building from a kind uses
-    //    the flags; importing a file/URL/catalog fetches a ready-made spec.
     let target = classify_target(&args.target);
     if !matches!(target, AddTarget::Kind(_)) && has_build_flags(&args) {
         anyhow::bail!(
@@ -175,7 +173,7 @@ async fn run_add(
         }
     };
 
-    // 2. `--name` renames an imported source (and is the name when building).
+    // `--name` renames an imported source.
     if let Some(name) = &args.name {
         source_def.name = name.clone();
     }
@@ -183,8 +181,8 @@ async fn run_add(
         anyhow::bail!("source name is empty; pass --name");
     }
 
-    // 3. Resolve the workspace + duplicate guard across the assembled config:
-    //    an existing per-source file, or a name already declared anywhere.
+    // Reject a name already present as a per-source file or anywhere in the
+    // assembled config.
     let yaml_path = resolve_yaml_path(config.clone(), home.as_deref())?;
     let source_path = source_file_path(&yaml_path, &source_def.name);
     if source_path.exists() {
@@ -205,9 +203,7 @@ async fn run_add(
         );
     }
 
-    // 4. Validate against a live engine BEFORE writing, unless --no-verify. The
-    //    engine sees the workspace without the new source; add_source enumerates
-    //    its tables. A rejected source leaves no partial file behind.
+    // add_source is the validation step; a rejected source leaves no file behind.
     let info = if args.no_verify {
         None
     } else {
@@ -216,8 +212,8 @@ async fn run_add(
         Some(engine.add_source(source_to_engine_def(&source_def)).await?)
     };
 
-    // 5. Persist as its own file, then ensure the root includes `sources/*.yaml`
-    //    (added now that a file backs the glob).
+    // The include glob is wired only now that a file backs it — an empty glob
+    // fails to load.
     write_source_file(&source_path, &source_def)?;
     ensure_root_includes_sources_glob(&yaml_path)?;
 
@@ -511,7 +507,7 @@ async fn run_remove(
 
     let mut changed_disk = false;
 
-    // 1. Per-source file (the layout `source add` writes).
+    // The per-source file (the layout `source add` writes).
     let source_path = source_file_path(&yaml_path, &args.name);
     if source_path.exists() {
         std::fs::remove_file(&source_path)
@@ -519,9 +515,9 @@ async fn run_remove(
         changed_disk = true;
     }
 
-    // 2. Inline entry in the root (back-compat with single-file workspaces),
-    //    plus dropping the `sources/*.yaml` include once no per-source file
-    //    remains — an include glob matching nothing would fail the next load.
+    // Any inline entry in the root (back-compat with single-file workspaces),
+    // plus dropping the `sources/*.yaml` include once no per-source file remains
+    // — an include glob matching nothing would fail the next load.
     if yaml_path.exists() {
         let mut cfg = read_or_init_config(&yaml_path)?;
         let before_sources = cfg.sources.len();
@@ -673,9 +669,8 @@ fn source_to_engine_def(s: &ConfigSourceDef) -> pawrly_core::SourceDef {
 /// Mirrors the engine's read-path discovery (`engine::default_config_path`):
 /// `--config` → `$PAWRLY_CONFIG` → `./pawrly.yaml` (if it exists) →
 /// `<home>/pawrly.yaml` (the default workspace, where `<home>` is `--home` /
-/// `$PAWRLY_HOME` / `~/.pawrly`). The home fallback is returned whether or not
-/// the file exists yet — the writer bootstraps it on first use, so the default
-/// workspace stops being a phantom that's only ever read.
+/// `$PAWRLY_HOME` / `~/.pawrly`). The home fallback is returned even if the file
+/// doesn't exist yet; the writer bootstraps it on first use.
 fn resolve_yaml_path(explicit: Option<PathBuf>, home: Option<&Path>) -> anyhow::Result<PathBuf> {
     if let Some(p) = explicit {
         return Ok(p);
@@ -737,9 +732,9 @@ fn write_source_file(path: &Path, def: &ConfigSourceDef) -> anyhow::Result<()> {
 }
 
 /// Ensure the root manifest exists and pulls in `sources/*.yaml`. Bootstraps a
-/// starter root when missing (Point 1) and adds the include glob only once a
-/// per-source file exists — an `include:` glob that matches nothing is a hard
-/// load error, so it must never be written for an empty `sources/` dir.
+/// starter root when missing and adds the include glob only once a per-source
+/// file exists — an `include:` glob that matches nothing is a hard load error,
+/// so it must never be written for an empty `sources/` dir.
 fn ensure_root_includes_sources_glob(root: &Path) -> anyhow::Result<()> {
     let existed = root.exists();
     let mut cfg = read_or_init_config(root)?;

@@ -27,6 +27,7 @@ export const docGroups: DocGroup[] = [
     items: [
       { slug: "semantic", title: "Semantic layer", blurb: "Dimensions, measures, relationships, segments, RLS, and pre-aggregations." },
       { slug: "materialize", title: "Materialized tables", blurb: "Pin a query, file, or URL as a self-backed table." },
+      { slug: "api", title: "REST API", blurb: "Query and manage a workspace over JSON-over-HTTP, with an OpenAPI spec." },
     ],
   },
   {

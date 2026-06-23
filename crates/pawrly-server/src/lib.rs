@@ -5,6 +5,7 @@
 
 mod auth;
 mod error;
+mod rest;
 mod services;
 
 pub use auth::{AuthInterceptor, AuthMode};
@@ -167,12 +168,19 @@ impl ServerBuilder {
         }
         let cors_origin = opts.cors_origin;
 
+        let bearer = match &self.auth {
+            AuthMode::None => None,
+            AuthMode::Bearer { token } => Some(Arc::from(token.as_str())),
+        };
+        let rest = rest::rest_router(self.engine.clone(), bearer);
+
         // `Routes` is itself a `Service<Request<BoxBody>>`, so gRPC-Web layers on
         // directly; one axum fallback splits `/pawrly.v1.*` from static assets.
         let grpc = GrpcWebLayer::new().layer(self.service_routes());
-        let app = axum::Router::new()
+        let console = axum::Router::new()
             .fallback(console_dispatch)
             .with_state(ConsoleState { grpc });
+        let app = rest.merge(console);
 
         let app = match &cors_origin {
             Some(origin) => app.layer(console_cors(origin)?),

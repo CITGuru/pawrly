@@ -1,0 +1,457 @@
+openapi: 3.0.3
+info:
+  title: Pawrly REST API
+  version: "1"
+  description: >
+    JSON-over-HTTP surface for the Pawrly engine, served on the same axum
+    address as gRPC-Web (`pawrly console` / `pawrly serve --console`). The two
+    primary endpoints are `POST /v1/sql` (raw SQL) and `POST /v1/query`
+    (a governed semantic query). Every endpoint except `/healthz` and the spec
+    endpoints requires a bearer token when one is configured; a non-loopback
+    bind always requires one. Errors share an envelope carrying a stable
+    `PAWRLY_*` code.
+servers:
+  - url: http://127.0.0.1:8787
+    description: Default loopback console/REST bind
+security:
+  - bearerAuth: []
+tags:
+  - name: query
+  - name: catalog
+  - name: semantic
+  - name: cache
+  - name: materialized
+  - name: system
+paths:
+  /v1/sql:
+    post:
+      tags: [query]
+      summary: Run raw SQL
+      operationId: runSql
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SqlRequest' }
+      responses:
+        '200':
+          description: Result rows. Encoding depends on `format`.
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/QueryResult' } }
+            application/x-ndjson: { schema: { type: string } }
+            text/csv: { schema: { type: string } }
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
+  /v1/query:
+    post:
+      tags: [query, semantic]
+      summary: Run a governed semantic query
+      operationId: runSemanticQuery
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SemanticQuery' }
+      responses:
+        '200':
+          description: Result rows (JSON).
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/QueryResult' } }
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
+  /v1/explain:
+    post:
+      tags: [query]
+      summary: Optimized / analyzed plan for a SQL string
+      operationId: explain
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ExplainRequest' }
+      responses:
+        '200':
+          description: The plan text.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  plan: { type: string }
+        '400': { $ref: '#/components/responses/Error' }
+  /v1/sources:
+    get:
+      tags: [catalog]
+      summary: List sources
+      operationId: listSources
+      responses:
+        '200':
+          description: All configured sources.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sources:
+                    type: array
+                    items: { $ref: '#/components/schemas/SourceInfo' }
+  /v1/sources/{name}:
+    get:
+      tags: [catalog]
+      summary: One source's info
+      operationId: getSource
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: The source.
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/SourceInfo' } }
+        '404': { $ref: '#/components/responses/Error' }
+  /v1/tables:
+    get:
+      tags: [catalog]
+      summary: List tables
+      operationId: listTables
+      responses:
+        '200':
+          description: All tables across sources.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tables:
+                    type: array
+                    items: { $ref: '#/components/schemas/TableInfo' }
+  /v1/tables/{name}:
+    get:
+      tags: [catalog]
+      summary: Describe a table
+      operationId: describeTable
+      parameters:
+        - name: name
+          in: path
+          required: true
+          description: "`schema.table`"
+          schema: { type: string }
+      responses:
+        '200':
+          description: Table schema + metadata.
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/TableDescription' } }
+        '400': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+  /v1/schema:
+    get:
+      tags: [catalog]
+      summary: Full catalog snapshot
+      operationId: schemaSnapshot
+      parameters:
+        - name: sources
+          in: query
+          required: false
+          description: Comma-separated source names to scope the snapshot.
+          schema: { type: string }
+        - name: compact
+          in: query
+          required: false
+          description: Drop per-column detail.
+          schema: { type: boolean }
+      responses:
+        '200':
+          description: Catalog snapshot.
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/CatalogSnapshot' } }
+  /v1/semantic/models:
+    get:
+      tags: [semantic]
+      summary: List semantic models
+      operationId: listSemanticModels
+      responses:
+        '200':
+          description: Models.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  models:
+                    type: array
+                    items: { $ref: '#/components/schemas/SemanticModelInfo' }
+  /v1/semantic/models/{name}:
+    get:
+      tags: [semantic]
+      summary: Describe a semantic model
+      operationId: describeSemanticModel
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Model dimensions + measures.
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/SemanticModelDescription' } }
+        '400': { $ref: '#/components/responses/Error' }
+  /v1/cache:
+    get:
+      tags: [cache]
+      summary: Cache inventory
+      operationId: cacheEntries
+      responses:
+        '200':
+          description: Cache entries.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  entries:
+                    type: array
+                    items: { $ref: '#/components/schemas/CacheEntryInfo' }
+  /v1/materialized/{name}:
+    put:
+      tags: [materialized]
+      summary: Create or replace a materialized table
+      operationId: materialize
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MaterializeSpec' }
+      responses:
+        '200':
+          description: Materialize outcome.
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/MaterializeOutcome' } }
+        '400': { $ref: '#/components/responses/Error' }
+    delete:
+      tags: [materialized]
+      summary: Drop a materialized table
+      operationId: dropMaterialized
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Dropped.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  dropped: { type: boolean }
+                  name: { type: string }
+        '404': { $ref: '#/components/responses/Error' }
+  /v1/health:
+    get:
+      tags: [system]
+      summary: Engine health report
+      operationId: health
+      responses:
+        '200':
+          description: Health.
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/HealthReport' } }
+  /healthz:
+    get:
+      tags: [system]
+      summary: Liveness probe (unauthenticated)
+      operationId: healthz
+      security: []
+      responses:
+        '200':
+          description: "ok"
+          content:
+            text/plain: { schema: { type: string } }
+  /v1/openapi.json:
+    get:
+      tags: [system]
+      summary: This document (JSON)
+      operationId: openapiJson
+      security: []
+      responses:
+        '200':
+          description: OpenAPI document.
+          content:
+            application/json: { schema: { type: object } }
+  /v1/openapi.yaml:
+    get:
+      tags: [system]
+      summary: This document (YAML)
+      operationId: openapiYaml
+      security: []
+      responses:
+        '200':
+          description: OpenAPI document.
+          content:
+            application/yaml: { schema: { type: string } }
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+  responses:
+    Error:
+      description: Error envelope carrying a stable Pawrly error code.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+  schemas:
+    SqlRequest:
+      type: object
+      required: [sql]
+      properties:
+        sql: { type: string }
+        params:
+          type: object
+          additionalProperties: { type: string }
+          description: "Substitutions for ${param:KEY} in the SQL."
+        format: { type: string, enum: [json, ndjson, csv], default: json }
+        limit: { type: integer, format: int64, default: 1000 }
+    ExplainRequest:
+      type: object
+      required: [sql]
+      properties:
+        sql: { type: string }
+        analyze: { type: boolean, default: false }
+    QueryResult:
+      type: object
+      properties:
+        columns:
+          type: array
+          items: { type: string }
+        rows:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        row_count: { type: integer }
+        truncated: { type: boolean }
+    SemanticQuery:
+      type: object
+      properties:
+        measures:
+          type: array
+          items: { type: string }
+          description: 'e.g. ["orders.revenue"]'
+        dimensions:
+          type: array
+          items: { type: string }
+        filters:
+          type: array
+          items: { type: object, additionalProperties: true }
+        segments:
+          type: array
+          items: { type: string }
+        order_by:
+          type: array
+          items: { type: object, additionalProperties: true }
+        limit: { type: integer, format: int64 }
+        time_zone: { type: string }
+        params:
+          type: object
+          additionalProperties: { type: string }
+    MaterializeSpec:
+      oneOf:
+        - $ref: '#/components/schemas/MaterializeQuery'
+        - $ref: '#/components/schemas/MaterializeFile'
+        - $ref: '#/components/schemas/MaterializeUrl'
+        - $ref: '#/components/schemas/MaterializeInline'
+      discriminator:
+        propertyName: kind
+        mapping:
+          query: '#/components/schemas/MaterializeQuery'
+          file: '#/components/schemas/MaterializeFile'
+          url: '#/components/schemas/MaterializeUrl'
+          inline: '#/components/schemas/MaterializeInline'
+    MaterializeQuery:
+      type: object
+      required: [kind, sql]
+      properties:
+        kind: { type: string, enum: [query] }
+        sql: { type: string }
+        params:
+          type: object
+          additionalProperties: { type: string }
+    MaterializeFile:
+      type: object
+      required: [kind, path]
+      properties:
+        kind: { type: string, enum: [file] }
+        path: { type: string }
+        format: { type: string, enum: [parquet, csv, json] }
+    MaterializeUrl:
+      type: object
+      required: [kind, url]
+      properties:
+        kind: { type: string, enum: [url] }
+        url: { type: string }
+        format: { type: string, enum: [parquet, csv, json] }
+    MaterializeInline:
+      type: object
+      required: [kind, bytes, format]
+      properties:
+        kind: { type: string, enum: [inline] }
+        bytes: { type: string, description: base64-encoded bytes }
+        format: { type: string, enum: [parquet, csv, json] }
+    MaterializeOutcome:
+      type: object
+      properties:
+        name: { $ref: '#/components/schemas/TableName' }
+        file_path: { type: string }
+        row_count: { type: integer, format: int64 }
+        size_bytes: { type: integer, format: int64 }
+    TableName:
+      type: object
+      properties:
+        schema: { type: string }
+        table: { type: string }
+    SourceInfo:
+      type: object
+      properties:
+        name: { type: string }
+        kind: { type: string }
+        status: { type: string, enum: [ok, unavailable] }
+        table_count: { type: integer }
+        registered_at: { type: string, format: date-time }
+      additionalProperties: true
+    TableInfo:
+      type: object
+      additionalProperties: true
+    TableDescription:
+      type: object
+      additionalProperties: true
+    CatalogSnapshot:
+      type: object
+      properties:
+        schemas:
+          type: array
+          items: { type: object, additionalProperties: true }
+      additionalProperties: true
+    SemanticModelInfo:
+      type: object
+      additionalProperties: true
+    SemanticModelDescription:
+      type: object
+      additionalProperties: true
+    CacheEntryInfo:
+      type: object
+      additionalProperties: true
+    HealthReport:
+      type: object
+      properties:
+        ok: { type: boolean }
+        version: { type: string }
+        active_queries: { type: integer }
+        sources_ok: { type: integer }
+        sources_unavailable: { type: integer }
+      additionalProperties: true
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code: { type: string, example: PAWRLY_SAFETY_REQUIRED_FILTER }
+            message: { type: string }

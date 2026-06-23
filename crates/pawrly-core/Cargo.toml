@@ -17,6 +17,7 @@ test-support = ["dep:tokio", "dep:async-stream"]
 [dependencies]
 arrow-array = { workspace = true }
 arrow-schema = { workspace = true }
+arrow-cast = "58"
 async-trait = { workspace = true }
 futures-core = { workspace = true }
 futures-util = { workspace = true }

@@ -12,6 +12,7 @@ One SQL dialect over your APIs, files, databases, and AI models — no ETL, no w
 - **[Configuration](./config.md)** — the `pawrly.yaml` contract: sources, secrets, caching, safety, multi-file layouts.
 - **[Sources](./sources.md)** — every source kind and how to configure it.
 - **[CLI](./cli.md)** — the `pawrly` command reference.
+- **[REST API](./api.md)** — query and manage a workspace over JSON-over-HTTP; OpenAPI spec included.
 - **[Materialized tables](./materialize.md)** — persist a query, file, or URL as a named, self-backed table.
 - **[MCP server](./mcp.md)** — connect AI agents (Claude Desktop, Cursor, Codex, …) over the Model Context Protocol.
 - **[Console](./console.md)** — the browser UI: browse sources, catalog, and semantic models, and run SQL with live results.
