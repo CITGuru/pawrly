@@ -2,7 +2,7 @@
 
 <!-- published: 2026-06-23 -->
 
-![APIs, GraphQL, and OpenAPI specs flowing into a SQL query layer](/blog/query-any-api-with-sql.svg)
+![APIs, GraphQL, and OpenAPI specs flowing into a SQL query layer](/blog/query-any-api-with-sql.png)
 
 Most useful business data does not live in one warehouse.
 

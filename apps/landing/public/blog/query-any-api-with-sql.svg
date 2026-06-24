@@ -1,8 +1,8 @@
-<svg width="1200" height="675" viewBox="0 0 1200 675" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+<svg width="1200" height="630" viewBox="0 0 1200 630" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
   <title id="title">APIs flowing into a SQL query surface</title>
-  <desc id="desc">A dark Pawrly-themed diagram showing API sources, files, and MCP servers feeding into a SQL query layer that produces reusable tables.</desc>
+  <desc id="desc">A dark Pawrly-themed diagram showing REST APIs, GraphQL, and OpenAPI specs feeding into a SQL query layer that produces reusable tables.</desc>
   <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="1200" y2="675" gradientUnits="userSpaceOnUse">
+    <linearGradient id="bg" x1="0" y1="0" x2="1200" y2="630" gradientUnits="userSpaceOnUse">
       <stop stop-color="#061421"/>
       <stop offset="0.52" stop-color="#082437"/>
       <stop offset="1" stop-color="#0C3645"/>
@@ -28,8 +28,8 @@
     </pattern>
   </defs>
 
-  <rect width="1200" height="675" fill="url(#bg)"/>
-  <rect width="1200" height="675" fill="url(#grid)"/>
+  <rect width="1200" height="630" fill="url(#bg)"/>
+  <rect width="1200" height="630" fill="url(#grid)"/>
   <circle cx="1045" cy="90" r="260" fill="#38BDF8" opacity="0.1"/>
   <circle cx="160" cy="570" r="230" fill="#2DD4BF" opacity="0.1"/>
 
@@ -91,5 +91,5 @@
   <rect x="958" y="474" width="104" height="10" rx="5" fill="#38BDF8" opacity="0.72"/>
 
   <text x="640" y="88" text-anchor="middle" fill="#E8FBFF" font-family="ui-sans-serif, system-ui, sans-serif" font-size="44" font-weight="800" letter-spacing="-1">Query Any API with SQL</text>
-  <text x="600" y="624" text-anchor="middle" fill="#B8D3DE" font-family="ui-sans-serif, system-ui, sans-serif" font-size="20">Describe sources once. Query them everywhere.</text>
+  <text x="600" y="588" text-anchor="middle" fill="#B8D3DE" font-family="ui-sans-serif, system-ui, sans-serif" font-size="20">Describe sources once. Query them everywhere.</text>
 </svg>
