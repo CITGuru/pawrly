@@ -120,6 +120,8 @@ enum Command {
     Source(commands::source::Args),
     /// Browse and query the semantic layer (list, describe, query).
     Semantic(commands::semantic::Args),
+    /// Discover and call table-valued functions (list, describe, call).
+    Function(commands::function::Args),
     /// Run the Pawrly daemon (gRPC server).
     Serve(commands::serve::Args),
     /// Serve the web Console (gRPC-Web + embedded UI) for the workspace.
@@ -132,6 +134,10 @@ enum Command {
     McpStdio(commands::mcp_stdio::Args),
     /// Run the MCP server over HTTP.
     McpHttp(commands::mcp_http::Args),
+    /// Upgrade the installed `pawrly` binary in place.
+    Update(commands::update::Args),
+    /// Remove the installed `pawrly` binary (and --purge its data).
+    Uninstall(commands::uninstall::Args),
     /// Print the engine version + health.
     Version,
 }
@@ -192,6 +198,9 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Semantic(args) => {
             commands::semantic::run(cli.home, cli.config, cli.remote, cli.no_remote, args).await
         }
+        Command::Function(args) => {
+            commands::function::run(cli.home, cli.config, cli.remote, cli.no_remote, args).await
+        }
         Command::Serve(args) => commands::serve::run(cli.home, cli.config, args).await,
         Command::Console(args) => {
             commands::console::run(cli.home, cli.config, cli.remote, cli.no_remote, args).await
@@ -204,6 +213,8 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         Command::McpHttp(args) => {
             commands::mcp_http::run(cli.home, cli.config, cli.remote, cli.no_remote, args).await
         }
+        Command::Update(args) => commands::update::run(args).await,
+        Command::Uninstall(args) => commands::uninstall::run(cli.home, args).await,
         Command::Version => print_version(cli.remote, cli.no_remote, cli.home, cli.config).await,
     }
 }

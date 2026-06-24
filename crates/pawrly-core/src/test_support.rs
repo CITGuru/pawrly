@@ -44,6 +44,7 @@ struct MockState {
     canned_queries: HashMap<String, Vec<RecordBatch>>,
     queries_seen: Vec<String>,
     cache_entries: Vec<CacheEntryInfo>,
+    functions: Vec<crate::function::FunctionDef>,
 }
 
 impl MockEngine {
@@ -51,6 +52,13 @@ impl MockEngine {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Register a fake table-valued function. Surfaces through `list_functions`
+    /// and `describe_function`.
+    pub fn add_function(&self, def: crate::function::FunctionDef) -> &Self {
+        self.inner.lock().functions.push(def);
+        self
     }
 
     /// Register a fake source. Adds it to `list_sources`.
@@ -326,6 +334,30 @@ impl EngineService for MockEngine {
 
     async fn reload_config(&self) -> Result<ReloadReport, EngineError> {
         Ok(ReloadReport::default())
+    }
+
+    async fn list_functions(&self) -> Result<Vec<crate::function::FunctionInfo>, EngineError> {
+        Ok(self
+            .inner
+            .lock()
+            .functions
+            .iter()
+            .map(|d| d.info())
+            .collect())
+    }
+
+    async fn describe_function(
+        &self,
+        namespace: &str,
+        name: &str,
+    ) -> Result<crate::function::FunctionDescription, EngineError> {
+        self.inner
+            .lock()
+            .functions
+            .iter()
+            .find(|d| d.namespace == namespace && d.name == name)
+            .map(crate::function::FunctionDef::describe)
+            .ok_or_else(|| EngineError::UnknownFunction(format!("{namespace}.{name}")))
     }
 
     async fn list_semantic_models(&self) -> Result<Vec<SemanticModelInfo>, EngineError> {

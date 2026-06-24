@@ -87,6 +87,45 @@ async fn full_round_trip_against_mock_engine() {
 }
 
 #[tokio::test]
+async fn function_catalog_round_trip() {
+    let mock_typed = Arc::new(MockEngine::new());
+    for def in pawrly_core::function::builtins() {
+        mock_typed.add_function(def);
+    }
+    let mock: Arc<dyn EngineService> = mock_typed.clone();
+
+    let channel = ServerBuilder::new(mock)
+        .serve_in_process()
+        .await
+        .expect("server should start");
+    let client: Arc<dyn EngineService> = Arc::new(
+        RemoteEngineClient::connect(Endpoint::InProcess(channel))
+            .await
+            .expect("client should connect"),
+    );
+
+    // list_functions over gRPC.
+    let functions = client.list_functions().await.expect("list_functions");
+    assert!(
+        functions
+            .iter()
+            .any(|f| f.namespace == "file" && f.name == "glob")
+    );
+
+    // describe_function over gRPC.
+    let d = client
+        .describe_function("file", "glob")
+        .await
+        .expect("describe_function");
+    assert_eq!(d.namespace, "file");
+    assert_eq!(d.name, "glob");
+    assert!(!d.returns.is_empty());
+
+    // Unknown function surfaces as an error across the wire.
+    assert!(client.describe_function("no", "such").await.is_err());
+}
+
+#[tokio::test]
 async fn materialize_round_trip() {
     use std::collections::HashMap;
 

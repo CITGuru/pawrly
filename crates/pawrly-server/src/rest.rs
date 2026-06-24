@@ -434,7 +434,7 @@ fn push_csv_row<'a>(out: &mut String, cells: impl Iterator<Item = &'a str>) {
 /// code. Mirrors the gRPC `engine_error_to_status` categorisation.
 fn engine_error_response(err: &EngineError) -> Response {
     let status = match err {
-        EngineError::UnknownTable(_) => StatusCode::NOT_FOUND,
+        EngineError::UnknownTable(_) | EngineError::UnknownFunction(_) => StatusCode::NOT_FOUND,
         EngineError::UnknownKind(_)
         | EngineError::InvalidSql(_)
         | EngineError::SemanticPlan(_)

@@ -39,6 +39,10 @@ pub struct HttpSourceReport {
     pub table_count: u64,
     pub tables: Vec<HttpTableSummary>,
     pub raw_table_registered: bool,
+    /// The live source handle, so attached functions can share the same
+    /// rate-limiter / retry / auth state instead of opening a parallel client.
+    /// `None` only on the `Default` used by error paths.
+    pub source_handle: Option<Arc<HttpSource>>,
 }
 
 #[derive(Debug, Clone)]
@@ -199,7 +203,50 @@ pub async fn register_http_source(
         table_count: summaries.len() as u64 + raw_table_registered as u64,
         tables: summaries,
         raw_table_registered,
+        source_handle: Some(source),
     })
+}
+
+/// Build a standalone [`HttpSource`] from a `(name, config)` pair — the
+/// connection block of a standalone http function (`base_url`, `auth`,
+/// `headers`, `retry`, `rate_limit`), reusing the same parsers as a source.
+/// When `base_url` is absent the function's `endpoint` must be absolute (the
+/// validator enforces this), so a placeholder base is used and overridden by the
+/// absolute endpoint at request time.
+pub fn build_http_source(
+    name: &str,
+    config: &serde_json::Value,
+) -> Result<Arc<HttpSource>, HttpBuildError> {
+    let base_url_str = config
+        .get("base_url")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or("http://localhost/");
+    let base_url =
+        url::Url::parse(base_url_str).map_err(|e| HttpBuildError::BadUrl(e.to_string()))?;
+    let def = SourceDef {
+        name: name.to_string(),
+        kind: pawrly_core::SourceKind::Http,
+        description: None,
+        wiki: None,
+        examples: Vec::new(),
+        config: config.clone(),
+        cache: Default::default(),
+        safety: None,
+        tables: Vec::new(),
+        raw_table: false,
+        raw_table_safety: None,
+    };
+    Ok(Arc::new(HttpSource {
+        name: name.to_string(),
+        base_url,
+        auth: parse_auth(&def),
+        headers: parse_headers(&def),
+        client: HttpSource::build_client(),
+        retry: parse_retry(&def),
+        rate_limit: parse_rate_limit(&def),
+        oauth_token: tokio::sync::Mutex::new(None),
+    }))
 }
 
 /// Build an [`HttpTableSpec`] from a user-declared `TableDef`. The table's

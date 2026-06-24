@@ -6,12 +6,8 @@ export const contentType = OG_CONTENT_TYPE;
 
 export default function OpengraphImage() {
   return ogImage({
-    fontSize: 76,
-    title: (
-      <>
-        Query&nbsp;<span style={{ color: "#f1dcb0" }}>APIs, files,</span>&nbsp;MCP servers, and
-        databases with SQL.
-      </>
-    ),
+    fontSize: 70,
+    title: "Query APIs, files, MCP servers, and databases with SQL.",
+    accent: "APIs, files,",
   });
 }

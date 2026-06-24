@@ -429,6 +429,7 @@ fn grpc_code(err: &core::EngineError) -> tonic::Code {
     match err {
         core::EngineError::UnknownKind(_)
         | core::EngineError::UnknownTable(_)
+        | core::EngineError::UnknownFunction(_)
         | core::EngineError::InvalidSql(_)
         | core::EngineError::SemanticPlan(_) => tonic::Code::InvalidArgument,
         core::EngineError::Safety(_) | core::EngineError::SourceRegistration { .. } => {
@@ -910,6 +911,128 @@ pub enum ConvError {
 
     #[error("source kind UNSPECIFIED is not a valid runtime value")]
     UnspecifiedSourceKind,
+}
+
+// ---- functions ----
+
+fn function_kind_str(k: core::FunctionKind) -> String {
+    k.as_str().to_string()
+}
+
+fn parse_function_kind(s: &str) -> core::FunctionKind {
+    match s {
+        "mcp" => core::FunctionKind::Mcp,
+        "file" => core::FunctionKind::File,
+        _ => core::FunctionKind::Http,
+    }
+}
+
+impl From<core::FunctionInfo> for v1::FunctionInfo {
+    fn from(f: core::FunctionInfo) -> Self {
+        Self {
+            namespace: f.namespace,
+            name: f.name,
+            kind: function_kind_str(f.kind),
+            builtin: f.builtin,
+            signature: f.signature,
+            description: f.description,
+        }
+    }
+}
+
+impl From<v1::FunctionInfo> for core::FunctionInfo {
+    fn from(f: v1::FunctionInfo) -> Self {
+        Self {
+            namespace: f.namespace,
+            name: f.name,
+            kind: parse_function_kind(&f.kind),
+            builtin: f.builtin,
+            signature: f.signature,
+            description: f.description,
+        }
+    }
+}
+
+impl From<core::FunctionArg> for v1::FunctionArg {
+    fn from(a: core::FunctionArg) -> Self {
+        Self {
+            name: a.name,
+            r#type: a.r#type,
+            required: a.required,
+            default: a.default,
+            description: a.description,
+            tool_arg: a.tool_arg,
+        }
+    }
+}
+
+impl From<v1::FunctionArg> for core::FunctionArg {
+    fn from(a: v1::FunctionArg) -> Self {
+        Self {
+            name: a.name,
+            r#type: a.r#type,
+            required: a.required,
+            default: a.default,
+            description: a.description,
+            tool_arg: a.tool_arg,
+        }
+    }
+}
+
+impl From<core::FunctionColumn> for v1::FunctionColumn {
+    fn from(c: core::FunctionColumn) -> Self {
+        Self {
+            name: c.name,
+            r#type: c.r#type,
+            source: c.source,
+            description: c.description,
+        }
+    }
+}
+
+impl From<v1::FunctionColumn> for core::FunctionColumn {
+    fn from(c: v1::FunctionColumn) -> Self {
+        Self {
+            name: c.name,
+            r#type: c.r#type,
+            source: c.source,
+            description: c.description,
+        }
+    }
+}
+
+impl From<core::FunctionDescription> for v1::FunctionDescription {
+    fn from(d: core::FunctionDescription) -> Self {
+        Self {
+            namespace: d.namespace,
+            name: d.name,
+            kind: function_kind_str(d.kind),
+            builtin: d.builtin,
+            signature: d.signature,
+            description: d.description,
+            wiki: d.wiki,
+            examples: d.examples,
+            args: d.args.into_iter().map(Into::into).collect(),
+            returns: d.returns.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+impl From<v1::FunctionDescription> for core::FunctionDescription {
+    fn from(d: v1::FunctionDescription) -> Self {
+        Self {
+            namespace: d.namespace,
+            name: d.name,
+            kind: parse_function_kind(&d.kind),
+            builtin: d.builtin,
+            signature: d.signature,
+            description: d.description,
+            wiki: d.wiki,
+            examples: d.examples,
+            args: d.args.into_iter().map(Into::into).collect(),
+            returns: d.returns.into_iter().map(Into::into).collect(),
+        }
+    }
 }
 
 #[cfg(test)]

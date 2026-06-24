@@ -70,6 +70,7 @@ pub async fn build_local(
         secrets: Vec::new(),
         include: Vec::new(),
         sources: Vec::new(),
+        functions: Vec::new(),
         semantic: None,
         observability: None,
     };

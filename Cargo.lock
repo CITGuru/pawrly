@@ -3354,6 +3354,7 @@ dependencies = [
  "fs2",
  "futures",
  "futures-util",
+ "glob",
  "num_cpus",
  "opentelemetry",
  "parking_lot",
@@ -3366,6 +3367,7 @@ dependencies = [
  "pawrly-sources-http",
  "pawrly-sources-mcp",
  "pawrly-telemetry",
+ "regex",
  "rusqlite",
  "secrecy",
  "serde",
@@ -3376,6 +3378,7 @@ dependencies = [
  "tokio-stream",
  "tracing",
  "uuid",
+ "wiremock",
 ]
 
 [[package]]

@@ -1,5 +1,4 @@
 import { ImageResponse } from "next/og";
-import type { ReactNode } from "react";
 
 export const OG_SIZE = { width: 1200, height: 630 };
 export const OG_CONTENT_TYPE = "image/png";
@@ -20,14 +19,27 @@ const markSrc = `data:image/svg+xml,${encodeURIComponent(MARK)}`;
 export function ogImage({
   eyebrow,
   title,
+  accent,
   tagline = "Connect once · Query from anywhere",
   fontSize = 64,
 }: {
   eyebrow?: string;
-  title: ReactNode;
+  title: string;
+  accent?: string;
   tagline?: string;
   fontSize?: number;
 }) {
+  // Render the title word-by-word so it wraps like normal text. (Satori lays a
+  // flex container with mixed text + spans as overlapping items, not inline.)
+  const aStart = accent ? title.indexOf(accent) : -1;
+  const aEnd = aStart >= 0 ? aStart + (accent as string).length : -1;
+  const words: { text: string; on: boolean }[] = [];
+  for (const m of title.matchAll(/\S+/g)) {
+    const s = m.index ?? 0;
+    const e = s + m[0].length;
+    words.push({ text: m[0], on: aStart >= 0 && s >= aStart && e <= aEnd });
+  }
+
   return new ImageResponse(
     (
       <div
@@ -80,13 +92,16 @@ export function ogImage({
               display: "flex",
               flexWrap: "wrap",
               fontSize,
-              color: "#f4efe4",
               letterSpacing: "-0.02em",
-              lineHeight: 1.07,
-              maxWidth: 1040,
+              lineHeight: 1.12,
+              maxWidth: 1010,
             }}
           >
-            {title}
+            {words.map((w, i) => (
+              <span key={i} style={{ color: w.on ? "#f1dcb0" : "#f4efe4", marginRight: "0.28em" }}>
+                {w.text}
+              </span>
+            ))}
           </div>
         </div>
 

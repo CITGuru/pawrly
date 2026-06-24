@@ -632,6 +632,7 @@ fn build_source_def(
         cache: Default::default(),
         safety: None,
         tables: Vec::new(),
+        functions: Vec::new(),
         raw_table: args.raw_table,
         raw_table_safety: None,
     })
@@ -763,6 +764,7 @@ fn read_or_init_config(path: &Path) -> anyhow::Result<Config> {
             secrets: Vec::new(),
             include: Vec::new(),
             sources: Vec::new(),
+            functions: Vec::new(),
             semantic: None,
             observability: None,
         });

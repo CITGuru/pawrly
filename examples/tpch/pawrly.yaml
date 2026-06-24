@@ -118,3 +118,20 @@ sources:
             - { name: thb, type: double, source: $.rates.THB }
             - { name: try, type: double, source: $.rates.TRY }
             - { name: zar, type: double, source: $.rates.ZAR }
+    # The `rates` table is fixed to base=USD. As a table-valued FUNCTION the base
+    # becomes an argument, so the same endpoint serves any base currency:
+    #   SELECT usd, jpy FROM fx.rates_for('EUR')
+    functions:
+      - name: rates_for
+        description: Latest FX rates relative to a chosen base currency.
+        endpoint: /v1/latest?base={base}
+        args:
+          - { name: base, type: varchar, required: true }
+        response:
+          path: $
+        returns:
+          - { name: base, type: varchar, source: $.base }
+          - { name: date, type: varchar, source: $.date }
+          - { name: usd,  type: double,  source: $.rates.USD }
+          - { name: jpy,  type: double,  source: $.rates.JPY }
+          - { name: gbp,  type: double,  source: $.rates.GBP }

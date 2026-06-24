@@ -1,0 +1,119 @@
+# yaml-language-server: $schema=../schemas/pawrly.schema.json
+#
+# Table-valued functions — named, reusable operations called from SQL like a
+# table: `SELECT * FROM <namespace>.<name>(args...)`. Three kinds (http, mcp,
+# file), declared either *attached* to a source (inheriting its connection) or
+# *standalone* (explicit namespace + kind + config). Three builtins are always
+# available with no config:
+#   SELECT file_name, size_bytes FROM file.glob('../crates/pawrly-cli/tests/fixtures/*')
+#   SELECT line FROM file.grep('enterprise', '../crates/pawrly-cli/tests/fixtures/*.csv')
+#   SELECT body FROM http.get('https://api.github.com/zen', '$')
+#
+# The file functions below run offline against the repo fixtures:
+#   pawrly --config examples/functions.yaml function list
+#   pawrly --config examples/functions.yaml function describe geo.geocode
+#   pawrly --config examples/functions.yaml sql "SELECT file_name FROM fixtures.csvs()"
+# The http functions are real-API declarations (github needs GITHUB_TOKEN; geo
+# is public, no auth) — they show the shape and run when you query them.
+
+version: 1
+name: functions-example
+
+sources:
+  # A file source whose tables back the offline file-function demos, plus a
+  # source-attached file function (inherits the `data` namespace).
+  - name: data
+    kind: file
+    description: Local fixtures shipped with the repo.
+    tables:
+      - { name: orders, path: ../crates/pawrly-cli/tests/fixtures/orders.parquet, format: parquet }
+      - { name: customers, path: ../crates/pawrly-cli/tests/fixtures/customers.csv, format: csv }
+    examples:
+      - SELECT file_name FROM data.parquet_files()
+    functions:
+      # Attached file function — call it `data.parquet_files()`.
+      - name: parquet_files
+        description: The parquet files backing this source, one row per file.
+        path: ../crates/pawrly-cli/tests/fixtures/*.parquet
+        returns:
+          - { name: file_name, type: varchar }
+          - { name: size_bytes, type: bigint }
+
+  # An HTTP source whose search endpoint is exposed as an attached function —
+  # the canonical example. Needs GITHUB_TOKEN to run.
+  - name: github
+    kind: http
+    description: GitHub REST API; search exposed as a function.
+    config:
+      base_url: https://api.github.com
+      auth:
+        type: header
+        headers:
+          - { name: Authorization, bearer: "${secret:GITHUB_TOKEN}" }
+    examples:
+      - SELECT number, title FROM github.search_issues('is:open repo:rust-lang/rust', 20)
+    # Functions live alongside ordinary tables on the same source.
+    tables:
+      - name: pulls
+        endpoint: /repos/{owner}/{repo}/pulls
+        params:
+          - { name: owner, required: true }
+          - { name: repo, required: true }
+        response:
+          path: $
+          schema:
+            - { name: number, type: bigint }
+            - { name: title, type: varchar }
+            - { name: state, type: varchar }
+    functions:
+      # `q` has no {placeholder}, so it is sent as `?q=...`; trailing `limit`
+      # defaults to 30. `source: arg` echoes the bound `q` back as a column.
+      - name: search_issues
+        description: Search issues/PRs with GitHub's search syntax.
+        endpoint: /search/issues
+        args:
+          - { name: q, type: varchar, required: true }
+          - { name: limit, type: int, default: "30" }
+        response:
+          path: $.items
+        pagination: { type: page, param: page }
+        returns:
+          - { name: number, type: bigint }
+          - { name: title, type: varchar }
+          - { name: state, type: varchar }
+          - { name: user_login, type: varchar, source: $.user.login }
+          - { name: q, type: varchar, source: arg }
+
+# Standalone functions: explicit namespace + kind + config, belonging to no
+# source.
+functions:
+  # A standalone file function over the repo fixtures (runs offline).
+  #   SELECT file_name FROM fixtures.csvs()
+  - name: csvs
+    namespace: fixtures
+    kind: file
+    description: The CSV fixtures shipped with the repo.
+    path: ../crates/pawrly-cli/tests/fixtures/*.csv
+    returns:
+      - { name: file_name, type: varchar }
+      - { name: size_bytes, type: bigint }
+
+  # A standalone HTTP function against a public, no-auth API (OpenStreetMap
+  # Nominatim). The `{address}` arg substitutes into the endpoint; the response
+  # body is itself the row array, so `response.path: $`.
+  #   SELECT display_name, lat, lon FROM geo.geocode('Eiffel Tower')
+  - name: geocode
+    namespace: geo
+    kind: http
+    description: Geocode a free-text place to coordinates (OpenStreetMap).
+    config:
+      base_url: https://nominatim.openstreetmap.org
+    endpoint: /search?format=json&q={address}
+    args:
+      - { name: address, type: varchar, required: true }
+    response:
+      path: $
+    returns:
+      - { name: display_name, type: varchar, source: $.display_name }
+      - { name: lat, type: double, source: $.lat }
+      - { name: lon, type: double, source: $.lon }

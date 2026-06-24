@@ -11,6 +11,10 @@
     $env:PAWRLY_INSTALL_DIR Install directory. Default: $env:LOCALAPPDATA\Pawrly\bin
     $env:PAWRLY_REPO        owner/repo. Default: CITGuru/pawrly
     $env:PAWRLY_NO_VERIFY   Set to 1 to skip checksum verification.
+    $env:PAWRLY_FORCE       Set to 1 to reinstall even if already up to date.
+
+  Re-running this script upgrades an existing install, skipping the download when
+  already up to date (unless $env:PAWRLY_FORCE = "1").
 
   Note: Pawrly currently publishes prebuilt binaries for Linux and macOS only.
   On Windows, prefer WSL, or build from source with `cargo install`.
@@ -37,6 +41,23 @@ function Get-LatestVersion {
   return $resp.tag_name
 }
 
+function Get-InstalledVersion {
+  param([string]$Dir)
+  $exe = Join-Path $Dir "$BinName.exe"
+  if (-not (Test-Path $exe)) {
+    $cmd = Get-Command $BinName -ErrorAction SilentlyContinue
+    if ($cmd) { $exe = $cmd.Source } else { return $null }
+  }
+  # The CLI prints `pawrly <version>` for --version.
+  try {
+    $out = & $exe --version 2>$null | Select-Object -First 1
+  } catch {
+    return $null
+  }
+  if ($out -match '^\S+\s+(\S+)') { return $Matches[1] }
+  return $null
+}
+
 $target  = Get-Target
 $version = if ($env:PAWRLY_VERSION) { $env:PAWRLY_VERSION } else { Get-LatestVersion }
 $dir     = if ($env:PAWRLY_INSTALL_DIR) { $env:PAWRLY_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA "Pawrly\bin" }
@@ -45,7 +66,30 @@ $zip     = "$BinName-$target.zip"
 $baseUrl = "https://github.com/$Repo/releases/download/$version"
 $url     = "$baseUrl/$zip"
 
-Write-Host "pawrly: installing $version for $target" -ForegroundColor Cyan
+# Skip the download when already installed; otherwise upgrade. Strip the tag's
+# leading `v` so `v0.1.0` matches the CLI's `0.1.0`.
+$targetVer  = $version -replace '^v', ''
+$currentVer = Get-InstalledVersion -Dir $dir
+$action     = "installing"
+if ($currentVer) {
+  if ($currentVer -eq $targetVer) {
+    if ($env:PAWRLY_FORCE -eq "1") {
+      $action = "reinstalling"
+    } else {
+      Write-Host "pawrly: v$currentVer is already up to date" -ForegroundColor Green
+      Write-Host "pawrly: set `$env:PAWRLY_FORCE = '1' to reinstall"
+      return
+    }
+  } else {
+    $action = "updating"
+  }
+}
+
+if ($action -eq "updating") {
+  Write-Host "pawrly: updating v$currentVer -> $version for $target" -ForegroundColor Cyan
+} else {
+  Write-Host "pawrly: $action $version for $target" -ForegroundColor Cyan
+}
 
 $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("pawrly-" + [System.Guid]::NewGuid())
 New-Item -ItemType Directory -Path $tmp -Force | Out-Null

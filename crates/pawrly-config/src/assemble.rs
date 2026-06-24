@@ -52,6 +52,8 @@ pub(crate) fn assemble(tree: &mut Value, root_path: &Path) -> Result<Vec<PathBuf
     let mut secrets: Vec<Value> = Vec::new();
     let mut models: Vec<Value> = Vec::new();
     let mut model_origins: Vec<PathBuf> = Vec::new();
+    let mut functions: Vec<Value> = Vec::new();
+    let mut function_origins: Vec<PathBuf> = Vec::new();
     let mut visited: HashSet<PathBuf> = HashSet::new();
     let mut chain: Vec<PathBuf> = Vec::new();
 
@@ -67,6 +69,8 @@ pub(crate) fn assemble(tree: &mut Value, root_path: &Path) -> Result<Vec<PathBuf
         &mut secrets,
         &mut models,
         &mut model_origins,
+        &mut functions,
+        &mut function_origins,
         &mut visited,
         &mut chain,
     )?;
@@ -97,6 +101,33 @@ pub(crate) fn assemble(tree: &mut Value, root_path: &Path) -> Result<Vec<PathBuf
         }
     }
 
+    // Duplicate top-level function `(namespace, name)` pairs across files, with
+    // both originating paths (mirroring the duplicate-source check above).
+    // Attached functions ride inside source bodies and are checked by the
+    // validator, not here.
+    let mut seen_fn: HashMap<String, PathBuf> = HashMap::new();
+    for (func, origin) in functions.iter().zip(function_origins.iter()) {
+        let (Some(ns), Some(name)) = (
+            func.get("namespace").and_then(Value::as_str),
+            func.get("name").and_then(Value::as_str),
+        ) else {
+            continue;
+        };
+        let key = format!("{ns}.{name}");
+        if let Some(prev) = seen_fn.get(&key) {
+            return Err(ConfigError::FunctionInvalid {
+                namespace: ns.to_string(),
+                name: name.to_string(),
+                msg: format!(
+                    "duplicate function (declared in `{}` and `{}`)",
+                    prev.display(),
+                    origin.display()
+                ),
+            });
+        }
+        seen_fn.insert(key, origin.clone());
+    }
+
     let obj = tree
         .as_object_mut()
         .ok_or_else(|| ConfigError::Yaml("top-level config must be a mapping".to_string()))?;
@@ -106,6 +137,11 @@ pub(crate) fn assemble(tree: &mut Value, root_path: &Path) -> Result<Vec<PathBuf
         obj.remove("secrets");
     } else {
         obj.insert("secrets".to_string(), Value::Array(secrets));
+    }
+    if functions.is_empty() {
+        obj.remove("functions");
+    } else {
+        obj.insert("functions".to_string(), Value::Array(functions));
     }
 
     // Stage 3: splice models into `semantic.models` — both the models carried
@@ -332,6 +368,8 @@ fn collect(
     secrets: &mut Vec<Value>,
     models: &mut Vec<Value>,
     model_origins: &mut Vec<PathBuf>,
+    functions: &mut Vec<Value>,
+    function_origins: &mut Vec<PathBuf>,
     visited: &mut HashSet<PathBuf>,
     chain: &mut Vec<PathBuf>,
 ) -> Result<(), ConfigError> {
@@ -413,6 +451,22 @@ fn collect(
             }
         }
 
+        match obj.remove("functions") {
+            Some(Value::Array(arr)) => {
+                for func in arr {
+                    functions.push(func);
+                    function_origins.push(path.to_path_buf());
+                }
+            }
+            Some(Value::Null) | None => {}
+            Some(_) => {
+                return Err(ConfigError::Yaml(format!(
+                    "{}: `functions` must be a list",
+                    path.display()
+                )));
+            }
+        }
+
         patterns = parse_include_patterns(obj.get("include"), path)?;
         obj.remove("include");
     }
@@ -446,6 +500,8 @@ fn collect(
                 secrets,
                 models,
                 model_origins,
+                functions,
+                function_origins,
                 visited,
                 chain,
             )?;

@@ -2,10 +2,14 @@
 //!
 //! Returns *all* errors, not the first one, so users see every problem at once.
 
-use pawrly_core::semantic::{DimensionType, MeasureAgg, SemanticModel, TimeGrain};
-use pawrly_core::{ConfigError, ConfigErrors, SourceKind, TableName};
+use std::collections::HashSet;
 
-use crate::types::Config;
+use pawrly_core::semantic::{DimensionType, MeasureAgg, SemanticModel, TimeGrain};
+use pawrly_core::{
+    ConfigError, ConfigErrors, FunctionKind, RESERVED_FUNCTION_NAMESPACES, SourceKind, TableName,
+};
+
+use crate::types::{Config, FunctionDecl};
 
 /// Run every validation rule and accumulate the results.
 #[must_use]
@@ -42,6 +46,8 @@ pub fn validate(cfg: &Config) -> ConfigErrors {
     if let Some(semantic) = &cfg.semantic {
         validate_semantic(&semantic.models, &seen, &mut errors);
     }
+
+    validate_functions(cfg, &seen, &mut errors);
 
     errors
 }
@@ -558,6 +564,525 @@ fn is_valid_identifier(name: &str) -> bool {
     chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
+/// A valid function/namespace/arg/column identifier: a SQL identifier that does
+/// not contain `__` (reserved as the UDTF name-mangling separator).
+fn is_valid_function_ident(name: &str) -> bool {
+    is_valid_identifier(name) && !name.contains("__")
+}
+
+/// The column-type vocabulary shared by table schemas and function args/returns.
+fn is_known_column_type(t: &str) -> bool {
+    matches!(
+        t.trim().to_ascii_lowercase().as_str(),
+        "varchar"
+            | "string"
+            | "text"
+            | "char"
+            | "int"
+            | "integer"
+            | "int32"
+            | "int64"
+            | "bigint"
+            | "long"
+            | "smallint"
+            | "double"
+            | "float"
+            | "float32"
+            | "float64"
+            | "real"
+            | "decimal"
+            | "numeric"
+            | "bool"
+            | "boolean"
+            | "timestamp"
+            | "datetime"
+            | "date"
+    )
+}
+
+/// Extract `{ident}` placeholder names from a template, ignoring non-identifier
+/// braces (e.g. JSON/GraphQL `{}`).
+fn placeholders(template: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = template;
+    while let Some(open) = rest.find('{') {
+        rest = &rest[open + 1..];
+        if let Some(close) = rest.find('}') {
+            let name = &rest[..close];
+            if !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+                out.push(name.to_string());
+            }
+            rest = &rest[close + 1..];
+        } else {
+            break;
+        }
+    }
+    out
+}
+
+/// Validate declared functions (source-attached + standalone). Runs after the
+/// source loop so `source_names` is fully collected, and accumulates into
+/// `errors` like every other rule.
+fn validate_functions(cfg: &Config, source_names: &HashSet<String>, errors: &mut ConfigErrors) {
+    // (namespace, name) seen so far — seeded with the builtins, which are
+    // reserved (V4).
+    let mut seen: HashSet<(String, String)> = pawrly_core::function::builtins()
+        .into_iter()
+        .map(|b| (b.namespace, b.name))
+        .collect();
+
+    // Source-attached.
+    for src in &cfg.sources {
+        if src.functions.is_empty() {
+            continue;
+        }
+        let table_names: HashSet<&str> = src.tables.iter().map(|t| t.name.as_str()).collect();
+        let src_kind = FunctionKind::for_source(src.kind);
+        for f in &src.functions {
+            let ns = src.name.as_str();
+
+            // attached placement.
+            if f.namespace.is_some() {
+                push_fn(
+                    errors,
+                    ns,
+                    &f.name,
+                    "attached function must not set `namespace`; it is inherited from the source",
+                );
+            }
+            if !f.config.is_null() {
+                push_fn(
+                    errors,
+                    ns,
+                    &f.name,
+                    "attached function must not set `config`; it is inherited from the source",
+                );
+            }
+            let Some(kind) = src_kind else {
+                push_fn(
+                    errors,
+                    ns,
+                    &f.name,
+                    &format!(
+                        "functions can only be attached to http, mcp, or file sources; source `{}` is `{}`",
+                        src.name, src.kind
+                    ),
+                );
+                continue;
+            };
+            if let Some(declared) = f.kind
+                && declared != kind
+            {
+                push_fn(
+                    errors,
+                    ns,
+                    &f.name,
+                    &format!(
+                        "attached function `kind: {declared}` does not match source kind `{}`",
+                        src.kind
+                    ),
+                );
+            }
+
+            // name must not collide with a table in the same source.
+            if table_names.contains(f.name.as_str()) {
+                push_fn(
+                    errors,
+                    ns,
+                    &f.name,
+                    "function name collides with a table of the same name in this source",
+                );
+            }
+
+            validate_one_function(ns, kind, false, f, errors);
+
+            if !seen.insert((ns.to_string(), f.name.clone())) {
+                push_fn(
+                    errors,
+                    ns,
+                    &f.name,
+                    "duplicate function `namespace.name` (also matches a builtin or another declaration)",
+                );
+            }
+        }
+    }
+
+    // Standalone.
+    for f in &cfg.functions {
+        // top-level requires namespace + kind.
+        let Some(ns) = f.namespace.as_deref() else {
+            push_fn(
+                errors,
+                "?",
+                &f.name,
+                "standalone function requires an explicit `namespace`",
+            );
+            continue;
+        };
+        let Some(kind) = f.kind else {
+            push_fn(
+                errors,
+                ns,
+                &f.name,
+                "standalone function requires an explicit `kind`",
+            );
+            continue;
+        };
+
+        // namespace must not be reserved or shadow a source name.
+        if RESERVED_FUNCTION_NAMESPACES.contains(&ns) {
+            push_fn(
+                errors,
+                ns,
+                &f.name,
+                &format!("namespace `{ns}` is reserved"),
+            );
+        }
+        if source_names.contains(ns) {
+            push_fn(
+                errors,
+                ns,
+                &f.name,
+                &format!(
+                    "namespace `{ns}` collides with a source name; attach the function to that source instead"
+                ),
+            );
+        }
+
+        validate_one_function(ns, kind, true, f, errors);
+
+        if !seen.insert((ns.to_string(), f.name.clone())) {
+            push_fn(
+                errors,
+                ns,
+                &f.name,
+                "duplicate function `namespace.name` (also matches a builtin or another declaration)",
+            );
+        }
+    }
+}
+
+/// Checks common to both declaration shapes: identifiers, args, returns, and the
+/// kind-specific body. `namespace`/`kind` are already resolved by the caller.
+fn validate_one_function(
+    namespace: &str,
+    kind: FunctionKind,
+    standalone: bool,
+    f: &FunctionDecl,
+    errors: &mut ConfigErrors,
+) {
+    // identifiers.
+    if !is_valid_function_ident(&f.name) {
+        push_fn(
+            errors,
+            namespace,
+            &f.name,
+            "function name must be a valid SQL identifier without `__`",
+        );
+    }
+    if !is_valid_function_ident(namespace) {
+        push_fn(
+            errors,
+            namespace,
+            &f.name,
+            "namespace must be a valid SQL identifier without `__`",
+        );
+    }
+
+    // args.
+    let mut arg_names: HashSet<&str> = HashSet::new();
+    let mut optional_seen = false;
+    for a in &f.args {
+        if !is_valid_function_ident(&a.name) {
+            push_fn(
+                errors,
+                namespace,
+                &f.name,
+                &format!(
+                    "argument `{}` must be a valid SQL identifier without `__`",
+                    a.name
+                ),
+            );
+        }
+        if !arg_names.insert(a.name.as_str()) {
+            push_fn(
+                errors,
+                namespace,
+                &f.name,
+                &format!("duplicate argument `{}`", a.name),
+            );
+        }
+        if !is_known_column_type(&a.r#type) {
+            push_fn(
+                errors,
+                namespace,
+                &f.name,
+                &format!("argument `{}` has unknown type `{}`", a.name, a.r#type),
+            );
+        }
+        if a.required && a.default.is_some() {
+            push_fn(
+                errors,
+                namespace,
+                &f.name,
+                &format!(
+                    "argument `{}` cannot be both `required` and have a `default`",
+                    a.name
+                ),
+            );
+        }
+        // Required args must precede optional/defaulted ones (positional calls).
+        if a.required {
+            if optional_seen {
+                push_fn(
+                    errors,
+                    namespace,
+                    &f.name,
+                    &format!(
+                        "required argument `{}` must precede all optional/defaulted arguments",
+                        a.name
+                    ),
+                );
+            }
+        } else {
+            optional_seen = true;
+        }
+    }
+
+    // returns.
+    if f.returns.is_empty() {
+        push_fn(
+            errors,
+            namespace,
+            &f.name,
+            "`returns:` must declare at least one column",
+        );
+    }
+    let mut ret_names: HashSet<&str> = HashSet::new();
+    for c in &f.returns {
+        if !is_valid_function_ident(&c.name) {
+            push_fn(
+                errors,
+                namespace,
+                &f.name,
+                &format!(
+                    "return column `{}` must be a valid SQL identifier without `__`",
+                    c.name
+                ),
+            );
+        }
+        if !ret_names.insert(c.name.as_str()) {
+            push_fn(
+                errors,
+                namespace,
+                &f.name,
+                &format!("duplicate return column `{}`", c.name),
+            );
+        }
+        if !is_known_column_type(&c.r#type) {
+            push_fn(
+                errors,
+                namespace,
+                &f.name,
+                &format!("return column `{}` has unknown type `{}`", c.name, c.r#type),
+            );
+        }
+        // A `source: arg` column must name a declared argument.
+        if c.source.as_deref() == Some("arg") && !arg_names.contains(c.name.as_str()) {
+            push_fn(
+                errors,
+                namespace,
+                &f.name,
+                &format!(
+                    "return column `{}` uses `source: arg` but no argument named `{}` is declared",
+                    c.name, c.name
+                ),
+            );
+        }
+    }
+
+    // kind-specific body.
+    match kind {
+        FunctionKind::Http => validate_http_function(namespace, standalone, f, &arg_names, errors),
+        FunctionKind::Mcp => validate_mcp_function(namespace, standalone, f, errors),
+        FunctionKind::File => validate_file_function(namespace, f, &arg_names, errors),
+    }
+}
+
+fn validate_http_function(
+    namespace: &str,
+    standalone: bool,
+    f: &FunctionDecl,
+    arg_names: &HashSet<&str>,
+    errors: &mut ConfigErrors,
+) {
+    let endpoint = f.body.get("endpoint").and_then(|v| v.as_str());
+    let Some(endpoint) = endpoint.filter(|e| !e.trim().is_empty()) else {
+        push_fn(
+            errors,
+            namespace,
+            &f.name,
+            "http function requires a non-empty `endpoint`",
+        );
+        return;
+    };
+    // Every `{placeholder}` in endpoint / body template must name a declared arg.
+    let body_template = f.body.get("body").and_then(|v| match v {
+        serde_json::Value::String(s) => Some(s.clone()),
+        // A structured `body: { template: "..." }`.
+        serde_json::Value::Object(o) => o
+            .get("template")
+            .and_then(|t| t.as_str())
+            .map(str::to_string),
+        _ => None,
+    });
+    let mut names = placeholders(endpoint);
+    if let Some(b) = &body_template {
+        names.extend(placeholders(b));
+    }
+    for name in names {
+        if !arg_names.contains(name.as_str()) {
+            push_fn(
+                errors,
+                namespace,
+                &f.name,
+                &format!("`{{{name}}}` in the http function body names no declared argument"),
+            );
+        }
+    }
+    // A standalone http function needs `config.base_url` unless the endpoint is
+    // absolute.
+    let absolute = endpoint.starts_with("http://") || endpoint.starts_with("https://");
+    if standalone && !absolute {
+        let has_base = f
+            .config
+            .get("base_url")
+            .and_then(|v| v.as_str())
+            .is_some_and(|s| !s.trim().is_empty());
+        if !has_base {
+            push_fn(
+                errors,
+                namespace,
+                &f.name,
+                "standalone http function needs `config.base_url` unless `endpoint` is absolute",
+            );
+        }
+    }
+}
+
+fn validate_mcp_function(
+    namespace: &str,
+    standalone: bool,
+    f: &FunctionDecl,
+    errors: &mut ConfigErrors,
+) {
+    let tool = f.body.get("tool").and_then(|v| v.as_str());
+    if tool.is_none_or(|t| t.trim().is_empty()) {
+        push_fn(
+            errors,
+            namespace,
+            &f.name,
+            "mcp function requires a non-empty `tool`",
+        );
+    }
+    // A standalone mcp function needs its own connection block, matching a
+    // `kind: mcp` source (`transport` + `command`/`url`).
+    if standalone {
+        match f.config.get("transport").and_then(|v| v.as_str()) {
+            Some("stdio") => {
+                let has_command = match f.config.get("command") {
+                    Some(serde_json::Value::String(s)) => !s.trim().is_empty(),
+                    Some(serde_json::Value::Array(a)) => a
+                        .first()
+                        .and_then(|v| v.as_str())
+                        .is_some_and(|s| !s.trim().is_empty()),
+                    _ => false,
+                };
+                if !has_command {
+                    push_fn(
+                        errors,
+                        namespace,
+                        &f.name,
+                        "standalone mcp function with `transport: stdio` requires `config.command`",
+                    );
+                }
+            }
+            Some("streamable_http") => {
+                if f.config.get("url").and_then(|v| v.as_str()).is_none() {
+                    push_fn(
+                        errors,
+                        namespace,
+                        &f.name,
+                        "standalone mcp function with `transport: streamable_http` requires `config.url`",
+                    );
+                }
+            }
+            Some(other) => push_fn(
+                errors,
+                namespace,
+                &f.name,
+                &format!("standalone mcp function transport `{other}` is not supported"),
+            ),
+            None => push_fn(
+                errors,
+                namespace,
+                &f.name,
+                "standalone mcp function requires `config.transport`",
+            ),
+        }
+    }
+}
+
+fn validate_file_function(
+    namespace: &str,
+    f: &FunctionDecl,
+    arg_names: &HashSet<&str>,
+    errors: &mut ConfigErrors,
+) {
+    let path = f.body.get("path").and_then(|v| v.as_str());
+    let Some(path) = path.filter(|p| !p.trim().is_empty()) else {
+        push_fn(
+            errors,
+            namespace,
+            &f.name,
+            "file function requires a non-empty `path`",
+        );
+        return;
+    };
+    for name in placeholders(path) {
+        if !arg_names.contains(name.as_str()) {
+            push_fn(
+                errors,
+                namespace,
+                &f.name,
+                &format!("`{{{name}}}` in the file function path names no declared argument"),
+            );
+        }
+    }
+    if let Some(format) = f.body.get("format").and_then(|v| v.as_str()) {
+        let known = matches!(
+            format.trim().to_ascii_lowercase().as_str(),
+            "csv" | "tsv" | "json" | "jsonl" | "ndjson" | "parquet"
+        );
+        if !known {
+            push_fn(
+                errors,
+                namespace,
+                &f.name,
+                &format!("file function `format: {format}` is not a known format"),
+            );
+        }
+    }
+}
+
+fn push_fn(errors: &mut ConfigErrors, namespace: &str, name: &str, msg: &str) {
+    errors.push(ConfigError::FunctionInvalid {
+        namespace: namespace.to_string(),
+        name: name.to_string(),
+        msg: msg.to_string(),
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -571,6 +1096,7 @@ mod tests {
             secrets: Vec::new(),
             include: Vec::new(),
             sources,
+            functions: Vec::new(),
             semantic: None,
             observability: None,
         }
@@ -588,6 +1114,7 @@ mod tests {
             cache: Default::default(),
             safety: None,
             tables: Vec::new(),
+            functions: Vec::new(),
             raw_table: false,
             raw_table_safety: None,
         }
@@ -1141,6 +1668,309 @@ mod tests {
             });
             let c = cfg_with(vec![m]);
             assert!(has_semantic_err(&c, "empty `sql`"));
+        }
+    }
+
+    mod functions {
+        use super::*;
+        use pawrly_core::{FunctionArg, FunctionColumn, FunctionKind};
+
+        fn farg(name: &str, ty: &str, required: bool, default: Option<&str>) -> FunctionArg {
+            FunctionArg {
+                name: name.into(),
+                r#type: ty.into(),
+                required,
+                default: default.map(str::to_string),
+                description: None,
+                tool_arg: None,
+            }
+        }
+
+        fn ret(name: &str, ty: &str) -> FunctionColumn {
+            FunctionColumn {
+                name: name.into(),
+                r#type: ty.into(),
+                source: None,
+                description: None,
+            }
+        }
+
+        fn fdecl(name: &str) -> FunctionDecl {
+            FunctionDecl {
+                name: name.into(),
+                namespace: None,
+                kind: None,
+                description: None,
+                wiki: None,
+                examples: Vec::new(),
+                args: Vec::new(),
+                returns: vec![ret("id", "bigint")],
+                config: serde_json::Value::Null,
+                body: serde_json::json!({}),
+                cache: Default::default(),
+                safety: None,
+            }
+        }
+
+        /// A valid source-attached http function.
+        fn valid_http_fn() -> FunctionDecl {
+            let mut f = fdecl("search");
+            f.args = vec![
+                farg("q", "varchar", true, None),
+                farg("limit", "int", false, Some("50")),
+            ];
+            f.returns = vec![ret("id", "bigint"), ret("title", "varchar")];
+            f.body =
+                serde_json::json!({ "endpoint": "/search", "response": { "path": "$.items" } });
+            f
+        }
+
+        fn http_src(funcs: Vec<FunctionDecl>) -> SourceDef {
+            let mut s = src(
+                "api",
+                SourceKind::Http,
+                serde_json::json!({ "base_url": "https://api.example.com" }),
+            );
+            s.functions = funcs;
+            s
+        }
+
+        fn has_fn_err(c: &Config, needle: &str) -> bool {
+            validate(c).0.iter().any(
+                |e| matches!(e, ConfigError::FunctionInvalid { msg, .. } if msg.contains(needle)),
+            )
+        }
+
+        fn any_fn_err(c: &Config) -> bool {
+            validate(c)
+                .0
+                .iter()
+                .any(|e| matches!(e, ConfigError::FunctionInvalid { .. }))
+        }
+
+        #[test]
+        fn happy_path_attached_http_is_valid() {
+            let c = cfg(vec![http_src(vec![valid_http_fn()])]);
+            assert!(!any_fn_err(&c), "valid function should produce no errors");
+        }
+
+        #[test]
+        fn v1_rejects_double_underscore_in_name() {
+            let mut f = valid_http_fn();
+            f.name = "search__issues".into();
+            assert!(has_fn_err(&cfg(vec![http_src(vec![f])]), "without `__`"));
+        }
+
+        #[test]
+        fn v2_attached_must_not_set_namespace() {
+            let mut f = valid_http_fn();
+            f.namespace = Some("other".into());
+            assert!(has_fn_err(
+                &cfg(vec![http_src(vec![f])]),
+                "must not set `namespace`"
+            ));
+        }
+
+        #[test]
+        fn v2_attached_only_on_http_mcp_file() {
+            let mut s = src("db", SourceKind::Postgres, serde_json::json!({}));
+            s.functions = vec![valid_http_fn()];
+            assert!(has_fn_err(&cfg(vec![s]), "can only be attached"));
+        }
+
+        #[test]
+        fn v2_attached_kind_must_match_source() {
+            let mut f = valid_http_fn();
+            f.kind = Some(FunctionKind::Mcp);
+            assert!(has_fn_err(
+                &cfg(vec![http_src(vec![f])]),
+                "does not match source kind"
+            ));
+        }
+
+        #[test]
+        fn v3_standalone_namespace_not_reserved() {
+            let mut f = valid_http_fn();
+            f.namespace = Some("http".into());
+            f.kind = Some(FunctionKind::Http);
+            f.body = serde_json::json!({ "endpoint": "https://x.test/y" });
+            let mut c = cfg(vec![]);
+            c.functions = vec![f];
+            assert!(has_fn_err(&c, "is reserved"));
+        }
+
+        #[test]
+        fn v3_standalone_namespace_not_a_source_name() {
+            let mut f = valid_http_fn();
+            f.namespace = Some("api".into());
+            f.kind = Some(FunctionKind::Http);
+            f.body = serde_json::json!({ "endpoint": "https://x.test/y" });
+            let mut c = cfg(vec![src("api", SourceKind::Http, serde_json::json!({}))]);
+            c.functions = vec![f];
+            assert!(has_fn_err(&c, "collides with a source name"));
+        }
+
+        #[test]
+        fn v4_duplicate_namespace_name() {
+            let c = cfg(vec![http_src(vec![valid_http_fn(), valid_http_fn()])]);
+            assert!(has_fn_err(&c, "duplicate function"));
+        }
+
+        #[test]
+        fn v5_name_collides_with_table() {
+            let mut s = http_src(vec![valid_http_fn()]);
+            s.tables = vec![crate::types::TableDef {
+                name: "search".into(),
+                description: None,
+                wiki: None,
+                body: serde_json::json!({ "endpoint": "/search" }),
+                cache: None,
+                safety: None,
+            }];
+            assert!(has_fn_err(&cfg(vec![s]), "collides with a table"));
+        }
+
+        #[test]
+        fn v6_required_after_optional() {
+            let mut f = valid_http_fn();
+            f.args = vec![
+                farg("limit", "int", false, Some("50")),
+                farg("q", "varchar", true, None),
+            ];
+            assert!(has_fn_err(&cfg(vec![http_src(vec![f])]), "must precede"));
+        }
+
+        #[test]
+        fn v6_required_and_default_conflict() {
+            let mut f = valid_http_fn();
+            f.args = vec![farg("q", "varchar", true, Some("x"))];
+            assert!(has_fn_err(&cfg(vec![http_src(vec![f])]), "cannot be both"));
+        }
+
+        #[test]
+        fn v6_unknown_arg_type() {
+            let mut f = valid_http_fn();
+            f.args = vec![farg("q", "blob", true, None)];
+            assert!(has_fn_err(&cfg(vec![http_src(vec![f])]), "unknown type"));
+        }
+
+        #[test]
+        fn v7_returns_non_empty() {
+            let mut f = valid_http_fn();
+            f.returns = vec![];
+            assert!(has_fn_err(
+                &cfg(vec![http_src(vec![f])]),
+                "at least one column"
+            ));
+        }
+
+        #[test]
+        fn v7_source_arg_names_declared_arg() {
+            let mut f = valid_http_fn();
+            f.returns = vec![FunctionColumn {
+                name: "missing".into(),
+                r#type: "varchar".into(),
+                source: Some("arg".into()),
+                description: None,
+            }];
+            assert!(has_fn_err(
+                &cfg(vec![http_src(vec![f])]),
+                "no argument named"
+            ));
+        }
+
+        #[test]
+        fn v8_http_requires_endpoint() {
+            let mut f = valid_http_fn();
+            f.body = serde_json::json!({ "response": { "path": "$.items" } });
+            assert!(has_fn_err(
+                &cfg(vec![http_src(vec![f])]),
+                "requires a non-empty `endpoint`"
+            ));
+        }
+
+        #[test]
+        fn v8_http_placeholder_must_be_declared_arg() {
+            let mut f = valid_http_fn();
+            f.body = serde_json::json!({ "endpoint": "/x/{nope}" });
+            assert!(has_fn_err(
+                &cfg(vec![http_src(vec![f])]),
+                "names no declared argument"
+            ));
+        }
+
+        #[test]
+        fn v8_standalone_http_needs_base_url() {
+            let mut f = valid_http_fn();
+            f.namespace = Some("ext".into());
+            f.kind = Some(FunctionKind::Http);
+            f.body = serde_json::json!({ "endpoint": "/relative" });
+            let mut c = cfg(vec![]);
+            c.functions = vec![f];
+            assert!(has_fn_err(&c, "needs `config.base_url`"));
+        }
+
+        #[test]
+        fn v8_mcp_requires_tool() {
+            let mut f = fdecl("search");
+            f.body = serde_json::json!({ "rows_path": ["items"] });
+            let mut s = src(
+                "linear",
+                SourceKind::Mcp,
+                serde_json::json!({ "transport": "stdio", "command": ["x"] }),
+            );
+            s.functions = vec![f];
+            assert!(has_fn_err(&cfg(vec![s]), "requires a non-empty `tool`"));
+        }
+
+        #[test]
+        fn v8_file_requires_path() {
+            let mut f = fdecl("logs");
+            f.body = serde_json::json!({ "format": "jsonl" });
+            let mut s = src("fs", SourceKind::File, serde_json::json!({}));
+            s.functions = vec![f];
+            assert!(has_fn_err(&cfg(vec![s]), "requires a non-empty `path`"));
+        }
+
+        #[test]
+        fn engine_functions_resolves_attached_and_standalone() {
+            let mut standalone = valid_http_fn();
+            standalone.name = "geocode".into();
+            standalone.namespace = Some("geo".into());
+            standalone.kind = Some(FunctionKind::Http);
+            standalone.config = serde_json::json!({ "base_url": "https://nominatim.test" });
+            standalone.body = serde_json::json!({ "endpoint": "/search" });
+
+            let mut c = cfg(vec![http_src(vec![valid_http_fn()])]);
+            c.functions = vec![standalone];
+
+            let defs = c.engine_functions();
+            assert_eq!(defs.len(), 2);
+
+            let attached = defs
+                .iter()
+                .find(|d| d.name == "search")
+                .expect("attached def");
+            assert_eq!(attached.namespace, "api"); // inherits the source name
+            assert_eq!(attached.kind, FunctionKind::Http);
+            assert_eq!(attached.source.as_deref(), Some("api"));
+            assert_eq!(
+                attached.connection,
+                serde_json::json!({ "base_url": "https://api.example.com" })
+            );
+            assert!(!attached.builtin);
+
+            let geo = defs
+                .iter()
+                .find(|d| d.name == "geocode")
+                .expect("standalone def");
+            assert_eq!(geo.namespace, "geo");
+            assert_eq!(geo.kind, FunctionKind::Http);
+            assert_eq!(geo.source, None);
+            assert_eq!(
+                geo.connection,
+                serde_json::json!({ "base_url": "https://nominatim.test" })
+            );
         }
     }
 }

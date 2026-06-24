@@ -26,6 +26,7 @@ export const docGroups: DocGroup[] = [
     heading: "Model & serve",
     items: [
       { slug: "semantic", title: "Semantic layer", blurb: "Dimensions, measures, relationships, segments, RLS, and pre-aggregations." },
+      { slug: "functions", title: "Functions", blurb: "Reusable, table-valued functions called as FROM ns.fn(args) — builtin or declared over http, mcp, and files." },
       { slug: "materialize", title: "Materialized tables", blurb: "Pin a query, file, or URL as a self-backed table." },
       { slug: "api", title: "REST API", blurb: "Query and manage a workspace over JSON-over-HTTP, with an OpenAPI spec." },
     ],

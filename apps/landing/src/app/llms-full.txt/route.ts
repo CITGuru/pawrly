@@ -60,6 +60,7 @@ ${blog}
 - Sources reference: ${REPO}/blob/main/docs/sources.md
 - MCP guide: ${REPO}/blob/main/docs/mcp.md
 - Semantic layer: ${REPO}/blob/main/docs/semantic.md
+- Functions: ${REPO}/blob/main/docs/functions.md
 - JSON Schema for pawrly.yaml: ${BASE}/pawrly.schema.json
 - Agent skills (Claude Code / Codex plugin): ${BASE}/skill.md
 - Machine-readable index: ${BASE}/llms.txt

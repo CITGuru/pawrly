@@ -9,6 +9,7 @@ pub mod activity;
 pub mod cache;
 pub mod error;
 pub mod format;
+pub mod function;
 pub mod home;
 pub mod model;
 pub mod optimizer;
@@ -27,6 +28,10 @@ pub use error::{
     ConfigError, ConfigErrors, EngineError, ErrorCode, PawrlyError, SafetyError, SourceError,
 };
 pub use format::format_batches;
+pub use function::{
+    CallArg, FunctionArg, FunctionColumn, FunctionDef, FunctionDescription, FunctionInfo,
+    FunctionKind, RESERVED_FUNCTION_NAMESPACES, render_call_sql,
+};
 pub use home::resolve_home;
 pub use model::SourceKind;
 pub use optimizer::DynamicFilterCapable;

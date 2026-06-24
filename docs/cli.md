@@ -1,6 +1,6 @@
 # CLI
 
-A single binary, `pawrly`. Every command runs against the same engine — in-process by default, or against a `pawrly serve` daemon when one is discovered.
+A single binary, `pawrly`. Every command runs against the same engine: in-process by default, or against a `pawrly serve` daemon when one is discovered.
 
 ```
 pawrly [OPTIONS] <COMMAND>
@@ -279,7 +279,7 @@ pawrly status [--endpoint <ENDPOINT>] [--json]
 
 ### `pawrly console`
 
-Serve the web [Console](./console.md) for the discovered workspace — gRPC-Web plus the embedded UI — so a browser can inspect sources, the catalog, semantic models, the cache, and run SQL. A convenience for the same path as `serve --console`; honors the global `--remote` / `--config` / `--home`.
+Serve the web [Console](./console.md) for the discovered workspace (gRPC-Web plus the embedded UI), so a browser can inspect sources, the catalog, semantic models, the cache, and run SQL. A convenience for the same path as `serve --console`; honors the global `--remote` / `--config` / `--home`.
 
 ```
 pawrly console [--addr <ADDR>] [--bearer-token-from <NAME>] [--cors-origin <ORIGIN>]

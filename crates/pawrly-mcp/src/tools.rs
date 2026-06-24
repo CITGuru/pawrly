@@ -267,6 +267,44 @@ pub fn list_tools() -> Vec<Value> {
                 "required": ["name"]
             }
         }),
+        json!({
+            "name": "list_functions",
+            "description": "List the table-valued functions available (builtins + declared). \
+                            Call them in SQL as `FROM namespace.name(args...)`. Returns \
+                            { functions: [{namespace, name, kind, builtin, signature, description}] }.",
+            "inputSchema": { "type": "object", "properties": {} }
+        }),
+        json!({
+            "name": "describe_function",
+            "description": "Full spec for one function: ordered arguments (types/defaults), \
+                            return columns, and examples.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "function": { "type": "string", "description": "`namespace.name`" }
+                },
+                "required": ["function"]
+            }
+        }),
+        json!({
+            "name": "call_function",
+            "description": "Call a table-valued function and return its rows. `args` is a \
+                            name→value map, reordered to the declared positional order. \
+                            Returns { columns, rows, row_count, truncated }.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "function": { "type": "string", "description": "`namespace.name`" },
+                    "args": {
+                        "type": "object",
+                        "additionalProperties": true,
+                        "description": "Argument name → value (string/number/bool)"
+                    },
+                    "max_rows": { "type": "integer", "default": 1000 }
+                },
+                "required": ["function"]
+            }
+        }),
     ]
 }
 
@@ -550,6 +588,62 @@ pub async fn call_tool(
                 .map_err(|e| ToolError::Engine(e.to_string()))?;
             serde_json::to_value(&m).map_err(|e| ToolError::Engine(e.to_string()))
         }
+        "list_functions" => {
+            let functions = engine
+                .list_functions()
+                .await
+                .map_err(|e| ToolError::Engine(e.to_string()))?;
+            let rows: Vec<Value> = functions
+                .into_iter()
+                .map(|f| {
+                    json!({
+                        "namespace": f.namespace,
+                        "name": f.name,
+                        "kind": f.kind.as_str(),
+                        "builtin": f.builtin,
+                        "signature": f.signature,
+                        "description": f.description,
+                    })
+                })
+                .collect();
+            Ok(json!({ "functions": rows }))
+        }
+        "describe_function" => {
+            let (ns, name) = split_function_arg(args)?;
+            let d = engine
+                .describe_function(&ns, &name)
+                .await
+                .map_err(|e| ToolError::Engine(e.to_string()))?;
+            serde_json::to_value(&d).map_err(|e| ToolError::Engine(e.to_string()))
+        }
+        "call_function" => {
+            let (ns, name) = split_function_arg(args)?;
+            let max = args
+                .get("max_rows")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(1000);
+            let decl = engine
+                .describe_function(&ns, &name)
+                .await
+                .map_err(|e| ToolError::Engine(e.to_string()))?;
+            let call_args =
+                order_function_args(&decl, args.get("args").and_then(|v| v.as_object()))?;
+            let sql = format!(
+                "{} LIMIT {max}",
+                pawrly_core::render_call_sql(&ns, &name, &call_args)
+            );
+            let batches = engine
+                .query_collect(&sql)
+                .await
+                .map_err(|e| ToolError::Engine(e.to_string()))?;
+            let (columns, rows, total, truncated) = format_batches(&batches, max as usize);
+            Ok(json!({
+                "columns": columns,
+                "rows": rows,
+                "row_count": total,
+                "truncated": truncated,
+            }))
+        }
         "semantic_query" => {
             let max = args
                 .get("max_rows")
@@ -624,6 +718,47 @@ pub async fn call_tool(
         }
         other => Err(ToolError::Unknown(other.to_string())),
     }
+}
+
+/// Split a `function` argument (`namespace.name`) into its parts.
+fn split_function_arg(args: &Value) -> Result<(String, String), ToolError> {
+    let s = args
+        .get("function")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| ToolError::BadArgs("`function` is required".into()))?;
+    match s.split_once('.') {
+        Some((ns, name)) if !ns.is_empty() && !name.is_empty() => {
+            Ok((ns.to_string(), name.to_string()))
+        }
+        _ => Err(ToolError::BadArgs(format!(
+            "`function` must be `namespace.name`, got `{s}`"
+        ))),
+    }
+}
+
+/// Order a name→value arg map into the declared positional call order, filling
+/// gaps before the last provided arg with declared defaults; a missing required
+/// arg errors.
+fn order_function_args(
+    decl: &pawrly_core::FunctionDescription,
+    named: Option<&serde_json::Map<String, Value>>,
+) -> Result<Vec<pawrly_core::CallArg>, ToolError> {
+    let provided = |name: &str| named.and_then(|m| m.get(name));
+    let Some(last) = decl.args.iter().rposition(|a| provided(&a.name).is_some()) else {
+        return Ok(Vec::new());
+    };
+    let mut out = Vec::with_capacity(last + 1);
+    for arg in decl.args.iter().take(last + 1) {
+        let value = match provided(&arg.name) {
+            Some(Value::String(s)) => s.clone(),
+            Some(other) => other.to_string(),
+            None => arg.default.clone().ok_or_else(|| {
+                ToolError::BadArgs(format!("missing required argument `{}`", arg.name))
+            })?,
+        };
+        out.push(pawrly_core::CallArg::new(value, &arg.r#type));
+    }
+    Ok(out)
 }
 
 /// Tokenize a search query into distinct lowercased terms.
@@ -744,6 +879,72 @@ mod tests {
         ] {
             assert!(names.contains(&want.to_string()), "missing tool `{want}`");
         }
+    }
+
+    #[test]
+    fn function_tools_are_listed() {
+        let names: Vec<String> = list_tools()
+            .iter()
+            .filter_map(|t| t["name"].as_str().map(str::to_string))
+            .collect();
+        for want in ["list_functions", "describe_function", "call_function"] {
+            assert!(names.contains(&want.to_string()), "missing tool `{want}`");
+        }
+    }
+
+    fn engine_with_functions() -> Arc<dyn EngineService> {
+        let mock = MockEngine::new();
+        for def in pawrly_core::function::builtins() {
+            mock.add_function(def);
+        }
+        Arc::new(mock)
+    }
+
+    #[tokio::test]
+    async fn list_functions_returns_registered() {
+        let out = call_tool(&engine_with_functions(), "list_functions", &json!({}))
+            .await
+            .unwrap();
+        let funcs = out["functions"].as_array().expect("functions array");
+        assert!(
+            funcs
+                .iter()
+                .any(|f| f["namespace"] == "file" && f["name"] == "glob")
+        );
+    }
+
+    #[tokio::test]
+    async fn describe_function_returns_spec() {
+        let out = call_tool(
+            &engine_with_functions(),
+            "describe_function",
+            &json!({ "function": "file.glob" }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(out["namespace"], "file");
+        assert_eq!(out["name"], "glob");
+        assert!(out["returns"].is_array());
+    }
+
+    #[tokio::test]
+    async fn describe_function_unknown_is_engine_error() {
+        let err = call_tool(
+            &engine_with_functions(),
+            "describe_function",
+            &json!({ "function": "no.such" }),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, ToolError::Engine(_)));
+    }
+
+    #[tokio::test]
+    async fn call_function_requires_function_arg() {
+        let err = call_tool(&engine_with_functions(), "call_function", &json!({}))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ToolError::BadArgs(_)));
     }
 
     #[tokio::test]

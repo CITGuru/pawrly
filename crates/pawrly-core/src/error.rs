@@ -57,6 +57,9 @@ pub enum EngineError {
     #[error("unknown table `{0}`")]
     UnknownTable(String),
 
+    #[error("unknown function `{0}`")]
+    UnknownFunction(String),
+
     #[error("safety check failed: {0}")]
     Safety(#[from] SafetyError),
 
@@ -90,6 +93,7 @@ impl EngineError {
             Self::UnknownKind(_) => "PAWRLY_UNKNOWN_KIND",
             Self::SourceRegistration { .. } => "PAWRLY_SOURCE_REGISTRATION",
             Self::UnknownTable(_) => "PAWRLY_UNKNOWN_TABLE",
+            Self::UnknownFunction(_) => "PAWRLY_UNKNOWN_FUNCTION",
             Self::Safety(s) => s.code(),
             Self::Timeout(_) => "PAWRLY_TIMEOUT",
             Self::OutOfMemory(_) => "PAWRLY_OOM",
@@ -212,6 +216,13 @@ pub enum ConfigError {
     #[error("semantic model `{model}`: {msg}")]
     SemanticInvalid { model: String, msg: String },
 
+    #[error("function `{namespace}.{name}`: {msg}")]
+    FunctionInvalid {
+        namespace: String,
+        name: String,
+        msg: String,
+    },
+
     #[error("unresolved secret reference: {0}")]
     UnresolvedSecret(String),
 
@@ -252,6 +263,7 @@ impl ConfigError {
             Self::Table { .. } => "PAWRLY_CONFIG_TABLE",
             Self::Source(_, _) => "PAWRLY_CONFIG_SOURCE",
             Self::SemanticInvalid { .. } => "PAWRLY_CONFIG_SEMANTIC_INVALID",
+            Self::FunctionInvalid { .. } => "PAWRLY_CONFIG_FUNCTION_INVALID",
             Self::UnresolvedSecret(_) => "PAWRLY_CONFIG_UNRESOLVED_SECRET",
             Self::UnresolvedEnv(_) => "PAWRLY_CONFIG_UNRESOLVED_ENV",
             Self::ReadFile { .. } => "PAWRLY_CONFIG_READ_FILE",

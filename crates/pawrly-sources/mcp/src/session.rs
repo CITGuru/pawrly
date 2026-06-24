@@ -30,6 +30,12 @@ pub struct McpClientSession {
     transport: Arc<dyn McpTransport>,
 }
 
+impl std::fmt::Debug for McpClientSession {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("McpClientSession").finish_non_exhaustive()
+    }
+}
+
 impl McpClientSession {
     /// Run the `initialize` handshake and return a ready session.
     pub async fn connect(transport: Arc<dyn McpTransport>) -> Result<Self, McpError> {

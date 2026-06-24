@@ -12,7 +12,7 @@ Runs the canonical 22 [TPC-H](https://www.tpc.org/tpch/) queries through Pawrly,
 
 So Q5 (`customer ⋈ orders ⋈ lineitem ⋈ supplier ⋈ nation ⋈ region`) touches all three storage backends in one plan, while Q1 (lineitem-only) stays single-source.
 
-The `world` and `fx` sources are live public HTTP APIs (no auth). They are **not** part of the canonical 22, but power the enrichment queries in `queries_extra/` (see below), which join parquet + Postgres + SQLite + HTTP in a single plan.
+The `world` and `fx` sources are live public HTTP APIs (no auth). They are **not** part of the canonical 22, but power the enrichment queries in `queries_extra/` (see below), which join parquet + Postgres + SQLite + HTTP in a single plan. The `fx` source also exposes a table-valued **function** `fx.rates_for(base)` — the `rates` lookup with the base currency as an argument — used by `queries_extra/fx_rate_via_function.sql` (`SELECT … FROM ref.nation JOIN world.currency … CROSS JOIN fx.rates_for('EUR')`).
 
 ## Prerequisites
 

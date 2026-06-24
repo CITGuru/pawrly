@@ -4,6 +4,17 @@ All notable changes to Pawrly are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `pawrly update` — upgrade the installed binary in place to the latest release (or a pinned `--version`), with `--check` to report availability without installing.
+- `pawrly uninstall` — remove the installed binary, with `--purge` to also delete the Pawrly home directory (`$PAWRLY_HOME` / `~/.pawrly`).
+
+### Changed
+
+- `install.sh` / `install.ps1` now upgrade in place: re-running skips the download when already up to date (override with `PAWRLY_FORCE=1`).
+
 ## [0.1.0](https://github.com/CITGuru/pawrly/releases/tag/v0.1.0) - 2026-06-18
 
 First public release: one SQL dialect over APIs, files, databases, warehouses, and lakehouses, federated into a single query plan. DataFusion plans and executes; an in-process DuckDB acts as a sub-engine for the sources DuckDB already speaks. Every interface (CLI, MCP, gRPC, Flight SQL, web Console) talks the same `EngineService` trait, in-process or against a `pawrly serve` daemon.

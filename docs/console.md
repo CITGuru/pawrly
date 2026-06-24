@@ -1,8 +1,8 @@
 # Console
 
-The **Console** is a browser UI for a running Pawrly workspace — browse your sources and their health, the SQL catalog, the semantic layer, the cache and materialized tables, recent query activity, and run ad-hoc SQL with live-streaming results. One command, one page.
+The **Console** is a browser UI for a running Pawrly workspace: browse your sources and their health, the SQL catalog, the semantic layer, the cache and materialized tables, recent query activity, and run ad-hoc SQL with live-streaming results.
 
-It is a static single-page app that talks to the Pawrly daemon over **gRPC-Web** — the same [gRPC contract](./architecture.md) the daemon already serves, no extra backend. v1 is **read-only**: it inspects and queries; it never mutates your workspace.
+It is a static single-page app that talks to the Pawrly daemon over gRPC-Web, the same [gRPC contract](./architecture.md) the daemon already serves, with no extra backend. v1 is **read-only**: it inspects and queries; it never mutates your workspace.
 
 ## Quick start
 
@@ -12,7 +12,7 @@ pawrly console
 # → open http://127.0.0.1:8787
 ```
 
-`pawrly console` resolves the workspace exactly like the rest of the [CLI](./cli.md) (`--config`, `$PAWRLY_CONFIG`, `./pawrly.yaml`, or `~/.pawrly/pawrly.yaml`) — so launch it from a project directory and it shows *that* workspace. On loopback it needs no token and no extra setup.
+`pawrly console` resolves the workspace exactly like the rest of the [CLI](./cli.md) (`--config`, `$PAWRLY_CONFIG`, `./pawrly.yaml`, or `~/.pawrly/pawrly.yaml`), so launch it from a project directory and it shows *that* workspace. On loopback it needs no token and no extra setup.
 
 You can also fold it into a daemon you're already running:
 
@@ -58,7 +58,7 @@ See [Observability](./observability.md#activity-log) for the full block. Click a
 
 The Console talks to **one daemon at a time**, set by the **Endpoint** field in the sidebar:
 
-- **Embedded (default).** When the daemon serves the Console itself (`pawrly console`), the UI defaults its endpoint to that same origin — zero config.
+- **Embedded (default).** When the daemon serves the Console itself (`pawrly console`), the UI defaults its endpoint to that same origin (zero config).
 - **Standalone.** Point the Endpoint field (or a runtime `config.json`) at any daemon's gRPC-Web address to use one UI build against many daemons.
 
 The **Token** field holds a bearer token, kept in memory and sent as gRPC-Web metadata on every call — required whenever the daemon enforces auth (see below).
@@ -75,7 +75,7 @@ The Console inherits the daemon's security posture; nothing new is exposed.
     --bearer-token-from PAWRLY_TOKEN --cors-origin https://console.example.com
   ```
 
-- **TLS for remote.** A non-loopback Console must sit behind a TLS-terminating proxy (or be fronted with TLS) — otherwise the token and results cross the network in cleartext.
+- **TLS for remote.** A non-loopback Console must sit behind a TLS-terminating proxy (or be fronted with TLS); otherwise the token and results cross the network in cleartext.
 - **CORS** is opt-in via `--cors-origin <ORIGIN>`, only needed when the UI is hosted on a different origin than the daemon; scope it to the exact origin.
 - **The SQL runner can read anything the engine can.** Treat Console access like database access.
 
@@ -98,7 +98,7 @@ pnpm --dir apps/console build      # runs codegen (buf) + vite build → apps/co
 cargo build --release -p pawrly-cli --features console
 ```
 
-Without the `console` feature the `pawrly console` / `serve --console` paths still serve the gRPC-Web endpoint (useful for a separately-hosted SPA in standalone mode) — they just don't bundle the UI assets.
+Without the `console` feature the `pawrly console` / `serve --console` paths still serve the gRPC-Web endpoint (useful for a separately-hosted SPA in standalone mode); they just don't bundle the UI assets.
 
 ## Related
 

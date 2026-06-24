@@ -22,6 +22,10 @@ use crate::transport::McpTransport;
 pub struct McpSourceReport {
     pub table_count: u64,
     pub tables: Vec<McpTableSummary>,
+    /// The live client session, so attached functions share one connection with
+    /// the source (like the http source handle). `None` only on the `Default`
+    /// used by error paths.
+    pub session_handle: Option<Arc<McpClientSession>>,
 }
 
 #[derive(Debug, Clone)]
@@ -82,7 +86,19 @@ pub async fn register_mcp_source(
     Ok(McpSourceReport {
         table_count: summaries.len() as u64,
         tables: summaries,
+        session_handle: Some(session),
     })
+}
+
+/// Connect a standalone [`McpClientSession`] from a function's `config`
+/// connection block (`transport` + `command`/`url`), reusing the same transport
+/// builder as a `kind: mcp` source.
+pub async fn build_mcp_session(config: &Value) -> Result<Arc<McpClientSession>, McpBuildError> {
+    let transport = build_transport(config)?;
+    let session = McpClientSession::connect(transport)
+        .await
+        .map_err(|e| McpBuildError::Connect(e.to_string()))?;
+    Ok(Arc::new(session))
 }
 
 fn build_transport(cfg: &Value) -> Result<Arc<dyn McpTransport>, McpBuildError> {

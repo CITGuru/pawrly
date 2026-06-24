@@ -14,6 +14,7 @@ mod cache;
 mod duckdb_pool;
 mod duckdb_source;
 mod durable_activity;
+mod functions;
 mod json_udf;
 mod local;
 mod namespace;

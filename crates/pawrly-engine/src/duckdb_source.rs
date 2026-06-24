@@ -438,6 +438,7 @@ async fn register_attach(
     Ok(RegisterReport {
         table_count: tables.len() as u64,
         tables,
+        function_handle: Default::default(),
     })
 }
 
@@ -491,6 +492,7 @@ async fn register_scan(
     Ok(RegisterReport {
         table_count: summaries.len() as u64,
         tables: summaries,
+        function_handle: Default::default(),
     })
 }
 
@@ -549,6 +551,7 @@ async fn register_ducklake(
     Ok(RegisterReport {
         table_count: tables.len() as u64,
         tables,
+        function_handle: Default::default(),
     })
 }
 
@@ -636,6 +639,7 @@ async fn register_object_store(
     Ok(RegisterReport {
         table_count: summaries.len() as u64,
         tables: summaries,
+        function_handle: Default::default(),
     })
 }
 
