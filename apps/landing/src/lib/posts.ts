@@ -6,6 +6,8 @@ export type Post = {
   slug: string;
   title: string;
   excerpt: string;
+  publishedAt?: string;
+  publishedDate?: string;
   readTime: string;
   image?: {
     alt: string;
@@ -21,8 +23,18 @@ const BLOG_DIR = path.join(process.cwd(), "blogs");
 
 // Curated order — newest / most foundational first.
 const ORDER = [
+  "how-to-query-any-api-with-sql",
+  "sql-over-apis-the-missing-layer-between-mcp-and-etl",
   "agents-need-a-query-surface-not-more-tools",
 ];
+
+const PUBLISHED_RE = /^<!--\s*published:\s*(\d{4}-\d{2}-\d{2})\s*-->$/m;
+const DRAFT_RE = /^<!--\s*draft:\s*true\s*-->$/m;
+const METADATA_RE = /^<!--\s*(?:published:\s*\d{4}-\d{2}-\d{2}|draft:\s*true)\s*-->\s*$/gm;
+
+function stripMetadata(md: string): string {
+  return md.replace(METADATA_RE, "").trim();
+}
 
 function readRaw(): { slug: string; md: string }[] {
   try {
@@ -44,7 +56,7 @@ function titleFrom(md: string): string {
 }
 
 function excerptFrom(md: string): string {
-  const body = md.replace(/^#\s+.+$/m, "").trim();
+  const body = stripMetadata(md.replace(/^#\s+.+$/m, ""));
   const para = body
     .split("\n\n")
     .map((p) => p.trim())
@@ -59,6 +71,22 @@ function excerptFrom(md: string): string {
   if (!para) return "";
   const clean = para.replace(/[*_`>]/g, "").replace(/\s+/g, " ").trim();
   return clean.length > 180 ? clean.slice(0, 177).trimEnd() + "…" : clean;
+}
+
+function dateFrom(md: string): Pick<Post, "publishedAt" | "publishedDate"> {
+  const m = md.match(PUBLISHED_RE);
+  if (!m) return {};
+  const [year, month, day] = m[1].split("-").map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return {
+    publishedAt: m[1],
+    publishedDate: new Intl.DateTimeFormat("en", {
+      month: "long",
+      day: "numeric",
+      year: "numeric",
+      timeZone: "UTC",
+    }).format(date),
+  };
 }
 
 function imageFrom(md: string): Post["image"] {
@@ -77,12 +105,13 @@ function readTimeFrom(md: string): string {
 
 export function getPosts(): Post[] {
   const raw = readRaw();
-  const posts = raw.map(({ slug, md }) => {
-    const bodyMd = md.replace(/^#\s+.+$/m, "").trim();
+  const posts = raw.filter(({ md }) => !DRAFT_RE.test(md)).map(({ slug, md }) => {
+    const bodyMd = stripMetadata(md.replace(/^#\s+.+$/m, ""));
     return {
       slug,
       title: titleFrom(md),
       excerpt: excerptFrom(md),
+      ...dateFrom(md),
       readTime: readTimeFrom(md),
       image: imageFrom(md),
       html: marked.parse(bodyMd, { async: false }) as string,

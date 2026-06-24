@@ -1,5 +1,7 @@
 # Agents Need a Query Surface, Not More Tools
 
+<!-- published: 2026-06-23 -->
+
 ![A dog lying on its back against a white background](https://cdn-images-1.medium.com/v2/resize:fit:2400/0*ft6ONVaQ3dY9GsX-)
 
 I keep coming back to the same problem with agents.
