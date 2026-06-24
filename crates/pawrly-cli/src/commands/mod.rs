@@ -17,4 +17,6 @@ pub mod source;
 pub mod sql;
 pub mod status;
 pub mod stop;
+pub mod uninstall;
+pub mod update;
 pub mod validate;

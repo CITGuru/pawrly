@@ -47,6 +47,16 @@ irm https://raw.githubusercontent.com/CITGuru/pawrly/main/scripts/install.ps1 | 
 cargo install --git https://github.com/CITGuru/pawrly pawrly-cli
 ```
 
+**Update** in place, or **uninstall**:
+
+```bash
+pawrly update              # upgrade to the latest release
+pawrly update --check      # report whether a newer version exists
+pawrly uninstall           # remove the binary (--purge also deletes ~/.pawrly)
+```
+
+Re-running the install script upgrades an existing install too, skipping the download when already up to date (`PAWRLY_FORCE=1` to reinstall).
+
 #### Building from source
 
 Tested on macOS (Apple Silicon and Intel) and Linux (x86_64). Should take under 15 minutes on a warm Cargo cache, longer on the first build.

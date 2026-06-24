@@ -134,6 +134,10 @@ enum Command {
     McpStdio(commands::mcp_stdio::Args),
     /// Run the MCP server over HTTP.
     McpHttp(commands::mcp_http::Args),
+    /// Upgrade the installed `pawrly` binary in place.
+    Update(commands::update::Args),
+    /// Remove the installed `pawrly` binary (and --purge its data).
+    Uninstall(commands::uninstall::Args),
     /// Print the engine version + health.
     Version,
 }
@@ -209,6 +213,8 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         Command::McpHttp(args) => {
             commands::mcp_http::run(cli.home, cli.config, cli.remote, cli.no_remote, args).await
         }
+        Command::Update(args) => commands::update::run(args).await,
+        Command::Uninstall(args) => commands::uninstall::run(cli.home, args).await,
         Command::Version => print_version(cli.remote, cli.no_remote, cli.home, cli.config).await,
     }
 }

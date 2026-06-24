@@ -12,8 +12,13 @@
 #                       when writable, prompting for sudo only if needed).
 #   PAWRLY_REPO         owner/repo to pull releases from. Default: CITGuru/pawrly.
 #   PAWRLY_NO_VERIFY    Set to 1 to skip the SHA-256 checksum verification.
+#   PAWRLY_FORCE        Set to 1 to reinstall even if the target version is
+#                       already installed.
 #   PAWRLY_BUILD_FROM_SOURCE
 #                       Set to 1 to skip prebuilt binaries and `cargo install` instead.
+#
+# Re-running this script upgrades an existing install, skipping the download
+# when already up to date (unless PAWRLY_FORCE=1).
 #
 # This script is intentionally POSIX sh (no bashisms) so it runs anywhere
 # `curl ... | sh` lands.
@@ -121,6 +126,24 @@ resolve_install_dir() {
   printf '%s' "$HOME/.local/bin"
 }
 
+# ----- existing-install detection --------------------------------------------
+
+# installed_version <install-dir>
+# Print the version of an already-installed pawrly (the binary in the target
+# dir, else whatever is first on PATH), or nothing if none is found. The CLI
+# prints `pawrly <version>` to stdout for `--version`.
+installed_version() {
+  _dir="$1"
+  _bin=""
+  if [ -x "$_dir/$BIN_NAME" ]; then
+    _bin="$_dir/$BIN_NAME"
+  elif command -v "$BIN_NAME" >/dev/null 2>&1; then
+    _bin="$(command -v "$BIN_NAME")"
+  fi
+  [ -n "$_bin" ] || return 0
+  "$_bin" --version 2>/dev/null | awk 'NR==1 {print $2}'
+}
+
 # ----- build-from-source fallback -------------------------------------------
 
 install_from_source() {
@@ -148,12 +171,36 @@ main() {
   version="${PAWRLY_VERSION:-$(latest_version)}"
   install_dir="$(resolve_install_dir)"
 
+  # Skip the download when the target version is already installed; otherwise
+  # upgrade in place. Strip the tag's leading `v` so `v0.1.0` matches the CLI's
+  # `0.1.0`.
+  target_ver="${version#v}"
+  current_ver="$(installed_version "$install_dir")"
+  action="installing"
+  if [ -n "$current_ver" ]; then
+    if [ "$current_ver" = "$target_ver" ]; then
+      if [ "${PAWRLY_FORCE:-0}" = "1" ]; then
+        action="reinstalling"
+      else
+        info "pawrly ${BOLD}v${current_ver}${RESET} is already up to date"
+        info "set ${BOLD}PAWRLY_FORCE=1${RESET} to reinstall"
+        exit 0
+      fi
+    else
+      action="updating"
+    fi
+  fi
+
   tarball="${BIN_NAME}-${target}.tar.gz"
   base_url="https://github.com/${REPO}/releases/download/${version}"
   url="${base_url}/${tarball}"
   sum_url="${url}.sha256"
 
-  info "installing ${BOLD}${version}${RESET} for ${BOLD}${target}${RESET}"
+  if [ "$action" = "updating" ]; then
+    info "updating ${BOLD}pawrly${RESET} v${current_ver} → ${BOLD}${version}${RESET} for ${BOLD}${target}${RESET}"
+  else
+    info "${action} ${BOLD}${version}${RESET} for ${BOLD}${target}${RESET}"
+  fi
 
   tmp="$(mktemp -d 2>/dev/null || mktemp -d -t pawrly)"
   # shellcheck disable=SC2064
