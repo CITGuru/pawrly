@@ -120,6 +120,8 @@ enum Command {
     Source(commands::source::Args),
     /// Browse and query the semantic layer (list, describe, query).
     Semantic(commands::semantic::Args),
+    /// Discover and call table-valued functions (list, describe, call).
+    Function(commands::function::Args),
     /// Run the Pawrly daemon (gRPC server).
     Serve(commands::serve::Args),
     /// Serve the web Console (gRPC-Web + embedded UI) for the workspace.
@@ -191,6 +193,9 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         }
         Command::Semantic(args) => {
             commands::semantic::run(cli.home, cli.config, cli.remote, cli.no_remote, args).await
+        }
+        Command::Function(args) => {
+            commands::function::run(cli.home, cli.config, cli.remote, cli.no_remote, args).await
         }
         Command::Serve(args) => commands::serve::run(cli.home, cli.config, args).await,
         Command::Console(args) => {

@@ -7,7 +7,9 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use pawrly_core::semantic::SemanticModel;
-use pawrly_core::{CachePolicy, SafetyPolicy, SourceKind};
+use pawrly_core::{
+    CachePolicy, FunctionArg, FunctionColumn, FunctionDef, FunctionKind, SafetyPolicy, SourceKind,
+};
 
 use crate::defaults::Defaults;
 
@@ -40,6 +42,12 @@ pub struct Config {
     /// Declared sources.
     #[serde(default)]
     pub sources: Vec<SourceDef>,
+
+    /// Declared standalone table-valued functions (top-level `functions:`
+    /// block). Each carries an explicit `namespace`, `kind`, and `config`.
+    /// Source-attached functions live under their source's `functions:` instead.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub functions: Vec<FunctionDecl>,
 
     /// Optional semantic layer. Absent = the layer is off and behavior is
     /// unchanged.
@@ -157,6 +165,13 @@ pub struct SourceDef {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tables: Vec<TableDef>,
 
+    /// Source-attached table-valued functions. They inherit this source's
+    /// namespace (its name), `kind`, and connection `config`, so they omit
+    /// `namespace`/`kind`/`config` of their own. Only valid on http/mcp/file
+    /// sources.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub functions: Vec<FunctionDecl>,
+
     /// HTTP-shaped sources only: register a raw-HTTP table named after the source.
     #[serde(default)]
     pub raw_table: bool,
@@ -204,6 +219,94 @@ fn is_null(v: &serde_json::Value) -> bool {
     v.is_null()
 }
 
+/// One function declaration — the single config wrapper for both the
+/// source-attached and standalone shapes.
+///
+/// Like [`TableDef`], `deny_unknown_fields` is intentionally absent: the
+/// `#[serde(flatten)] body` captures every kind-specific key (`endpoint`,
+/// `response`, `pagination`, `path`, `tool`, `rows_path`, ...). Top-level
+/// entries require `namespace` + `kind`; source-attached entries omit both plus
+/// `config` (all inherited). Placement and content are checked by the validator.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct FunctionDecl {
+    /// Function name; a valid SQL identifier with no `__`.
+    pub name: String,
+
+    /// SQL qualifier — **standalone only**. Source-attached functions inherit
+    /// the source name as their namespace.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub namespace: Option<String>,
+
+    /// Execution backend — **standalone only**. Attached functions inherit it
+    /// from the source kind.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<FunctionKind>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wiki: Option<String>,
+
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub examples: Vec<String>,
+
+    /// Ordered argument declarations — list order is the positional call order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub args: Vec<FunctionArg>,
+
+    /// Output columns; the schema is fixed at plan time. Non-empty (validated).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub returns: Vec<FunctionColumn>,
+
+    /// Standalone connection config (same shape as the matching source kind's
+    /// `config`). Forbidden on attached functions.
+    #[serde(default = "default_value", skip_serializing_if = "is_null")]
+    pub config: serde_json::Value,
+
+    /// Kind-specific body, flattened so its keys live at the top level of the
+    /// function block (`endpoint`, `response`, `path`, `tool`, ...).
+    #[serde(flatten)]
+    pub body: serde_json::Value,
+
+    /// Reserved; cache is inert in v1.
+    #[serde(default)]
+    pub cache: CachePolicy,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub safety: Option<SafetyPolicy>,
+}
+
+impl FunctionDecl {
+    /// Resolve into the engine-facing [`FunctionDef`] given the effective
+    /// `namespace`, `kind`, `connection`, and parent `source` (the latter two
+    /// inherited for attached functions, explicit for standalone).
+    fn to_engine(
+        &self,
+        namespace: String,
+        kind: FunctionKind,
+        connection: serde_json::Value,
+        source: Option<String>,
+    ) -> FunctionDef {
+        FunctionDef {
+            namespace,
+            name: self.name.clone(),
+            kind,
+            description: self.description.clone(),
+            wiki: self.wiki.clone(),
+            examples: self.examples.clone(),
+            args: self.args.clone(),
+            returns: self.returns.clone(),
+            connection,
+            body: self.body.clone(),
+            source,
+            builtin: false,
+            cache: self.cache.clone(),
+            safety: self.safety.clone(),
+        }
+    }
+}
+
 impl Config {
     /// Convert into engine-side runtime descriptors. Caller has already
     /// resolved secrets and validated.
@@ -236,5 +339,36 @@ impl Config {
                 raw_table_safety: s.raw_table_safety,
             })
             .collect()
+    }
+
+    /// Resolve declared functions (source-attached + standalone) into
+    /// engine-facing descriptors. Taken by `&self` so it runs before
+    /// [`Config::into_engine_sources`] consumes the config. Attached functions
+    /// inherit their source's namespace, kind, and `config`; standalone use their
+    /// explicit fields. Assumes validation has passed: an attached function on a
+    /// non-http/mcp/file source is skipped.
+    #[must_use]
+    pub fn engine_functions(&self) -> Vec<FunctionDef> {
+        let mut out = Vec::new();
+        for src in &self.sources {
+            let Some(kind) = FunctionKind::for_source(src.kind) else {
+                continue;
+            };
+            for f in &src.functions {
+                out.push(f.to_engine(
+                    src.name.clone(),
+                    kind,
+                    src.config.clone(),
+                    Some(src.name.clone()),
+                ));
+            }
+        }
+        for f in &self.functions {
+            let (Some(namespace), Some(kind)) = (f.namespace.clone(), f.kind) else {
+                continue;
+            };
+            out.push(f.to_engine(namespace, kind, f.config.clone(), None));
+        }
+        out
     }
 }

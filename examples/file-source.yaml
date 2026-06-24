@@ -4,6 +4,10 @@
 #   pawrly --config examples/file-source.yaml schema
 #   pawrly --config examples/file-source.yaml sql 'SELECT COUNT(*) FROM data.orders'
 #
+# ...and a custom table-valued function, called from SQL like a table:
+#   pawrly --config examples/file-source.yaml function list
+#   pawrly --config examples/file-source.yaml sql 'SELECT file_name FROM fixtures.files()'
+#
 # Paths are resolved relative to this file (the workspace dir), so we point at
 # the in-repo parquet fixture used by the integration tests.
 
@@ -21,3 +25,17 @@ sources:
       - name: customers
         path: ../crates/pawrly-cli/tests/fixtures/customers.csv
         format: csv
+
+# A custom file function: list the fixture files this workspace reads, one row
+# per file. Builtins (`file.glob`, `http.get`) are always available too.
+functions:
+  - name: files
+    namespace: fixtures
+    kind: file
+    description: The fixture files shipped with the repo, as metadata rows.
+    path: ../crates/pawrly-cli/tests/fixtures/*
+    returns:
+      - { name: path, type: varchar }
+      - { name: file_name, type: varchar }
+      - { name: size_bytes, type: bigint }
+      - { name: modified, type: timestamp }

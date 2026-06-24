@@ -595,6 +595,19 @@ impl HttpTableProvider {
             .map_err(|e| DataFusionError::Plan(e.to_string()))?;
         Ok(exec)
     }
+
+    /// Fetch one fully-bound parameter set and build the result batch — the
+    /// `fetch_rows` + `build_batch` core shared with [`HttpTableProvider::scan_bound`],
+    /// but with params already bound from a function's call arguments (no filter
+    /// resolution, fan-out, or projection). Used by the HTTP function executor.
+    pub(crate) async fn scan_params(
+        &self,
+        params: &BTreeMap<String, String>,
+        limit: Option<usize>,
+    ) -> datafusion::common::Result<RecordBatch> {
+        let rows = self.fetch_rows(params, &BTreeMap::new(), limit).await?;
+        build_batch(&self.schema, &self.out_columns, &rows, params)
+    }
 }
 
 #[async_trait]

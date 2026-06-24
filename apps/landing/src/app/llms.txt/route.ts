@@ -40,6 +40,7 @@ Pawrly ships a Claude Code + Codex plugin with skills for reading data, connecti
 - [Configuration](${BASE}/docs/config): the pawrly.yaml schema, secrets, and caching.
 - [Sources reference](${BASE}/docs/sources): configure APIs, files, MCP servers, databases, warehouses, and lakehouses.
 - [Semantic layer](${BASE}/docs/semantic): approved fields, metrics, joins, access rules, and required filters.
+- [Functions](${BASE}/docs/functions): reusable table-valued functions called as FROM ns.fn(args) — builtin or declared over http, mcp, and files.
 - [Materialized tables](${BASE}/docs/materialize): save a query result, file, or URL as a reusable table.
 - [MCP](${BASE}/docs/mcp): run Pawrly as an MCP server and consume other MCP servers as sources.
 - [Observability](${BASE}/docs/observability): metrics and query auditing.

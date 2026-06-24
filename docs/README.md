@@ -17,6 +17,7 @@ One SQL dialect over your APIs, files, databases, and AI models — no ETL, no w
 - **[MCP server](./mcp.md)** — connect AI agents (Claude Desktop, Cursor, Codex, …) over the Model Context Protocol.
 - **[Console](./console.md)** — the browser UI: browse sources, catalog, and semantic models, and run SQL with live results.
 - **[Semantic layer](./semantic.md)** — business-named models, dimensions, measures, and relationships for humans and agents.
+- **[Functions](./functions.md)** — reusable, table-valued functions called as `FROM ns.fn(args)` (builtin + declared http/mcp/file).
 - **[Observability](./observability.md)** — traces, metrics, and the queryable `system.activity` log over OpenTelemetry and Prometheus.
 
 ## At a glance

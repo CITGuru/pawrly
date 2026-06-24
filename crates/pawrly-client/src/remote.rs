@@ -238,6 +238,35 @@ impl EngineService for RemoteEngineClient {
         })
     }
 
+    async fn list_functions(&self) -> Result<Vec<pawrly_core::FunctionInfo>, EngineError> {
+        let mut client = self.catalog.clone();
+        let resp = client
+            .list_functions(pawrly_proto::v1::ListFunctionsRequest {})
+            .await
+            .map_err(status_to_engine_error)?
+            .into_inner();
+        Ok(resp.functions.into_iter().map(Into::into).collect())
+    }
+
+    async fn describe_function(
+        &self,
+        namespace: &str,
+        name: &str,
+    ) -> Result<pawrly_core::FunctionDescription, EngineError> {
+        let mut client = self.catalog.clone();
+        let resp = client
+            .describe_function(pawrly_proto::v1::DescribeFunctionRequest {
+                namespace: namespace.to_string(),
+                name: name.to_string(),
+            })
+            .await
+            .map_err(status_to_engine_error)?
+            .into_inner();
+        resp.function.map(Into::into).ok_or_else(|| {
+            EngineError::Protocol("describe_function response missing function".into())
+        })
+    }
+
     async fn schema_snapshot(
         &self,
         sources: Option<Vec<String>>,

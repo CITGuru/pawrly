@@ -5,6 +5,7 @@ pub mod check;
 pub mod config;
 pub mod console;
 pub mod format;
+pub mod function;
 pub mod init;
 pub mod materialize;
 pub mod mcp_http;

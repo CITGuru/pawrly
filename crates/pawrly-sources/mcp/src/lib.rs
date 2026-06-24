@@ -7,6 +7,7 @@
 //! tool-backed one.
 
 mod error;
+mod function;
 mod http;
 mod provider;
 mod register;
@@ -16,4 +17,6 @@ mod synth;
 mod transport;
 
 pub use error::McpBuildError;
-pub use register::{McpSourceReport, McpTableSummary, register_mcp_source};
+pub use function::McpFunctionExecutor;
+pub use register::{McpSourceReport, McpTableSummary, build_mcp_session, register_mcp_source};
+pub use session::McpClientSession;

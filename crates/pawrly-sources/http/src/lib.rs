@@ -9,6 +9,8 @@
 mod deferred;
 mod dependent_join;
 mod expr;
+mod fetch;
+mod function;
 mod openapi;
 mod paginate;
 mod raw;
@@ -18,8 +20,11 @@ mod typed;
 
 pub use deferred::DeferredHttpScanExec;
 pub use dependent_join::{DependentJoinExec, DependentJoinRule};
+pub use function::{HttpFunctionExecutor, function_spec};
 pub use raw::RawHttpTableProvider;
-pub use register::{HttpBuildError, HttpSourceReport, HttpTableSummary, register_http_source};
+pub use register::{
+    HttpBuildError, HttpSourceReport, HttpTableSummary, build_http_source, register_http_source,
+};
 pub use source::{
     AuthHeader, AuthSpec, HttpSource, HttpTableSpec, PaginationConfig, ParamSpec, QueryCredential,
     RateLimitConfig, RetryConfig,

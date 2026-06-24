@@ -71,6 +71,9 @@ pub(crate) struct LocalEngineInner {
     pub(crate) ctx: SessionContext,
     pub(crate) catalog: Arc<MemoryCatalogProvider>,
     sources: RwLock<HashMap<String, RegisteredSource>>,
+    /// Table-valued function registry (builtins + declared). Same `RwLock`
+    /// pattern as `sources`.
+    functions: RwLock<crate::functions::FunctionRegistry>,
     workspace_dir: PathBuf,
     pub(crate) cache: Arc<CacheManager>,
     /// Compiled semantic-layer models. Empty when no `semantic:` block exists.
@@ -116,6 +119,8 @@ struct RegisteredSource {
     /// Original `SourceDef`, kept so the source can be re-registered on
     /// `refresh_catalog` / `reload_config`.
     def: SourceDef,
+    /// Live connection handle (http/mcp), so attached functions can share it.
+    function_handle: crate::functions::SourceHandle,
 }
 
 impl LocalEngine {
@@ -282,6 +287,7 @@ impl LocalEngine {
             ctx,
             catalog,
             sources: RwLock::new(HashMap::new()),
+            functions: RwLock::new(crate::functions::FunctionRegistry::default()),
             workspace_dir: cfg.workspace_dir.clone(),
             cache,
             semantic,
@@ -295,11 +301,19 @@ impl LocalEngine {
             activity_durable,
         });
 
+        // Resolve declared functions while the config is still intact (their
+        // connection configs are cloned from the sources), then consume it.
+        let function_defs = cfg.config.engine_functions();
+
         // Move config into engine-side SourceDefs.
         let engine_sources = cfg.config.into_engine_sources();
         for def in engine_sources {
             register_source(&inner, def).await?;
         }
+
+        // Register table-valued functions: builtins first, then declared.
+        register_functions(&inner, function_defs).await?;
+
         // Register semantic pre-aggregations as cached rollup tables (after the
         // base tables they aggregate exist).
         crate::preagg::register_rollups(&inner).await?;
@@ -350,6 +364,7 @@ impl LocalEngine {
             secrets: Vec::new(),
             include: Vec::new(),
             sources: Vec::new(),
+            functions: Vec::new(),
             semantic: None,
             observability: None,
         };
@@ -405,6 +420,10 @@ impl LocalEngine {
         match spec {
             MaterializeSpec::Query { sql, params } => {
                 let sql = substitute_params(sql, params);
+                let sql = {
+                    let reg = self.inner.functions.read();
+                    crate::functions::rewrite_function_calls(&sql, &reg)?
+                };
                 let df = self
                     .inner
                     .ctx
@@ -718,6 +737,7 @@ async fn register_source(inner: &Arc<LocalEngineInner>, def: SourceDef) -> Resul
             info,
             tables: report.tables,
             def,
+            function_handle: report.function_handle,
         },
     );
     Ok(())
@@ -732,15 +752,68 @@ fn abort_refreshers(inner: &Arc<LocalEngineInner>, name: &str) {
     }
 }
 
-/// Tear a source down: stop refreshers, drop its schema/tables, forget it.
-/// Returns `true` if the source was registered.
+/// Tear a source down: stop refreshers, drop its schema/tables, forget it, and
+/// drop any functions attached to it. Returns `true` if the source was
+/// registered.
 fn remove_source_inner(inner: &Arc<LocalEngineInner>, name: &str) -> bool {
     abort_refreshers(inner, name);
     let removed = inner.sources.write().remove(name).is_some();
     if removed {
         let _ = inner.catalog.deregister_schema(name, true);
     }
+    // Drop the source's attached functions and their UDTFs (no-op if none).
+    let mangled = inner.functions.write().remove_by_source(name);
+    for m in mangled {
+        inner.ctx.deregister_udtf(&m);
+    }
     removed
+}
+
+/// Register builtins first, then declared functions, on both the UDTF catalog
+/// and the function registry.
+async fn register_functions(
+    inner: &Arc<LocalEngineInner>,
+    defs: Vec<pawrly_core::FunctionDef>,
+) -> Result<(), EngineError> {
+    for def in pawrly_core::function::builtins() {
+        register_one_function(inner, def, crate::functions::SourceHandle::None).await?;
+    }
+    for def in defs {
+        // An attached function inherits its parent source's live handle.
+        let handle = def
+            .source
+            .as_deref()
+            .and_then(|src| {
+                inner
+                    .sources
+                    .read()
+                    .get(src)
+                    .map(|s| s.function_handle.clone())
+            })
+            .unwrap_or_default();
+        register_one_function(inner, def, handle).await?;
+    }
+    Ok(())
+}
+
+/// Build one function's executor, register its mangled UDTF, and insert it into
+/// the registry. DataFusion overwrites a UDTF on re-registration, which is
+/// exactly right for config reload.
+async fn register_one_function(
+    inner: &Arc<LocalEngineInner>,
+    def: pawrly_core::FunctionDef,
+    handle: crate::functions::SourceHandle,
+) -> Result<(), EngineError> {
+    let registered =
+        crate::functions::build_registered_function(def, handle, &inner.workspace_dir).await?;
+    inner.ctx.register_udtf(
+        &registered.mangled,
+        Arc::new(crate::functions::PawrlyFunctionUdtf {
+            func: registered.clone(),
+        }),
+    );
+    inner.functions.write().insert(registered);
+    Ok(())
 }
 
 #[async_trait]
@@ -803,6 +876,16 @@ impl EngineService for LocalEngine {
             return Ok(crate::stream::adapt_instrumented(stream, guard));
         }
 
+        // Rewrite namespaced function calls (`ns.fn(...)`) to their UDTF names
+        // before planning. Placed after the inline-materialize check, whose
+        // directive comment the rewrite's AST round-trip would strip; that path
+        // rewrites its own body inside `materialize`.
+        let sql = {
+            let reg = inner.functions.read();
+            crate::functions::rewrite_function_calls(&sql, &reg)
+                .inspect_err(|e| guard.mark_error(e))?
+        };
+
         let df = inner
             .ctx
             .sql(&sql)
@@ -819,10 +902,14 @@ impl EngineService for LocalEngine {
 
     #[tracing::instrument(name = "pawrly.engine.explain", skip_all, fields(pawrly.engine = "local"))]
     async fn explain(&self, sql: &str, _analyze: bool) -> Result<String, EngineError> {
+        let sql = {
+            let reg = self.inner.functions.read();
+            crate::functions::rewrite_function_calls(sql, &reg)?
+        };
         let df = self
             .inner
             .ctx
-            .sql(sql)
+            .sql(&sql)
             .await
             .map_err(|e| EngineError::InvalidSql(e.to_string()))?;
         let plan = df.logical_plan().display_indent_schema().to_string();
@@ -1127,6 +1214,8 @@ impl EngineService for LocalEngine {
 
         let cfg =
             pawrly_config::load_auto(&path).map_err(|e| EngineError::Internal(e.to_string()))?;
+        // Resolve declared functions before the config is consumed into sources.
+        let new_function_defs = cfg.engine_functions();
         let new_defs = cfg.into_engine_sources();
 
         // Snapshot current sources as (name -> serialized def) for diffing.
@@ -1167,7 +1256,32 @@ impl EngineService for LocalEngine {
             }
         }
 
+        // Re-register all functions from the new config (builtins + declared).
+        // Simplest correct reload: drop every current function + UDTF, then
+        // rebuild — DataFusion overwrites a UDTF on re-registration anyway.
+        let stale = self.inner.functions.write().drain_mangled();
+        for m in stale {
+            self.inner.ctx.deregister_udtf(&m);
+        }
+        register_functions(&self.inner, new_function_defs).await?;
+
         Ok(report)
+    }
+
+    async fn list_functions(&self) -> Result<Vec<pawrly_core::FunctionInfo>, EngineError> {
+        Ok(self.inner.functions.read().infos())
+    }
+
+    async fn describe_function(
+        &self,
+        namespace: &str,
+        name: &str,
+    ) -> Result<pawrly_core::FunctionDescription, EngineError> {
+        self.inner
+            .functions
+            .read()
+            .describe(namespace, name)
+            .ok_or_else(|| EngineError::UnknownFunction(format!("{namespace}.{name}")))
     }
 
     async fn list_semantic_models(&self) -> Result<Vec<SemanticModelInfo>, EngineError> {

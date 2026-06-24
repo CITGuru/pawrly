@@ -4,9 +4,10 @@ use std::sync::Arc;
 
 use pawrly_core::{EngineService, TableFilter};
 use pawrly_proto::v1::{
-    self, DescribeTableRequest, DescribeTableResponse, ListTablesRequest, ListTablesResponse,
-    RefreshCatalogRequest, RefreshCatalogResponse, SchemaSnapshotRequest, SchemaSnapshotResponse,
-    catalog_service_server::CatalogService,
+    self, DescribeFunctionRequest, DescribeFunctionResponse, DescribeTableRequest,
+    DescribeTableResponse, ListFunctionsRequest, ListFunctionsResponse, ListTablesRequest,
+    ListTablesResponse, RefreshCatalogRequest, RefreshCatalogResponse, SchemaSnapshotRequest,
+    SchemaSnapshotResponse, catalog_service_server::CatalogService,
 };
 use tonic::{Request, Response, Status, async_trait};
 
@@ -106,6 +107,35 @@ impl CatalogService for CatalogSvc {
         Ok(Response::new(RefreshCatalogResponse {
             sources_refreshed: r.sources_refreshed,
             tables_discovered: r.tables_discovered,
+        }))
+    }
+
+    async fn list_functions(
+        &self,
+        _req: Request<ListFunctionsRequest>,
+    ) -> Result<Response<ListFunctionsResponse>, Status> {
+        let functions = self
+            .engine
+            .list_functions()
+            .await
+            .map_err(|e| engine_error_to_status(&e))?;
+        Ok(Response::new(ListFunctionsResponse {
+            functions: functions.into_iter().map(v1::FunctionInfo::from).collect(),
+        }))
+    }
+
+    async fn describe_function(
+        &self,
+        req: Request<DescribeFunctionRequest>,
+    ) -> Result<Response<DescribeFunctionResponse>, Status> {
+        let req = req.into_inner();
+        let d = self
+            .engine
+            .describe_function(&req.namespace, &req.name)
+            .await
+            .map_err(|e| engine_error_to_status(&e))?;
+        Ok(Response::new(DescribeFunctionResponse {
+            function: Some(v1::FunctionDescription::from(d)),
         }))
     }
 }

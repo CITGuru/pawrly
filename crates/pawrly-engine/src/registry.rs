@@ -14,6 +14,9 @@ const _SK: Option<SourceKind> = None;
 pub struct RegisterReport {
     pub table_count: u64,
     pub tables: Vec<TableSummary>,
+    /// Live connection handle (http/mcp only), so attached functions can share
+    /// the source's rate-limiter / session. `None` for other kinds.
+    pub function_handle: crate::functions::SourceHandle,
 }
 
 #[derive(Debug, Clone)]
@@ -65,12 +68,19 @@ pub async fn register_source(
                         required_filters: Vec::new(),
                     })
                     .collect(),
+                function_handle: crate::functions::SourceHandle::None,
             })
         }
         SourceKind::Http => {
             let report = pawrly_sources_http::register_http_source(def, ctx, catalog)
                 .await
                 .map_err(|e| RegisterError::Other(e.to_string()))?;
+            let function_handle = report
+                .source_handle
+                .clone()
+                .map_or(crate::functions::SourceHandle::None, |h| {
+                    crate::functions::SourceHandle::Http(h)
+                });
             let mut tables: Vec<TableSummary> = report
                 .tables
                 .into_iter()
@@ -92,12 +102,19 @@ pub async fn register_source(
             Ok(RegisterReport {
                 table_count: report.table_count,
                 tables,
+                function_handle,
             })
         }
         SourceKind::Mcp => {
             let report = pawrly_sources_mcp::register_mcp_source(def, ctx, catalog)
                 .await
                 .map_err(|e| RegisterError::Other(e.to_string()))?;
+            let function_handle = report
+                .session_handle
+                .clone()
+                .map_or(crate::functions::SourceHandle::None, |h| {
+                    crate::functions::SourceHandle::Mcp(h)
+                });
             Ok(RegisterReport {
                 table_count: report.table_count,
                 tables: report
@@ -110,6 +127,7 @@ pub async fn register_source(
                         required_filters: Vec::new(),
                     })
                     .collect(),
+                function_handle,
             })
         }
         SourceKind::Sqlite => {
@@ -129,6 +147,7 @@ pub async fn register_source(
                         required_filters: Vec::new(),
                     })
                     .collect(),
+                function_handle: crate::functions::SourceHandle::None,
             })
         }
         // First-class builtins on the in-process DuckDB pool: foreign-DB ATTACH

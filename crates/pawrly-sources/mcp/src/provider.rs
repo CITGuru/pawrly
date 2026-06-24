@@ -76,7 +76,7 @@ fn build_schema(spec: &McpTableSpec) -> SchemaRef {
     Arc::new(Schema::new(fields))
 }
 
-fn arrow_type(t: &str) -> DataType {
+pub(crate) fn arrow_type(t: &str) -> DataType {
     match t.to_ascii_lowercase().as_str() {
         "bool" | "boolean" => DataType::Boolean,
         "int" | "int32" | "bigint" | "int64" | "long" => DataType::Int64,
@@ -137,7 +137,12 @@ impl TableProvider for McpToolTableProvider {
 }
 
 impl McpToolTableProvider {
-    async fn fetch(
+    /// Run the `tools/call` pipeline for an already-bound argument set and
+    /// return the extracted rows (static `tool_args` + bound args by wire name +
+    /// `limit_binding`, cursor pagination, `rows_path` extraction). The MCP
+    /// function executor reuses this to build a `returns`-shaped batch instead of
+    /// the auto-echo table batch.
+    pub(crate) async fn fetch(
         &self,
         bound: &BTreeMap<String, Value>,
         limit: Option<usize>,
@@ -276,7 +281,7 @@ fn rows_from(structured: &Value, path: &[String]) -> Vec<Value> {
     }
 }
 
-fn walk<'a>(value: &'a Value, path: &[String]) -> Option<&'a Value> {
+pub(crate) fn walk<'a>(value: &'a Value, path: &[String]) -> Option<&'a Value> {
     let mut current = value;
     for key in path {
         current = current.get(key)?;
@@ -319,7 +324,7 @@ fn build_batch(
         .map_err(|e| DataFusionError::ArrowError(Box::new(e), None))
 }
 
-fn column_array(data_type: &DataType, values: &[Value]) -> ArrayRef {
+pub(crate) fn column_array(data_type: &DataType, values: &[Value]) -> ArrayRef {
     match data_type {
         DataType::Int64 => Arc::new(Int64Array::from_iter(values.iter().map(|v| match v {
             Value::Number(n) => n.as_i64(),

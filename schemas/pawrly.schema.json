@@ -43,6 +43,13 @@
         }
       ]
     },
+    "functions": {
+      "description": "Declared standalone table-valued functions (top-level `functions:` block). Each carries an explicit `namespace`, `kind`, and `config`. Source-attached functions live under their source's `functions:` instead.",
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/FunctionDecl"
+      }
+    },
     "include": {
       "description": "Files (or glob patterns) whose `sources:` and optional `secrets:` are merged into this config before validation. Resolved relative to the declaring file.",
       "type": "array",
@@ -493,6 +500,188 @@
           "type": "string",
           "enum": [
             "in_range"
+          ]
+        }
+      ]
+    },
+    "FunctionArg": {
+      "description": "One declared argument. **List order is the positional call order**: required args precede optional/defaulted ones so a positional call is unambiguous.",
+      "type": "object",
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "default": {
+          "description": "Value used when the call omits this trailing arg. Mutually exclusive with `required`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "required": {
+          "default": false,
+          "type": "boolean"
+        },
+        "tool_arg": {
+          "description": "mcp only: wire name of the tool argument when it differs from `name` (mirrors `Arg::wire_name()` in pawrly-sources/mcp `synth.rs`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "type": {
+          "description": "Column-vocabulary type (`varchar`, `int`, `bigint`, `double`, `bool`, `timestamp`, ...). Defaults to `varchar`. Drives CLI/MCP literal rendering and documentation; the HTTP pipeline itself is stringly.",
+          "default": "varchar",
+          "type": "string"
+        }
+      }
+    },
+    "FunctionColumn": {
+      "description": "One output column. Shape-identical to the HTTP `ResponseColumn`: `source` is either a JSONPath into each response row (`$.user.login`) or the literal string `arg`, which injects the bound call argument of the same name.",
+      "type": "object",
+      "required": [
+        "name",
+        "type"
+      ],
+      "properties": {
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "source": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "type": {
+          "type": "string"
+        }
+      }
+    },
+    "FunctionDecl": {
+      "description": "One function declaration — the single config wrapper for both the source-attached and standalone shapes.\n\nLike [`TableDef`], `deny_unknown_fields` is intentionally absent: the `#[serde(flatten)] body` captures every kind-specific key (`endpoint`, `response`, `pagination`, `path`, `tool`, `rows_path`, ...). Top-level entries require `namespace` + `kind`; source-attached entries omit both plus `config` (all inherited). Placement and content are checked by the validator.",
+      "type": "object",
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "args": {
+          "description": "Ordered argument declarations — list order is the positional call order.",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/FunctionArg"
+          }
+        },
+        "cache": {
+          "description": "Reserved; cache is inert in v1.",
+          "default": {
+            "mode": "none"
+          },
+          "allOf": [
+            {
+              "$ref": "#/definitions/CachePolicy"
+            }
+          ]
+        },
+        "config": {
+          "description": "Standalone connection config (same shape as the matching source kind's `config`). Forbidden on attached functions."
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "examples": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "kind": {
+          "description": "Execution backend — **standalone only**. Attached functions inherit it from the source kind.",
+          "anyOf": [
+            {
+              "$ref": "#/definitions/FunctionKind"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "name": {
+          "description": "Function name; a valid SQL identifier with no `__`.",
+          "type": "string"
+        },
+        "namespace": {
+          "description": "SQL qualifier — **standalone only**. Source-attached functions inherit the source name as their namespace.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "returns": {
+          "description": "Output columns; the schema is fixed at plan time. Non-empty (validated).",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/FunctionColumn"
+          }
+        },
+        "safety": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/SafetyPolicy"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "wiki": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "FunctionKind": {
+      "description": "Execution backend for a function.",
+      "oneOf": [
+        {
+          "description": "Templated HTTP request → rows (reuses the HTTP source fetch pipeline).",
+          "type": "string",
+          "enum": [
+            "http"
+          ]
+        },
+        {
+          "description": "External MCP `tools/call` → rows (reuses the MCP client pipeline).",
+          "type": "string",
+          "enum": [
+            "mcp"
+          ]
+        },
+        {
+          "description": "Glob → file-metadata rows.",
+          "type": "string",
+          "enum": [
+            "file"
           ]
         }
       ]
@@ -1236,6 +1425,13 @@
             "string",
             "null"
           ]
+        },
+        "functions": {
+          "description": "Source-attached table-valued functions. They inherit this source's namespace (its name), `kind`, and connection `config`, so they omit `namespace`/`kind`/`config` of their own. Only valid on http/mcp/file sources.",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/FunctionDecl"
+          }
         },
         "kind": {
           "$ref": "#/definitions/SourceKind"

@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::cache::{CacheEntryInfo, RefreshOutcome, VacuumReport};
 use crate::error::EngineError;
+use crate::function::{FunctionDescription, FunctionInfo};
 use crate::schema::{CatalogSnapshot, TableDescription, TableFilter, TableInfo, TableName};
 use crate::semantic::{SemanticModelDescription, SemanticModelInfo, SemanticQuery};
 use crate::source::{
@@ -272,6 +273,26 @@ pub trait EngineService: Send + Sync + 'static {
     /// Compile and execute a structured query, returning a streaming result
     /// in the same shape as [`EngineService::query`].
     async fn semantic_query(&self, q: SemanticQuery) -> Result<QueryStream, EngineError>;
+
+    // -------- functions --------
+
+    /// List the table-valued functions available (builtins + declared).
+    ///
+    /// The default returns empty; the real implementations (`LocalEngine`,
+    /// `MockEngine`) and the gRPC `RemoteEngineClient` (via the
+    /// `CatalogService.ListFunctions` RPC) override it.
+    async fn list_functions(&self) -> Result<Vec<FunctionInfo>, EngineError> {
+        Ok(Vec::new())
+    }
+
+    /// Describe one function by `namespace` + `name`.
+    async fn describe_function(
+        &self,
+        namespace: &str,
+        name: &str,
+    ) -> Result<FunctionDescription, EngineError> {
+        Err(EngineError::UnknownFunction(format!("{namespace}.{name}")))
+    }
 
     // -------- lifecycle --------
 

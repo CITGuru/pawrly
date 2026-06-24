@@ -23,6 +23,8 @@ datafusion-functions-json = { workspace = true }
 arrow-array = { workspace = true }
 arrow-schema = { workspace = true }
 parquet = { workspace = true }
+glob = { workspace = true }
+regex = "1"
 async-trait = { workspace = true }
 async-stream = { workspace = true }
 futures = { workspace = true }
@@ -51,6 +53,7 @@ parquet = { workspace = true }
 pawrly-config = { workspace = true }
 pawrly-secrets = { workspace = true }
 pawrly-sources-http = { workspace = true }
+wiremock = { workspace = true }
 arrow-array = { workspace = true }
 rusqlite = { version = "0.33", features = ["bundled"] }
 duckdb = { workspace = true }

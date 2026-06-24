@@ -8,6 +8,8 @@ service CatalogService {
   rpc DescribeTable(DescribeTableRequest) returns (DescribeTableResponse);
   rpc SchemaSnapshot(SchemaSnapshotRequest) returns (SchemaSnapshotResponse);
   rpc RefreshCatalog(RefreshCatalogRequest) returns (RefreshCatalogResponse);
+  rpc ListFunctions(ListFunctionsRequest) returns (ListFunctionsResponse);
+  rpc DescribeFunction(DescribeFunctionRequest) returns (DescribeFunctionResponse);
 }
 
 message ListTablesRequest {
@@ -46,4 +48,53 @@ message RefreshCatalogRequest {
 message RefreshCatalogResponse {
   uint64 sources_refreshed = 1;
   uint64 tables_discovered = 2;
+}
+
+// ---- functions ----
+
+message ListFunctionsRequest {}
+message ListFunctionsResponse { repeated FunctionInfo functions = 1; }
+
+message FunctionInfo {
+  string namespace = 1;
+  string name = 2;
+  string kind = 3;          // "http" | "mcp" | "file"
+  bool builtin = 4;
+  string signature = 5;
+  optional string description = 6;
+}
+
+message DescribeFunctionRequest {
+  string namespace = 1;
+  string name = 2;
+}
+message DescribeFunctionResponse { FunctionDescription function = 1; }
+
+message FunctionDescription {
+  string namespace = 1;
+  string name = 2;
+  string kind = 3;
+  bool builtin = 4;
+  string signature = 5;
+  optional string description = 6;
+  optional string wiki = 7;
+  repeated string examples = 8;
+  repeated FunctionArg args = 9;
+  repeated FunctionColumn returns = 10;
+}
+
+message FunctionArg {
+  string name = 1;
+  string type = 2;
+  bool required = 3;
+  optional string default = 4;
+  optional string description = 5;
+  optional string tool_arg = 6;
+}
+
+message FunctionColumn {
+  string name = 1;
+  string type = 2;
+  optional string source = 3;
+  optional string description = 4;
 }
