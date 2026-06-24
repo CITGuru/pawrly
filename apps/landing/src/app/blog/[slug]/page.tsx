@@ -61,7 +61,7 @@ export default async function BlogPost({
         </Link>
 
         <p className="mt-10 font-mono text-[11px] uppercase tracking-[0.18em] text-gold/70">
-          {post.readTime}
+          {post.publishedDate ? `${post.publishedDate} / ${post.readTime}` : post.readTime}
         </p>
         <h1 className="font-display mt-4 text-4xl leading-[1.1] tracking-tight text-cream md:text-5xl">
           {post.title}

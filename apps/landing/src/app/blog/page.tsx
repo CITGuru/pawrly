@@ -44,7 +44,7 @@ export default function BlogIndex() {
                 />
               ) : null}
               <span className="font-mono text-[11px] uppercase tracking-[0.18em] text-gold/70">
-                {p.readTime}
+                {p.publishedDate ? `${p.publishedDate} / ${p.readTime}` : p.readTime}
               </span>
               <h2 className="font-display text-3xl leading-snug text-cream transition-colors group-hover:text-gold-2">
                 {p.title}

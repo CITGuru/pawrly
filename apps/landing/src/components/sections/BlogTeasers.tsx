@@ -40,7 +40,7 @@ export function BlogTeasers() {
                 />
               ) : null}
               <span className="font-mono text-[11px] uppercase tracking-[0.18em] text-gold/70">
-                {p.readTime}
+                {p.publishedDate ? `${p.publishedDate} / ${p.readTime}` : p.readTime}
               </span>
               <h3 className="font-display text-2xl leading-snug text-cream">{p.title}</h3>
               <p className="text-sm leading-relaxed text-muted">{p.excerpt}</p>
