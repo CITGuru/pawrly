@@ -1,6 +1,6 @@
 # Architecture
 
-Pawrly is one binary with a clean seam down the middle: a **query engine** on one side, and **frontends** (CLI, MCP server) on the other. They talk through a single trait, so the same engine runs in-process or behind a daemon with no behavioural difference.
+Pawrly is one binary split between a query engine and frontends (CLI, MCP server). They talk through a single trait, so the same engine runs in-process or behind a daemon with no behavioural difference.
 
 ## The big picture
 
@@ -32,9 +32,9 @@ Pawrly is one binary with a clean seam down the middle: a **query engine** on on
 
 DataFusion plans and executes every query. Sources are exposed to it as tables, so a join across a CSV file and a REST API is a single DataFusion plan. For sources that DuckDB already speaks, an in-memory DuckDB instance acts as a sub-engine; everything still flows through one DataFusion plan and one SQL dialect.
 
-### The `EngineService` seam
+### `EngineService`
 
-Every frontend programs against one trait — `EngineService`. It's satisfied by either:
+Every frontend programs against `EngineService`. It's satisfied by either:
 
 - **`LocalEngine`** — runs everything in-process. This is the default; a bare `pawrly sql` spins one up, queries, and exits.
 - **`RemoteEngineClient`** — forwards each call to a `pawrly serve` daemon over gRPC.

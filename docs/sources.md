@@ -1,6 +1,6 @@
 # Sources
 
-A **source** is a named connection to some external system or set of files, exposed to the query engine as one or more tables. Every table is addressed in SQL as `<source>.<table>` — the source `name` is the schema prefix. Sources are declared under `sources:` in your workspace `pawrly.yaml` (see [Configuration](./config.md), and the [examples/pawrly.yaml](../examples/pawrly.yaml) worked file).
+A **source** is a named connection to some external system or set of files, exposed to the query engine as one or more tables. Every table is addressed in SQL as `<source>.<table>`; the source `name` is the schema prefix. Sources are declared under `sources:` in your workspace `pawrly.yaml` (see [Configuration](./config.md), and the [examples/pawrly.yaml](../examples/pawrly.yaml) worked file).
 
 ```yaml
 sources:
@@ -14,9 +14,9 @@ sources:
 SELECT * FROM data.orders          -- table `orders` in source `data`
 ```
 
-Pawrly has **two foundational backends** — `file` (local files, or object storage) and `http` (any REST/GraphQL API) — plus a small set of **first-class database / lakehouse builtins** that run through an in-process DuckDB engine.
+Pawrly has three core backends, `file` (local files, or object storage), `http` (any REST/GraphQL API), and `mcp` (an external MCP server's tools), plus a set of database and lakehouse builtins that run through an in-process DuckDB engine.
 
-This page is the reference for the **source block** (every top-level field) and the **per-kind config** for each kind. For the surrounding config — secrets, caching internals, safety semantics, defaults, and multi-file assembly — see [Configuration](./config.md).
+This page is the reference for the source block (every top-level field) and the per-kind config for each kind. For the surrounding config (secrets, caching internals, safety semantics, defaults, and multi-file assembly), see [Configuration](./config.md).
 
 ---
 
@@ -30,8 +30,8 @@ Every entry under `sources:` is one source. These are the top-level fields:
 | `name`             | string  | **yes**  | —               | SQL identifier; becomes the schema prefix (`name.table`). Must be unique.                                |
 | `kind`             | enum    | **yes**  | —               | The source kind — see [Source kinds](#source-kinds). Case-insensitive; some kinds have aliases.          |
 | `description`      | string  | no       | —               | Free text; surfaced in `pawrly source list`.                                                             |
-| `wiki`             | string  | no       | —               | Agent-facing usage notes for the whole source; surfaced by `describe_table`. See `[wiki](#wiki)`.        |
-| `examples`         | list    | no       | `[]`            | SQL statements that must run against this source; probed by `pawrly check`. See `[examples](#examples)`. |
+| `wiki`             | string  | no       | —               | Agent-facing usage notes for the whole source; surfaced by `describe_table`. See [wiki](#wiki).        |
+| `examples`         | list    | no       | `[]`            | SQL statements that must run against this source; probed by `pawrly check`. See [examples](#examples). |
 | `config`           | mapping | no¹      | `{}`            | Per-kind settings (connection, auth, paths, storage, …). Shape depends on `kind`.                        |
 | `tables`           | list    | no¹      | `[]`            | Explicit per-table declarations. Required for some kinds, optional for others (which auto-discover).     |
 | `cache`            | mapping | no       | `mode: none`    | Per-source caching. See [the cache block](#the-cache-block).                                             |
@@ -44,7 +44,7 @@ Every entry under `sources:` is one source. These are the top-level fields:
 
 The config-layer source block also accepts `from:` (load the body from another file) — see [Configuration → Multi-file configs](./config.md#multi-file-configs).
 
-> **Strict keys.** The source block rejects unknown top-level fields: a typo'd or misplaced key (e.g. `safty:`, or a kind-specific key written outside `config:`/`tables:`) fails the config load with an error rather than being silently ignored. The full machine-readable shape lives in the generated JSON Schema at `[schemas/pawrly.schema.json](../schemas/pawrly.schema.json)`, which editors can use for completion and validation.
+> **Strict keys.** The source block rejects unknown top-level fields: a typo'd or misplaced key (e.g. `safty:`, or a kind-specific key written outside `config:`/`tables:`) fails the config load with an error rather than being silently ignored. The full machine-readable shape lives in the generated JSON Schema at [schemas/pawrly.schema.json](../schemas/pawrly.schema.json), which editors can use for completion and validation.
 
 ### `name`
 
@@ -221,7 +221,7 @@ sources:
       path: ./data/*.csv          # glob; one table per file, named by file stem
 ```
 
-Per-table fields are written **flat** under each `tables:` entry: `path`, `format`, `csv`, `json`, `schema`, `partition_cols`. The three big topics — formats, globs/partitioning, and object storage — follow.
+Per-table fields are written **flat** under each `tables:` entry: `path`, `format`, `csv`, `json`, `schema`, `partition_cols`. The three big topics follow: formats, globs/partitioning, and object storage.
 
 #### File formats
 
@@ -333,11 +333,11 @@ sources:
 
 With no `auth` block, the ambient credential chain is used. `auth.type: chain` is accepted as a shorthand alias for `credential_chain`.
 
-In addition to `s3`/`gcs`/`azure`, `storage.type: http` covers **authenticated** HTTPS file URLs — combine it with a `header` or `basic` `auth` block to attach credentials to plain-HTTP reads (the `custom`/`oauth2` HTTP-source auth styles do not apply here).
+In addition to `s3`/`gcs`/`azure`, `storage.type: http` covers authenticated HTTPS file URLs; combine it with a `header` or `basic` `auth` block to attach credentials to plain-HTTP reads (the `custom`/`oauth2` HTTP-source auth styles do not apply here).
 
 **Scheme auto-routing.** A `file` source is routed through DuckDB automatically whenever it sees a `storage:` block **or** a remote scheme on any `path`/`location` — `s3://`, `gs://`/`gcs://`, `az://`/`azure://`/`abfss://`, or `http(s)://`. A **public** bucket or HTTPS file therefore works with no `storage:` block at all; you only need one to supply credentials, a region, or a custom endpoint.
 
-> Remote files are read by DuckDB's `read_parquet`/`read_csv`/`read_json`, so the local-file `csv`/`json`/`partition_cols`/`schema` options do **not** apply to object-store tables — DuckDB infers the schema and reader from the URL and `format`. Remote `http(s)://` paths also **cannot be globbed**; point each table at a single concrete URL (bucket globs like `s3://…/*.parquet` are fine).
+> Remote files are read by DuckDB's `read_parquet`/`read_csv`/`read_json`, so the local-file `csv`/`json`/`partition_cols`/`schema` options do **not** apply to object-store tables; DuckDB infers the schema and reader from the URL and `format`. Remote `http(s)://` paths also **cannot be globbed**; point each table at a single concrete URL (bucket globs like `s3://…/*.parquet` are fine).
 
 ### Http Backend (`http`) — REST & GraphQL APIs
 
@@ -497,7 +497,7 @@ Set source-level auth with the `config.token` shorthand or a full `auth:` block 
         scope:         read:data       # optional
 ```
 
-**Shorthand** — `config.token` is the dead-simple single-bearer case, equivalent to a `header` block with one `Authorization: Bearer <token>` entry:
+**Shorthand** — `config.token` is the single-bearer shorthand, equivalent to a `header` block with one `Authorization: Bearer <token>` entry:
 
 ```yaml
     config:
@@ -505,7 +505,7 @@ Set source-level auth with the `config.token` shorthand or a full `auth:` block 
       token: ${secret:GITHUB_TOKEN}
 ```
 
-> **Gotcha.** A malformed `auth:` block (wrong `type`, a missing required field) does **not** raise a config error — it falls back to *no authentication*, and requests go out unauthenticated. If an API starts returning `401`/`403`, double-check the `auth` block's shape first.
+> **Authentication fallback.** A malformed `auth:` block (wrong `type`, a missing required field) does **not** raise a config error — it falls back to *no authentication*, and requests go out unauthenticated. If an API starts returning `401`/`403`, double-check the `auth` block's shape first.
 
 #### Request headers
 
@@ -942,7 +942,7 @@ Several places take a column `type` — the `file` backend's `schema:` and `part
 | json           | `json`                      | —                          | ✓ (raw JSON text) |
 
 
-Any unrecognized type spelling falls back to `varchar`. For `http`, `timestamp`/`timestamptz` parse ISO-8601 / RFC 3339 strings, and `json` keeps a nested object/array as raw JSON text (pair it with `source: $` to capture a whole row element) — see [Querying JSON columns](#querying-json-columns) to read into it.
+Any unrecognized type spelling falls back to `varchar`. For `http`, `timestamp`/`timestamptz` parse ISO-8601 / RFC 3339 strings, and `json` keeps a nested object/array as raw JSON text (pair it with `source: $` to capture a whole row element); see [Querying JSON columns](#querying-json-columns) to read into it.
 
 ---
 
@@ -995,7 +995,7 @@ WHERE json_extract_string(e, 'code') = 'USD'
 
 ### Gotchas
 
-- `unnest` is projection-only.** `FROM t, unnest(from_json(t.payload))` (a correlated lateral join) is rejected by the planner — use the CTE form above.
+- **`unnest` is projection-only.** `FROM t, unnest(from_json(t.payload))` (a correlated lateral join) is rejected by the planner; use the CTE form above.
 - **Operator precedence.** `->`/`->>` bind looser than `IN` and comparisons, so parenthesize: `(e ->> 'code') IN ('USD', 'EUR')`.
 - **Typed getters match the JSON type.** `json_get_float(e, 'amount')` returns NULL when the value is a JSON *string* (`"12.50"`) rather than a number — use `json_get_str` or `->>`, then `CAST`.
 
@@ -1003,7 +1003,7 @@ WHERE json_extract_string(e, 'code') = 'USD'
 
 ## Federation
 
-Every source is a table in one DataFusion plan, so you can join across kinds in a single statement — a local Parquet file against a Postgres table against an HTTP query — with no import step:
+Every source is a table in one DataFusion plan, so you can join across kinds in a single statement (a local Parquet file against a Postgres table against an HTTP query) with no import step:
 
 ```sql
 SELECT u.email, COUNT(p.number) AS open_prs

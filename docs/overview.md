@@ -2,19 +2,19 @@
 
 ## Introduction
 
-Pawrly gives you a **single SQL interface** over heterogeneous data: local files (Parquet, CSV, JSON), SQLite databases, REST APIs (e.g. GitHub), and OpenAI-compatible AI models — all joinable in one statement, all served from one config file. No ETL pipelines, no warehouse to stand up, no learning a different query language per source.
+Pawrly gives you a **single SQL interface** over heterogeneous data: local files (Parquet, CSV, JSON), SQLite databases, REST APIs (e.g. GitHub), and MCP-backed tools — all joinable in one statement, all served from one config file. No ETL pipelines, no warehouse to stand up, no learning a different query language per source.
 
 It's a single Rust binary, `pawrly`, that is also embeddable as a library. Under the hood:
 
 - **DataFusion** plans and executes every query — you write one SQL dialect.
 - **DuckDB (in-memory)** acts as a sub-engine for sources DuckDB already speaks.
-- **HTTP and AI sources** are native query providers, so a REST API or a model call is just another table or function in your SQL.
+- **HTTP and MCP sources** are native query providers, so an API or tool call is just another table or function in your SQL.
 - **Caching** is opt-in per table and writes Parquet + a JSON manifest to disk, so it survives restarts and is shared safely between processes.
 
 Pawrly is built for two audiences:
 
 - **Data engineers** who want SQL over APIs and files without scheduling extracts or running a warehouse.
-- **AI agents** that need a deterministic, audited query surface. Pawrly ships a first-class [MCP server](./mcp.md) so assistants can query the same workspace your CLI uses.
+- **AI agents** that need a deterministic, audited query surface. Pawrly ships an [MCP server](./mcp.md) so assistants can query the same workspace your CLI uses.
 
 The same engine is reachable three ways: in-process (the default), over a local daemon (`pawrly serve`), or over the network — and every frontend produces identical results.
 
@@ -28,9 +28,7 @@ Tested on macOS (Apple Silicon and Intel) and Linux (`x86_64`, `aarch64`).
 curl -fsSL https://raw.githubusercontent.com/CITGuru/pawrly/main/scripts/install.sh | sh
 ```
 
-This installs the `pawrly` binary to `~/.local/bin` (override with `PAWRLY_INSTALL_DIR`).
-It detects your OS/arch, verifies the SHA-256 checksum, and falls back to building
-from source with `cargo` if no prebuilt binary matches your platform.
+This installs the `pawrly` binary to `~/.local/bin` (override with `PAWRLY_INSTALL_DIR`). It detects your OS/arch, verifies the SHA-256 checksum, and falls back to building from source with `cargo` if no prebuilt binary matches your platform.
 
 Pin a version or change where it lands:
 
@@ -49,6 +47,25 @@ With Cargo, straight from source:
 
 ```bash
 cargo install --git https://github.com/CITGuru/pawrly pawrly-cli
+```
+
+### Update and uninstall
+
+`pawrly update` upgrades the binary in place to the latest release:
+
+```bash
+pawrly update              # upgrade to the latest release
+pawrly update --check      # report whether a newer version exists
+pawrly update --version v0.1.0   # pin a specific tag
+```
+
+Re-running the install script upgrades an existing install too, skipping the download when already up to date (`PAWRLY_FORCE=1` to reinstall).
+
+`pawrly uninstall` removes the binary. Add `--purge` to also delete the Pawrly home directory (`$PAWRLY_HOME` / `~/.pawrly` — cache, materialized tables, and daemon state); your project `pawrly.yaml` files are never touched.
+
+```bash
+pawrly uninstall           # remove the binary (prompts to confirm)
+pawrly uninstall --purge   # also delete cached/materialized data
 ```
 
 ### Build from source

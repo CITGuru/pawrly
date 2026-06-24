@@ -2,7 +2,7 @@
 
 A workspace is described by a single YAML file, `pawrly.yaml`. The directory holding that file *is* the workspace: relative paths in the config (`include:`, `from:`, file-source `path`s) resolve against it.
 
-Pawrly discovers the manifest in this order — first hit wins, nothing merges:
+Pawrly discovers the manifest in this order (first hit wins, nothing merges):
 
 1. `--config <path>`
 2. the `PAWRLY_CONFIG` environment variable
@@ -125,7 +125,7 @@ Modes:
 
 ### Storage location
 
-The cache writes Parquet plus a JSON manifest under `defaults.cache.storage`. When unset, the root derives from the Pawrly home as `$PAWRLY_HOME/cache` (default `~/.pawrly/cache`) — **anchored at the home, not the current directory or the workspace**, regardless of where you run `pawrly` from. An explicit value may use a leading `~`, which expands to `$HOME`.
+The cache writes Parquet plus a JSON manifest under `defaults.cache.storage`. When unset, the root derives from the Pawrly home as `$PAWRLY_HOME/cache` (default `~/.pawrly/cache`); it is **anchored at the home, not the current directory or the workspace**, regardless of where you run `pawrly` from. An explicit value may use a leading `~`, which expands to `$HOME`.
 
 ```yaml
 defaults:
@@ -176,7 +176,7 @@ As a workspace grows, split `pawrly.yaml` so sources can live in their own files
     - ./team-sources.yaml
   ```
 
-  Either form may **also carry a top-level `models:` list** — the semantic models defined over its sources — which is spliced into `semantic.models`. This lets one file fully describe an integration (its source *and* its models). Models still merge into the one global semantic layer, so a co-located model may relate to a model declared in another file, and duplicate model names across files are rejected with both filenames.
+  Either form may **also carry a top-level `models:` list** (the semantic models defined over its sources), which is spliced into `semantic.models`. This lets one file fully describe an integration (its source *and* its models). Models still merge into the one global semantic layer, so a co-located model may relate to a model declared in another file, and duplicate model names across files are rejected with both filenames.
 
   ```yaml
   # sources/github.yaml — a bare single source plus the models over it
@@ -275,4 +275,4 @@ observability:
 
 ## Defaults
 
-`defaults:` sets workspace-wide values inherited by sources that don't override them — for example HTTP client settings and baseline safety caps. See the worked configurations in `examples/pawrly.yaml` for the full set of options in context.
+`defaults:` sets workspace-wide values inherited by sources that don't override them, for example HTTP client settings and baseline safety caps. See the worked configurations in `examples/pawrly.yaml` for the full set of options in context.
