@@ -19,6 +19,7 @@ pub mod semantic;
 pub mod service;
 pub mod source;
 pub mod storage;
+pub mod variables;
 
 #[cfg(feature = "test-support")]
 pub mod test_support;
@@ -54,3 +55,6 @@ pub use source::{
     SourceTestReport, TableDef,
 };
 pub use storage::{StorageScheme, origin_prefix};
+pub use variables::{
+    DynamicVarBinding, DynamicVarSpec, Endpoints, PortMode, TokenTransport, VarId,
+};

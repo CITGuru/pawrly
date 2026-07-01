@@ -104,6 +104,8 @@ When `secrets:` is **omitted entirely**, the chain defaults to a single `auto` b
 
 Two more interpolations work in any config string: `${env:NAME}` splices a plain environment variable (independent of the chain), and `${file:PATH}` inlines a file's trimmed contents (`~` expands to `$HOME`).
 
+For a *declared, typed, scoped* layer on top of these — including OAuth-minted secrets — see **[Variables](./variables.md)** (`${var:NAME}`).
+
 ## Caching
 
 Caching is **opt-in per table** (or per source). Add a `cache:` block; with no block, reads always go live.

@@ -100,6 +100,13 @@
         "$ref": "#/definitions/SourceDef"
       }
     },
+    "variables": {
+      "description": "Global (workspace-scoped) variable declarations, visible to every source. Per-source and fragment-file scopes layer on top during load.",
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/definitions/VariableDef"
+      }
+    },
     "version": {
       "description": "Schema version. Only `1` is accepted in v1.",
       "type": "integer",
@@ -322,6 +329,63 @@
         }
       ]
     },
+    "CredentialMethod": {
+      "description": "One way to collect a variable's value.",
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "type"
+          ],
+          "properties": {
+            "input": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "label": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "persist": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "prompt": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "type": {
+              "type": "string",
+              "enum": [
+                "input"
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "type"
+          ],
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": [
+                "oauth"
+              ]
+            }
+          }
+        }
+      ]
+    },
     "Defaults": {
       "description": "Workspace-level defaults that apply unless overridden per source / table.",
       "type": "object",
@@ -532,7 +596,7 @@
           "type": "boolean"
         },
         "tool_arg": {
-          "description": "mcp only: wire name of the tool argument when it differs from `name` (mirrors `Arg::wire_name()` in pawrly-sources/mcp `synth.rs`).",
+          "description": "mcp only: wire name of the tool argument when it differs from `name`.",
           "type": [
             "string",
             "null"
@@ -546,7 +610,7 @@
       }
     },
     "FunctionColumn": {
-      "description": "One output column. Shape-identical to the HTTP `ResponseColumn`: `source` is either a JSONPath into each response row (`$.user.login`) or the literal string `arg`, which injects the bound call argument of the same name.",
+      "description": "One output column. `source` is either a JSONPath into each response row (`$.user.login`) or the literal `arg`, which injects the bound call argument of the same name.",
       "type": "object",
       "required": [
         "name",
@@ -664,14 +728,14 @@
       "description": "Execution backend for a function.",
       "oneOf": [
         {
-          "description": "Templated HTTP request → rows (reuses the HTTP source fetch pipeline).",
+          "description": "Templated HTTP request → rows.",
           "type": "string",
           "enum": [
             "http"
           ]
         },
         {
-          "description": "External MCP `tools/call` → rows (reuses the MCP client pipeline).",
+          "description": "External MCP `tools/call` → rows.",
           "type": "string",
           "enum": [
             "mcp"
@@ -1473,6 +1537,13 @@
             "$ref": "#/definitions/TableDef"
           }
         },
+        "variables": {
+          "description": "Source-local variable declarations, visible to this source only (innermost in the scope chain). Resolved into `config`/`tables` at load.",
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/definitions/VariableDef"
+          }
+        },
         "wiki": {
           "description": "Agent-facing usage notes for the whole source, surfaced through `describe_table` alongside any per-table `wiki`.",
           "type": [
@@ -1574,6 +1645,74 @@
           "description": "`EnvFilter` directive (e.g. `info`, `pawrly=debug`). `RUST_LOG` wins.",
           "default": "info",
           "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "VarKind": {
+      "type": "string",
+      "enum": [
+        "variable",
+        "secret"
+      ]
+    },
+    "VarType": {
+      "description": "Underlying data type of a non-secret variable's value.",
+      "type": "string",
+      "enum": [
+        "string",
+        "integer",
+        "number",
+        "boolean",
+        "enum"
+      ]
+    },
+    "VariableDef": {
+      "description": "One `variables:` entry.",
+      "type": "object",
+      "required": [
+        "kind"
+      ],
+      "properties": {
+        "choices": {
+          "type": "array",
+          "items": true
+        },
+        "default": true,
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "input": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kind": {
+          "$ref": "#/definitions/VarKind"
+        },
+        "methods": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/CredentialMethod"
+          }
+        },
+        "oauth": true,
+        "required": {
+          "type": "boolean"
+        },
+        "type": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/VarType"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "additionalProperties": false

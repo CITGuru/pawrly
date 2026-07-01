@@ -23,6 +23,7 @@ console = ["pawrly-server/console"]
 [dependencies]
 pawrly-core = { workspace = true, features = ["test-support"] }
 pawrly-config = { workspace = true }
+rpassword = { workspace = true }
 pawrly-secrets = { workspace = true }
 pawrly-engine = { workspace = true }
 pawrly-server = { workspace = true }

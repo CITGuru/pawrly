@@ -98,6 +98,19 @@ pub(crate) struct LocalEngineInner {
     /// Durable activity store, when configured. Held so its buffered tail is
     /// flushed to disk when the engine is torn down.
     activity_durable: Option<crate::durable_activity::DurableActivityStore>,
+    /// Process-wide store for dynamic `${var:}` variables (OAuth-minted tokens).
+    /// Rebuilt on `reload_config` (so new specs take effect); the live store's
+    /// in-memory token cache lasts as long as the engine does.
+    pub(crate) variables: RwLock<Arc<dyn pawrly_secrets::VariableStore>>,
+    /// Per-source `NAME → VarId` maps, threaded to each source registrar so it
+    /// can resolve its dynamic `${var:}` placeholders. Keyed by source name.
+    dynamic_bindings: RwLock<HashMap<String, HashMap<String, pawrly_core::VarId>>>,
+    /// Persisted refresh-token store backing the interactive grants. Shared by
+    /// the variable store and reused when it is rebuilt on reload.
+    tokens: Arc<dyn pawrly_secrets::VariableValueStore>,
+    /// Where OIDC discovery documents are cached; reused when the variable store
+    /// is rebuilt on reload.
+    discovery_cache_dir: Option<std::path::PathBuf>,
 }
 
 impl Drop for LocalEngineInner {
@@ -167,12 +180,22 @@ impl LocalEngine {
 
     /// Build a new local engine and register every source from the config.
     pub async fn new(cfg: LocalEngineConfig) -> Result<Self, EngineError> {
-        Self::build(cfg, None).await
+        Self::build(cfg, None, None).await
+    }
+
+    /// Like [`Self::new`], but with an explicit token store — for tests and
+    /// embedders that need a deterministic or non-keyring backend.
+    pub async fn new_with_token_store(
+        cfg: LocalEngineConfig,
+        tokens: Arc<dyn pawrly_secrets::VariableValueStore>,
+    ) -> Result<Self, EngineError> {
+        Self::build(cfg, None, Some(tokens)).await
     }
 
     async fn build(
         cfg: LocalEngineConfig,
         config_path: Option<PathBuf>,
+        tokens_override: Option<Arc<dyn pawrly_secrets::VariableValueStore>>,
     ) -> Result<Self, EngineError> {
         use datafusion::execution::config::SessionConfig;
         use datafusion::execution::session_state::SessionStateBuilder;
@@ -255,19 +278,6 @@ impl LocalEngine {
         let (activity, redact_sql, activity_backing) =
             build_activity(cfg.config.observability.as_ref())?;
 
-        // Expose `system.activity` when the table sink is on. The `system`
-        // schema is reserved (no source may take the name), mirroring
-        // `materialized`.
-        if let Some(backing) = &activity_backing {
-            let system_schema = Arc::new(datafusion::catalog::MemorySchemaProvider::new());
-            let _ = system_schema.register_table(
-                "activity".to_string(),
-                Arc::new(crate::system_table::ActivityTableProvider::new(
-                    backing.clone(),
-                )),
-            );
-            let _ = catalog.register_schema(pawrly_core::SYSTEM_SCHEMA, system_schema);
-        }
         let activity_durable = match &activity_backing {
             Some(crate::system_table::ActivityBacking::Durable(store)) => Some(store.clone()),
             _ => None,
@@ -282,6 +292,66 @@ impl LocalEngine {
             .map(|s| s.models.clone())
             .unwrap_or_default();
         let semantic = Arc::new(SemanticCatalog::new(semantic_models));
+
+        // Build the dynamic-variable store + per-source binding maps while the
+        // config is still intact (before `into_engine_sources` consumes it).
+        // Refresh tokens for interactive grants persist via the OS keyring (or an
+        // encrypted-file fallback), keyed under the Pawrly home.
+        let tokens: Arc<dyn pawrly_secrets::VariableValueStore> = match tokens_override {
+            Some(tokens) => tokens,
+            None => match pawrly_core::resolve_home(cfg.home.as_deref()) {
+                Some(home) => Arc::new(pawrly_secrets::VariableTokenStore::new(
+                    home.join("variables"),
+                )),
+                None => Arc::new(pawrly_secrets::NoopTokenStore),
+            },
+        };
+        let discovery_cache_dir = home.as_ref().map(|h| h.join("cache"));
+        let variables: Arc<dyn pawrly_secrets::VariableStore> = Arc::new(
+            pawrly_secrets::RuntimeVariableStore::with_tokens(
+                cfg.config.dynamic_specs(),
+                tokens.clone(),
+            )
+            .with_cache_dir(discovery_cache_dir.clone()),
+        );
+        let dynamic_bindings = cfg.config.dynamic_bindings_by_source();
+
+        // The reserved `system` schema (no source may take the name): expose
+        // `system.activity` (when the activity sink is on) and `system.variables`
+        // (declared variables + connection state).
+        {
+            let system_schema = Arc::new(datafusion::catalog::MemorySchemaProvider::new());
+            let mut any = false;
+            if let Some(backing) = &activity_backing {
+                let _ = system_schema.register_table(
+                    "activity".to_string(),
+                    Arc::new(crate::system_table::ActivityTableProvider::new(
+                        backing.clone(),
+                    )),
+                );
+                any = true;
+            }
+            // `available` is resolve-accurate: probe the configured secret chain
+            // for static secrets (env → keyring → file), not just the env var.
+            let table_secrets: Box<dyn pawrly_secrets::SecretStore> =
+                pawrly_config::build_store(&cfg.config.secrets, &cfg.workspace_dir)
+                    .map(|s| Box::new(s) as Box<dyn pawrly_secrets::SecretStore>)
+                    .unwrap_or_else(|_| {
+                        Box::new(pawrly_secrets::StaticStore::new())
+                            as Box<dyn pawrly_secrets::SecretStore>
+                    });
+            if let Some(table) = crate::system_variables::build_variables_table(
+                &cfg.config,
+                tokens.as_ref(),
+                table_secrets.as_ref(),
+            ) {
+                let _ = system_schema.register_table("variables".to_string(), Arc::new(table));
+                any = true;
+            }
+            if any {
+                let _ = catalog.register_schema(pawrly_core::SYSTEM_SCHEMA, system_schema);
+            }
+        }
 
         let inner = Arc::new(LocalEngineInner {
             ctx,
@@ -299,6 +369,10 @@ impl LocalEngine {
             activity,
             redact_sql,
             activity_durable,
+            variables: RwLock::new(variables),
+            dynamic_bindings: RwLock::new(dynamic_bindings),
+            tokens,
+            discovery_cache_dir,
         });
 
         // Resolve declared functions while the config is still intact (their
@@ -333,8 +407,17 @@ impl LocalEngine {
         path: &std::path::Path,
         home: Option<PathBuf>,
     ) -> Result<Self, EngineError> {
-        let cfg =
-            pawrly_config::load_auto(path).map_err(|e| EngineError::Internal(e.to_string()))?;
+        // Build the variable value store from the resolved home so a static
+        // secret set via `pawrly source connect` resolves at load (stored-wins)
+        // instead of hard-failing as an unresolved `${var:}`. The same store is
+        // reused as the engine's runtime token store below.
+        let tokens: Option<Arc<dyn pawrly_secrets::VariableValueStore>> =
+            pawrly_core::resolve_home(home.as_deref()).map(|h| {
+                Arc::new(pawrly_secrets::VariableTokenStore::new(h.join("variables")))
+                    as Arc<dyn pawrly_secrets::VariableValueStore>
+            });
+        let cfg = pawrly_config::load_auto_with_vars(path, tokens.as_deref())
+            .map_err(|e| EngineError::Internal(e.to_string()))?;
         // `workspace_dir` only anchors relative *source* paths to the config
         // file's directory. The Pawrly data dir is resolved separately from
         // `defaults.cache.storage` / the home (default `~/.pawrly`), not from
@@ -351,6 +434,7 @@ impl LocalEngine {
                 home,
             },
             Some(path.to_path_buf()),
+            tokens,
         )
         .await
     }
@@ -363,6 +447,7 @@ impl LocalEngine {
             defaults: Default::default(),
             secrets: Vec::new(),
             include: Vec::new(),
+            variables: Default::default(),
             sources: Vec::new(),
             functions: Vec::new(),
             semantic: None,
@@ -668,12 +753,23 @@ async fn register_source(inner: &Arc<LocalEngineInner>, def: SourceDef) -> Resul
     abort_refreshers(inner, &name);
     let _ = inner.catalog.deregister_schema(&name, true);
 
+    // Snapshot the store handle + this source's binding map before any await.
+    let variables = inner.variables.read().clone();
+    let dynamic = inner
+        .dynamic_bindings
+        .read()
+        .get(&name)
+        .cloned()
+        .unwrap_or_default();
+
     let report = registry::register_source(
         &def,
         &inner.ctx,
         inner.catalog.as_ref(),
         &inner.workspace_dir,
         &inner.duckdb,
+        &variables,
+        dynamic,
     )
     .await
     .map_err(|e| EngineError::SourceRegistration {
@@ -1212,10 +1308,22 @@ impl EngineService for LocalEngine {
             ));
         };
 
-        let cfg =
-            pawrly_config::load_auto(&path).map_err(|e| EngineError::Internal(e.to_string()))?;
+        // Reuse the engine's value store so a static secret set since the last
+        // load resolves now (stored-wins), matching the build-time load path.
+        let cfg = pawrly_config::load_auto_with_vars(&path, Some(self.inner.tokens.as_ref()))
+            .map_err(|e| EngineError::Internal(e.to_string()))?;
         // Resolve declared functions before the config is consumed into sources.
         let new_function_defs = cfg.engine_functions();
+        // Rebuild the dynamic-variable store + binding maps from the new config
+        // (still intact here) so re-registered sources see current specs.
+        *self.inner.variables.write() = Arc::new(
+            pawrly_secrets::RuntimeVariableStore::with_tokens(
+                cfg.dynamic_specs(),
+                self.inner.tokens.clone(),
+            )
+            .with_cache_dir(self.inner.discovery_cache_dir.clone()),
+        );
+        *self.inner.dynamic_bindings.write() = cfg.dynamic_bindings_by_source();
         let new_defs = cfg.into_engine_sources();
 
         // Snapshot current sources as (name -> serialized def) for diffing.

@@ -20,6 +20,16 @@ impl KeyringStore {
             service: service.into(),
         }
     }
+
+    /// Persist a secret under `(service, account=name)`, replacing any existing
+    /// value. Used by interactive setup (`pawrly variables set`).
+    pub fn set(&self, name: &str, value: &str) -> Result<(), SecretError> {
+        let entry =
+            Entry::new(&self.service, name).map_err(|e| SecretError::Keyring(e.to_string()))?;
+        entry
+            .set_password(value)
+            .map_err(|e| SecretError::Keyring(e.to_string()))
+    }
 }
 
 impl SecretStore for KeyringStore {

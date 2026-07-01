@@ -37,6 +37,20 @@ pub struct IncludeNode {
     pub children: Vec<IncludeNode>,
 }
 
+/// The product of [`assemble`]: the flattened tree (mutated in place) plus the
+/// per-source provenance needed to resolve `${var:NAME}` in lexical scope.
+pub(crate) struct Assembled {
+    /// Originating file of each source, parallel to the final `tree["sources"]`.
+    pub origins: Vec<PathBuf>,
+    /// Include chain (root → … → declaring file) of each source, parallel to
+    /// `origins`. Used to merge fragment-scoped `variables:` blocks.
+    pub source_chains: Vec<Vec<PathBuf>>,
+    /// Lifted `variables:` blocks of non-root fragment files, keyed by file.
+    /// The root's global block stays on the tree; source-local blocks stay on
+    /// their `SourceDef`.
+    pub frag_vars: HashMap<PathBuf, Value>,
+}
+
 /// Expand `include:` (recursively) and `from:` in a parsed config tree.
 ///
 /// `root_path` is the file the tree was read from; relative `include:` / `from:`
@@ -46,9 +60,11 @@ pub struct IncludeNode {
 ///
 /// Returns the originating file of each source, parallel to the final
 /// `tree["sources"]` array (so `origins[i]` declared `sources[i]`).
-pub(crate) fn assemble(tree: &mut Value, root_path: &Path) -> Result<Vec<PathBuf>, ConfigError> {
+pub(crate) fn assemble(tree: &mut Value, root_path: &Path) -> Result<Assembled, ConfigError> {
     let mut sources: Vec<Value> = Vec::new();
     let mut origins: Vec<PathBuf> = Vec::new();
+    let mut source_chains: Vec<Vec<PathBuf>> = Vec::new();
+    let mut frag_vars: HashMap<PathBuf, Value> = HashMap::new();
     let mut secrets: Vec<Value> = Vec::new();
     let mut models: Vec<Value> = Vec::new();
     let mut model_origins: Vec<PathBuf> = Vec::new();
@@ -66,6 +82,8 @@ pub(crate) fn assemble(tree: &mut Value, root_path: &Path) -> Result<Vec<PathBuf
         true,
         &mut sources,
         &mut origins,
+        &mut source_chains,
+        &mut frag_vars,
         &mut secrets,
         &mut models,
         &mut model_origins,
@@ -149,7 +167,11 @@ pub(crate) fn assemble(tree: &mut Value, root_path: &Path) -> Result<Vec<PathBuf
     // files.
     assemble_semantic_models(obj, root_path, models, model_origins)?;
 
-    Ok(origins)
+    Ok(Assembled {
+        origins,
+        source_chains,
+        frag_vars,
+    })
 }
 
 /// Merge models into the root config's `semantic.models` from three places, in
@@ -365,6 +387,8 @@ fn collect(
     is_root: bool,
     sources: &mut Vec<Value>,
     origins: &mut Vec<PathBuf>,
+    source_chains: &mut Vec<Vec<PathBuf>>,
+    frag_vars: &mut HashMap<PathBuf, Value>,
     secrets: &mut Vec<Value>,
     models: &mut Vec<Value>,
     model_origins: &mut Vec<PathBuf>,
@@ -423,12 +447,27 @@ fn collect(
         let body = std::mem::take(obj);
         sources.push(Value::Object(body));
         origins.push(path.to_path_buf());
+        source_chains.push(chain.clone());
     } else {
+        // A non-root fragment may carry a top-level `variables:` block — the
+        // global/fragment scope visible to the sources it declares. Lift it out
+        // (like `secrets:`/`models:`) so it doesn't leak into the merged tree;
+        // the root's block stays put as `Config.variables`.
+        if !is_root {
+            match obj.remove("variables") {
+                Some(Value::Null) | None => {}
+                Some(vars) => {
+                    frag_vars.insert(path.to_path_buf(), vars);
+                }
+            }
+        }
+
         match obj.remove("sources") {
             Some(Value::Array(arr)) => {
                 for s in arr {
                     sources.push(s);
                     origins.push(path.to_path_buf());
+                    source_chains.push(chain.clone());
                 }
             }
             Some(Value::Null) | None => {}
@@ -497,6 +536,8 @@ fn collect(
                 false,
                 sources,
                 origins,
+                source_chains,
+                frag_vars,
                 secrets,
                 models,
                 model_origins,

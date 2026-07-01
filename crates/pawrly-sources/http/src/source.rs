@@ -1,12 +1,15 @@
 //! Shared `HttpSource` configuration shared between typed and raw tables.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use reqwest::header::HeaderMap;
 use secrecy::{ExposeSecret as _, SecretString};
 use serde::{Deserialize, Serialize};
+
+use pawrly_core::VarId;
+use pawrly_secrets::VariableStore;
 
 /// Auth declaration, tagged by `type`: `header` (tokens / API keys in headers),
 /// `basic` (HTTP Basic), `custom` (credentials in the query string), and
@@ -532,6 +535,12 @@ pub struct HttpSource {
     pub rate_limit: RateLimitPolicy,
     /// Cached OAuth2 access token, populated on first use (when `auth` is OAuth2).
     pub oauth_token: tokio::sync::Mutex<Option<CachedToken>>,
+    /// Runtime store for dynamic `${var:}` references (process-wide; shared).
+    pub variables: Arc<dyn VariableStore>,
+    /// This source's dynamic `${var:NAME}` placeholders → their scope-unique
+    /// `VarId`. Built from the source's bindings at registration; empty when the
+    /// source references no dynamic variables.
+    pub dynamic: HashMap<String, VarId>,
 }
 
 impl std::fmt::Debug for HttpSource {
@@ -562,7 +571,9 @@ impl HttpSource {
     }
 
     /// Apply this source's auth to a request, fetching/refreshing an OAuth2
-    /// token when needed.
+    /// token when needed. Any credential field that is a dynamic `${var:NAME}`
+    /// placeholder is resolved through the variable store per request, so a
+    /// minted token is always current.
     pub async fn apply_auth(
         &self,
         req: reqwest::RequestBuilder,
@@ -574,28 +585,54 @@ impl HttpSource {
                 for h in headers {
                     match (&h.bearer, &h.value) {
                         (Some(b), _) => {
-                            req = req.header(&h.name, format!("Bearer {}", b.expose_secret()));
+                            let token = self.resolve_dynamic(b.expose_secret()).await?;
+                            req = req.header(&h.name, format!("Bearer {token}"));
                         }
-                        (None, Some(v)) => req = req.header(&h.name, v.expose_secret()),
+                        (None, Some(v)) => {
+                            let value = self.resolve_dynamic(v.expose_secret()).await?;
+                            req = req.header(&h.name, value);
+                        }
                         (None, None) => {}
                     }
                 }
                 req
             }
             AuthSpec::Basic { username, password } => {
-                req.basic_auth(username, Some(password.expose_secret()))
+                let password = self.resolve_dynamic(password.expose_secret()).await?;
+                req.basic_auth(username, Some(password))
             }
             AuthSpec::Custom { query, .. } => {
                 // Body fields are attached at request-build time (typed/raw), where
                 // they can merge with a table's own body; here we only do query.
-                let pairs: Vec<(&str, &str)> = query
-                    .iter()
-                    .map(|q| (q.name.as_str(), q.value.expose_secret()))
-                    .collect();
+                let mut pairs: Vec<(&str, String)> = Vec::with_capacity(query.len());
+                for q in query {
+                    pairs.push((
+                        q.name.as_str(),
+                        self.resolve_dynamic(q.value.expose_secret()).await?,
+                    ));
+                }
                 req.query(&pairs)
             }
             AuthSpec::Oauth2 { .. } => req.bearer_auth(self.oauth_bearer().await?),
         })
+    }
+
+    /// Resolve a possibly-dynamic credential string: if `raw` is exactly a
+    /// `${var:NAME}` placeholder bound to a dynamic variable, mint/refresh its
+    /// value through the store; otherwise return `raw` unchanged (a static value
+    /// was already inlined at load).
+    async fn resolve_dynamic(&self, raw: &str) -> Result<String, String> {
+        if let Some(name) = parse_var_ref(raw)
+            && let Some(id) = self.dynamic.get(name)
+        {
+            let value = self
+                .variables
+                .resolve(id)
+                .await
+                .map_err(|e| format!("resolve `${{var:{name}}}`: {e}"))?;
+            return Ok(value.expose_secret().to_string());
+        }
+        Ok(raw.to_string())
     }
 
     /// The `custom` auth body fields (name/value), empty for any other auth type.
@@ -674,6 +711,15 @@ impl HttpSource {
         });
         Ok(token)
     }
+}
+
+/// Parse a string that is *exactly* `${var:NAME}`, returning `NAME`. Static
+/// `${var:}` references were inlined at load, so anything still in this form at
+/// request time is a dynamic reference to resolve through the store.
+fn parse_var_ref(s: &str) -> Option<&str> {
+    let body = s.trim().strip_prefix("${")?.strip_suffix('}')?;
+    let (prefix, target) = body.split_once(':')?;
+    (prefix == "var").then_some(target)
 }
 
 /// The output columns of a typed table: the declared `response.schema` plus a

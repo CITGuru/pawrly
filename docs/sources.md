@@ -25,19 +25,19 @@ This page is the reference for the source block (every top-level field) and the 
 Every entry under `sources:` is one source. These are the top-level fields:
 
 
-| Field              | Type    | Required | Default         | Notes                                                                                                    |
-| ------------------ | ------- | -------- | --------------- | -------------------------------------------------------------------------------------------------------- |
-| `name`             | string  | **yes**  | —               | SQL identifier; becomes the schema prefix (`name.table`). Must be unique.                                |
-| `kind`             | enum    | **yes**  | —               | The source kind — see [Source kinds](#source-kinds). Case-insensitive; some kinds have aliases.          |
-| `description`      | string  | no       | —               | Free text; surfaced in `pawrly source list`.                                                             |
+| Field              | Type    | Required | Default         | Notes                                                                                                  |
+| ------------------ | ------- | -------- | --------------- | ------------------------------------------------------------------------------------------------------ |
+| `name`             | string  | **yes**  | —               | SQL identifier; becomes the schema prefix (`name.table`). Must be unique.                              |
+| `kind`             | enum    | **yes**  | —               | The source kind — see [Source kinds](#source-kinds). Case-insensitive; some kinds have aliases.        |
+| `description`      | string  | no       | —               | Free text; surfaced in `pawrly source list`.                                                           |
 | `wiki`             | string  | no       | —               | Agent-facing usage notes for the whole source; surfaced by `describe_table`. See [wiki](#wiki).        |
 | `examples`         | list    | no       | `[]`            | SQL statements that must run against this source; probed by `pawrly check`. See [examples](#examples). |
-| `config`           | mapping | no¹      | `{}`            | Per-kind settings (connection, auth, paths, storage, …). Shape depends on `kind`.                        |
-| `tables`           | list    | no¹      | `[]`            | Explicit per-table declarations. Required for some kinds, optional for others (which auto-discover).     |
-| `cache`            | mapping | no       | `mode: none`    | Per-source caching. See [the cache block](#the-cache-block).                                             |
-| `safety`           | mapping | no       | permissive      | Per-source guard rails. See [the safety block](#the-safety-block).                                       |
-| `raw_table`        | bool    | no       | `false`         | `http` only: register a raw-HTTP escape-hatch table named after the source.                              |
-| `raw_table_safety` | mapping | no       | filter-required | Safety policy for the raw table when `raw_table: true`.                                                  |
+| `config`           | mapping | no¹      | `{}`            | Per-kind settings (connection, auth, paths, storage, …). Shape depends on `kind`.                      |
+| `tables`           | list    | no¹      | `[]`            | Explicit per-table declarations. Required for some kinds, optional for others (which auto-discover).   |
+| `cache`            | mapping | no       | `mode: none`    | Per-source caching. See [the cache block](#the-cache-block).                                           |
+| `safety`           | mapping | no       | permissive      | Per-source guard rails. See [the safety block](#the-safety-block).                                     |
+| `raw_table`        | bool    | no       | `false`         | `http` only: register a raw-HTTP escape-hatch table named after the source.                            |
+| `raw_table_safety` | mapping | no       | filter-required | Safety policy for the raw table when `raw_table: true`.                                                |
 
 
 ¹ Whether `config` or `tables` is required depends on the kind (see each kind below).
@@ -207,6 +207,40 @@ WHERE request_path = '/rate_limit'
 
 ---
 
+## Variables
+
+A source can declare typed inputs in a `variables:` block and reference them anywhere in its `config` or tables with `${var:NAME}`. You can define non-secret, static `secret`, and OAuth-minted secrets. They are scoped and isolated per source.
+
+```yaml
+sources:
+  - name: gh
+    kind: http
+    variables:
+      GH_TOKEN: 
+        kind: secret
+        methods:
+          - type: oauth
+            grant: { type: device_code }
+            endpoints:
+              device_authorization_url: https://github.com/login/device/code
+              token_url: https://github.com/login/oauth/access_token
+            client:
+              id: { default: my-public-client-id }
+            scopes:
+              scope:
+                delimiter: space
+                values: [repo, read:org]
+          - type: input
+            label: Paste token
+            input: GITHUB_TOKEN
+    config:
+      token: ${var:GH_TOKEN}
+```
+
+See [Variables](./variables.md) to read more about how to use variables 
+
+---
+
 ## Source Kinds
 
 ### File Backend (`file`) — local files & object storage
@@ -355,9 +389,9 @@ sources:
       - name: pulls
         endpoint: /repos/{owner}/{repo}/pulls
         params:
-          - { name: owner, required: true }
-          - { name: repo,  required: true }
-          - { name: state, required: false, default: open }
+          - { name: owner, required: true, filterable: true }
+          - { name: repo,  required: true, filterable: true }
+          - { name: state, required: false, default: open, filterable: true }
         response:
           path: $
           schema:
@@ -560,6 +594,7 @@ Each table's request is built from these flat fields:
         params:
           - { name: status, filterable: true }   # WHERE status = 'active' → ?status=active
 ```
+
 - **Equality** pushes down by default: `WHERE state = 'open'` → `?state=open`.
 - **Comparisons** — to push `>=` / `<=` etc., list them in `accepts` and map each to a query-parameter name in `emit`:
 
@@ -571,7 +606,7 @@ Each table's request is built from these flat fields:
 ```
 
 - **explode** — `explode: true` pushes a SQL `IN (a, b, c)` on a *query* param down as repeated query pairs (`?key=a&key=b&key=c`) in a single request. Equality still emits a single pair. Only honored for the query string (not path/body params).
-- **`IN (...)` on a path or `required` param** fans out to one request per value (no `explode` needed) and unions the results — the typed-table equivalent of the raw table's behavior — bounded by `LIMIT` and `safety.max_rows`. An `IN` on a plain (non-path, non-`required`, non-`explode`) param is still filtered in-engine.
+- `**IN (...)` on a path or `required` param** fans out to one request per value (no `explode` needed) and unions the results — the typed-table equivalent of the raw table's behavior — bounded by `LIMIT` and `safety.max_rows`. An `IN` on a plain (non-path, non-`required`, non-`explode`) param is still filtered in-engine.
 - **derive** — compute the param's value when the query doesn't supply one (a dynamic default), tagged by `kind`:
   - `ago` — `{ kind: ago, seconds: N }` → epoch seconds `now - N` (a relative time window, e.g. "last hour").
   - `split` — `{ kind: split, from: <other param>, separator: "-", part: 0 }` → a `part` (0-based) of another bound param's value split by `separator`. Useful to derive request fields from a composite filter (e.g. an issue key `ENG-123` → team `ENG` + number `123`). A derived param that feeds a body template stays out of the query string.
@@ -961,20 +996,22 @@ A `json` column is raw JSON text — an object, array, or scalar kept verbatim s
 
 ### DataFusion JSON Helpers
 
-| Function / Operator         | Returns         | Purpose                                                                                       |
-| --------------------------- | --------------- | --------------------------------------------------------------------------------------------- |
-| `json_get_str(col, ...)`    | `varchar`       | Read a value at the given key/index path as text.                                             |
-| `json_get_int(col, ...)`    | `bigint`        | Read a value at the path as an integer.                                                       |
-| `json_get_float(col, ...)`  | `double`        | Read a value at the path as a float.                                                          |
-| `json_get_bool(col, ...)`   | `boolean`       | Read a value at the path as a boolean.                                                         |
-| `json_get_json(col, ...)`   | `varchar`       | Read a value at the path back as raw JSON text (objects, arrays, or scalars).                 |
-| `json_get_array(col, ...)`  | `list`          | Read a value at the path as an array.                                                          |
-| `json_length(col, ...)`     | `bigint`        | Length of the array or object at the path (or of `col` itself).                               |
-| `json_contains(col, ...)`   | `boolean`       | Whether a value exists at the given key/index path.                                           |
-| `json_object_keys(col)`     | `list<varchar>` | The keys of the JSON object.                                                                  |
-| `col -> key`                | `varchar`       | Get the value at `key` as raw JSON (alias for `json_get`).                                     |
-| `col ->> key`               | `varchar`       | Get the value at `key` as text (alias for `json_get_str`).                                     |
-| `col ? key`                 | `boolean`       | Whether `key` is present (alias for `json_contains`).                                          |
+
+| Function / Operator        | Returns         | Purpose                                                                       |
+| -------------------------- | --------------- | ----------------------------------------------------------------------------- |
+| `json_get_str(col, ...)`   | `varchar`       | Read a value at the given key/index path as text.                             |
+| `json_get_int(col, ...)`   | `bigint`        | Read a value at the path as an integer.                                       |
+| `json_get_float(col, ...)` | `double`        | Read a value at the path as a float.                                          |
+| `json_get_bool(col, ...)`  | `boolean`       | Read a value at the path as a boolean.                                        |
+| `json_get_json(col, ...)`  | `varchar`       | Read a value at the path back as raw JSON text (objects, arrays, or scalars). |
+| `json_get_array(col, ...)` | `list`          | Read a value at the path as an array.                                         |
+| `json_length(col, ...)`    | `bigint`        | Length of the array or object at the path (or of `col` itself).               |
+| `json_contains(col, ...)`  | `boolean`       | Whether a value exists at the given key/index path.                           |
+| `json_object_keys(col)`    | `list<varchar>` | The keys of the JSON object.                                                  |
+| `col -> key`               | `varchar`       | Get the value at `key` as raw JSON (alias for `json_get`).                    |
+| `col ->> key`              | `varchar`       | Get the value at `key` as text (alias for `json_get_str`).                    |
+| `col ? key`                | `boolean`       | Whether `key` is present (alias for `json_contains`).                         |
+
 
 ### Exploding an array of objects
 
@@ -995,7 +1032,7 @@ WHERE json_extract_string(e, 'code') = 'USD'
 
 ### Gotchas
 
-- **`unnest` is projection-only.** `FROM t, unnest(from_json(t.payload))` (a correlated lateral join) is rejected by the planner; use the CTE form above.
+- `**unnest` is projection-only.** `FROM t, unnest(from_json(t.payload))` (a correlated lateral join) is rejected by the planner; use the CTE form above.
 - **Operator precedence.** `->`/`->>` bind looser than `IN` and comparisons, so parenthesize: `(e ->> 'code') IN ('USD', 'EUR')`.
 - **Typed getters match the JSON type.** `json_get_float(e, 'amount')` returns NULL when the value is a JSON *string* (`"12.50"`) rather than a number — use `json_get_str` or `->>`, then `CAST`.
 

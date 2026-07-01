@@ -10,11 +10,22 @@ use pawrly_core::{ConfigError, SourceDef};
 
 use std::num::NonZeroU32;
 
+use std::collections::HashMap;
+
+use pawrly_core::VarId;
+use pawrly_secrets::{RuntimeVariableStore, VariableStore};
+
 use crate::raw::RawHttpTableProvider;
 use crate::source::{AuthSpec, HttpSource, HttpTableSpec, RateLimitPolicy, RetryConfig};
 use crate::typed::HttpTableProvider;
 
 use governor::{Quota, RateLimiter};
+
+/// An empty variable store, for sources/functions that reference no dynamic
+/// variables (standalone http functions, error paths).
+fn empty_var_store() -> Arc<dyn VariableStore> {
+    Arc::new(RuntimeVariableStore::new(HashMap::new()))
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum HttpBuildError {
@@ -52,10 +63,25 @@ pub struct HttpTableSummary {
     pub required_filters: Vec<String>,
 }
 
+/// Register an HTTP source that references no dynamic variables (the common
+/// case, and what tests use). Delegates to [`register_http_source_with_vars`]
+/// with an empty variable store.
 pub async fn register_http_source(
     def: &SourceDef,
     ctx: &SessionContext,
     catalog: &dyn CatalogProvider,
+) -> Result<HttpSourceReport, HttpBuildError> {
+    register_http_source_with_vars(def, ctx, catalog, &empty_var_store(), HashMap::new()).await
+}
+
+/// Register an HTTP source, threading the variable store and this source's
+/// `NAME → VarId` map so dynamic `${var:}` credentials resolve per request.
+pub async fn register_http_source_with_vars(
+    def: &SourceDef,
+    ctx: &SessionContext,
+    catalog: &dyn CatalogProvider,
+    variables: &Arc<dyn VariableStore>,
+    dynamic: HashMap<String, VarId>,
 ) -> Result<HttpSourceReport, HttpBuildError> {
     let _ = ctx;
 
@@ -114,6 +140,8 @@ pub async fn register_http_source(
         retry: parse_retry(def),
         rate_limit: parse_rate_limit(def),
         oauth_token: tokio::sync::Mutex::new(None),
+        variables: variables.clone(),
+        dynamic,
     });
 
     let schema = ensure_schema(catalog, &def.name)?;
@@ -246,6 +274,8 @@ pub fn build_http_source(
         retry: parse_retry(&def),
         rate_limit: parse_rate_limit(&def),
         oauth_token: tokio::sync::Mutex::new(None),
+        variables: empty_var_store(),
+        dynamic: HashMap::new(),
     }))
 }
 

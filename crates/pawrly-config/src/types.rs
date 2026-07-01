@@ -39,6 +39,11 @@ pub struct Config {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub include: Vec<String>,
 
+    /// Global (workspace-scoped) variable declarations, visible to every
+    /// source. Per-source and fragment-file scopes layer on top during load.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub variables: std::collections::BTreeMap<String, crate::variables::VariableDef>,
+
     /// Declared sources.
     #[serde(default)]
     pub sources: Vec<SourceDef>,
@@ -148,6 +153,19 @@ pub struct SourceDef {
     /// Resolved relative to the declaring file.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub from: Option<String>,
+
+    /// Source-local variable declarations, visible to this source only
+    /// (innermost in the scope chain). Resolved into `config`/`tables` at load.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub variables: std::collections::BTreeMap<String, crate::variables::VariableDef>,
+
+    /// Bindings for this source's *dynamic* `${var:}` references, emitted during
+    /// load (the static ones are inlined into `config`). Not (de)serialized —
+    /// recomputed on every load — and threaded to the engine to build the
+    /// variable store and the per-source `NAME → VarId` map.
+    #[serde(skip)]
+    #[schemars(skip)]
+    pub dynamic_vars: Vec<pawrly_core::DynamicVarBinding>,
 
     /// Per-kind opaque config. Validated by the source builder when registered.
     #[serde(default = "default_value", skip_serializing_if = "is_null")]
@@ -308,6 +326,43 @@ impl FunctionDecl {
 }
 
 impl Config {
+    /// Union of every source's dynamic-variable specs, keyed by `VarId`. The
+    /// engine builds the runtime variable store from this map.
+    #[must_use]
+    pub fn dynamic_specs(
+        &self,
+    ) -> std::collections::HashMap<pawrly_core::VarId, pawrly_core::DynamicVarSpec> {
+        let mut out = std::collections::HashMap::new();
+        for s in &self.sources {
+            for b in &s.dynamic_vars {
+                out.insert(b.id.clone(), b.spec.clone());
+            }
+        }
+        out
+    }
+
+    /// Per-source `NAME → VarId` map, for sources that reference any dynamic
+    /// variable. The source registrar uses it to resolve `${var:}` placeholders.
+    #[must_use]
+    pub fn dynamic_bindings_by_source(
+        &self,
+    ) -> std::collections::HashMap<String, std::collections::HashMap<String, pawrly_core::VarId>>
+    {
+        let mut out = std::collections::HashMap::new();
+        for s in &self.sources {
+            if s.dynamic_vars.is_empty() {
+                continue;
+            }
+            let map = s
+                .dynamic_vars
+                .iter()
+                .map(|b| (b.name.clone(), b.id.clone()))
+                .collect();
+            out.insert(s.name.clone(), map);
+        }
+        out
+    }
+
     /// Convert into engine-side runtime descriptors. Caller has already
     /// resolved secrets and validated.
     #[must_use]

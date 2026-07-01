@@ -11,17 +11,20 @@
 //! `MaskedConfig` provides a way to render the parsed config without
 //! revealing secrets — used by `pawrly source list / show`.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
+use serde_json::Value;
 
-use pawrly_core::ConfigError;
-use pawrly_secrets::SecretStore;
+use pawrly_core::{ConfigError, DynamicVarBinding};
+use pawrly_secrets::{SecretStore, VariableValueStore};
 
 use crate::assemble;
 use crate::interpolate;
 use crate::types::Config;
 use crate::validator;
+use crate::variables;
 
 pub use crate::assemble::IncludeNode;
 
@@ -35,9 +38,9 @@ pub fn load(path: &Path, secrets: &dyn SecretStore) -> Result<Config, ConfigErro
         serde_yaml::from_str(&raw).map_err(|e| ConfigError::Yaml(e.to_string()))?;
 
     // Assemble multi-file sources before anything else operates on the tree.
-    assemble::assemble(&mut tree, path)?;
+    let asm = assemble::assemble(&mut tree, path)?;
 
-    finish(tree, secrets)
+    finish(tree, secrets, None, &asm.frag_vars, &asm.source_chains)
 }
 
 /// Load and validate a `pawrly.yaml`, building the secret-resolution chain
@@ -50,12 +53,25 @@ pub fn load(path: &Path, secrets: &dyn SecretStore) -> Result<Config, ConfigErro
 /// in the config directory if present). Relative `file:` paths and the `auto`
 /// `.env` lookup resolve against the config file's directory.
 pub fn load_auto(path: &Path) -> Result<Config, ConfigError> {
+    load_auto_with_vars(path, None)
+}
+
+/// [`load_auto`] that also consults a [`VariableValueStore`] when resolving
+/// static `${var:}` secrets — a value persisted by `pawrly source connect` /
+/// `pawrly variables set` (keyed by `VarId`) **wins** over the inherited env /
+/// secret-chain value. The engine threads its own home-backed store here so
+/// connect-stored secrets resolve (and don't hard-fail the load); inspection
+/// callers pass `None`.
+pub fn load_auto_with_vars(
+    path: &Path,
+    vars: Option<&dyn VariableValueStore>,
+) -> Result<Config, ConfigError> {
     let raw = std::fs::read_to_string(path).map_err(|e| ConfigError::Io(e.to_string()))?;
     let mut tree: serde_json::Value =
         serde_yaml::from_str(&raw).map_err(|e| ConfigError::Yaml(e.to_string()))?;
 
     // Assemble multi-file sources before reading the secrets block.
-    assemble::assemble(&mut tree, path)?;
+    let asm = assemble::assemble(&mut tree, path)?;
 
     // Read the secrets backends verbatim (before interpolation — backend defs
     // are literal and must not themselves depend on `${secret:…}`).
@@ -70,7 +86,7 @@ pub fn load_auto(path: &Path) -> Result<Config, ConfigError> {
     let base_dir = path.parent().unwrap_or_else(|| Path::new("."));
     let store = crate::secrets::build_store(&defs, base_dir)?;
 
-    finish(tree, &store)
+    finish(tree, &store, vars, &asm.frag_vars, &asm.source_chains)
 }
 
 /// Build the secret-resolution store from a config file's `secrets:` block,
@@ -121,7 +137,9 @@ pub fn load_str(raw: &str, secrets: &dyn SecretStore) -> Result<Config, ConfigEr
         ));
     }
 
-    finish(tree, secrets)
+    // No multi-file assembly here: there are no fragment scopes, and each
+    // source's scope is just `global ∪ source-local`.
+    finish(tree, secrets, None, &HashMap::new(), &[])
 }
 
 /// Assemble `include:` / `from:` from a file **without** resolving secrets.
@@ -138,9 +156,9 @@ pub fn assemble_config(path: &Path) -> Result<(Config, Vec<PathBuf>), ConfigErro
     let mut tree: serde_json::Value =
         serde_yaml::from_str(&raw).map_err(|e| ConfigError::Yaml(e.to_string()))?;
 
-    let origins = assemble::assemble(&mut tree, path)?;
+    let asm = assemble::assemble(&mut tree, path)?;
     let cfg: Config = serde_json::from_value(tree).map_err(|e| ConfigError::Yaml(e.to_string()))?;
-    Ok((cfg, origins))
+    Ok((cfg, asm.origins))
 }
 
 /// Build the `include:` graph rooted at `path` (no merging, no interpolation).
@@ -149,13 +167,34 @@ pub fn include_tree(path: &Path) -> Result<IncludeNode, ConfigError> {
     assemble::include_tree(path)
 }
 
-/// Shared tail of the load pipeline: interpolate, deserialize, validate.
-fn finish(mut tree: serde_json::Value, secrets: &dyn SecretStore) -> Result<Config, ConfigError> {
-    // Interpolate references (recursively) on the fully-assembled tree.
+/// Shared tail of the load pipeline: interpolate (two passes), deserialize,
+/// validate.
+///
+/// `frag_vars` are the lifted fragment-file `variables:` blocks (keyed by file)
+/// and `source_chains` is each source's include chain — both from
+/// [`assemble`](crate::assemble); empty for the in-memory `load_str` path.
+fn finish(
+    mut tree: Value,
+    secrets: &dyn SecretStore,
+    vars: Option<&dyn VariableValueStore>,
+    frag_vars: &HashMap<PathBuf, Value>,
+    source_chains: &[Vec<PathBuf>],
+) -> Result<Config, ConfigError> {
+    // Pass A: `${secret:}` / `${env:}` / `${file:}` over the whole tree
+    // (including any `variables:` blocks still on it). `${var:}` is left alone.
     interpolate::resolve(&mut tree, secrets)?;
 
-    // Type-check by deserializing the resolved tree into Config.
-    let cfg: Config = serde_json::from_value(tree).map_err(|e| ConfigError::Yaml(e.to_string()))?;
+    // Pass B: per-source `${var:}` resolution. Static refs inline; dynamic refs
+    // are left verbatim and returned as bindings (parallel to `tree["sources"]`).
+    let bindings = resolve_variables(&mut tree, secrets, vars, frag_vars, source_chains)?;
+
+    // Type-check by deserializing the resolved tree into Config, then attach the
+    // dynamic bindings (a `#[serde(skip)]` field, so they survive only here).
+    let mut cfg: Config =
+        serde_json::from_value(tree).map_err(|e| ConfigError::Yaml(e.to_string()))?;
+    for (src, binds) in cfg.sources.iter_mut().zip(bindings) {
+        src.dynamic_vars = binds;
+    }
 
     // Schema-level validation (version + per-source rules).
     let errors = validator::validate(&cfg);
@@ -168,6 +207,133 @@ fn finish(mut tree: serde_json::Value, secrets: &dyn SecretStore) -> Result<Conf
     }
 
     Ok(cfg)
+}
+
+/// Pass B: per-source `${var:NAME}` resolution. Builds each source's scope as
+/// `global ∪ (fragments along its include chain) ∪ source-local`, then inlines
+/// static values. Secret/env/file references inside the global block and each
+/// source-local block were resolved by Pass A; fragment blocks are resolved here
+/// (they were lifted off the tree before Pass A).
+fn resolve_variables(
+    tree: &mut Value,
+    secrets: &dyn SecretStore,
+    vars: Option<&dyn VariableValueStore>,
+    frag_vars: &HashMap<PathBuf, Value>,
+    source_chains: &[Vec<PathBuf>],
+) -> Result<Vec<Vec<DynamicVarBinding>>, ConfigError> {
+    let global = match tree.get("variables") {
+        Some(v) => variables::parse_block(v, "root")?,
+        None => variables::VariableScope::new(),
+    };
+
+    let mut frag_scopes: HashMap<&PathBuf, variables::VariableScope> = HashMap::new();
+    for (file, block) in frag_vars {
+        let mut block = block.clone();
+        interpolate::resolve(&mut block, secrets)?;
+        frag_scopes.insert(
+            file,
+            variables::parse_block(&block, &file.display().to_string())?,
+        );
+    }
+
+    let Some(sources) = tree.get_mut("sources").and_then(Value::as_array_mut) else {
+        return Ok(Vec::new());
+    };
+
+    let mut all = Vec::with_capacity(sources.len());
+    for (i, source) in sources.iter_mut().enumerate() {
+        // Build the scope from an immutable borrow, releasing it before the
+        // mutable `resolve_refs` walk below.
+        let scope = source_scope(source, source_chains.get(i), &global, &frag_scopes)?;
+        all.push(variables::resolve_refs(source, &scope, secrets, vars)?);
+    }
+
+    Ok(all)
+}
+
+/// One source's variable scope: `global ∪ (fragments along its include chain) ∪
+/// source-local`, inner declarations shadowing outer. Shared by the resolving
+/// pass and the read-only [`source_static_vars`] detector.
+fn source_scope(
+    source: &Value,
+    chain: Option<&Vec<PathBuf>>,
+    global: &variables::VariableScope,
+    frag_scopes: &HashMap<&PathBuf, variables::VariableScope>,
+) -> Result<variables::VariableScope, ConfigError> {
+    let mut scope = global.clone();
+    if let Some(chain) = chain {
+        for file in chain {
+            if let Some(frag) = frag_scopes.get(file) {
+                variables::merge_into(&mut scope, frag);
+            }
+        }
+    }
+    if let Some(block) = source.get("variables") {
+        let source_name = source.get("name").and_then(Value::as_str).unwrap_or("?");
+        let local = variables::parse_block(block, &format!("source:{source_name}"))?;
+        variables::merge_into(&mut scope, &local);
+    }
+    Ok(scope)
+}
+
+/// Referenced *static* `${var:NAME}` variables for one source — each with the
+/// `VarId` its persisted value is keyed by and whether it resolves now. Powers
+/// `pawrly source connect` (and the post-`source add` prompt). Read-only: it
+/// resolves nothing into the tree and never errors on a missing value. Passing a
+/// `vars` store makes resolution stored-wins-aware (so a connect-stored secret
+/// reports `resolves: true`). Returns an empty vec if the source is absent.
+/// Dynamic (OAuth) variables are excluded — those are handled by the connect flow.
+pub fn source_static_vars(
+    path: &Path,
+    source_name: &str,
+    vars: Option<&dyn VariableValueStore>,
+) -> Result<Vec<variables::StaticVarRef>, ConfigError> {
+    let raw = std::fs::read_to_string(path).map_err(|e| ConfigError::Io(e.to_string()))?;
+    let mut tree: Value =
+        serde_yaml::from_str(&raw).map_err(|e| ConfigError::Yaml(e.to_string()))?;
+    let asm = assemble::assemble(&mut tree, path)?;
+
+    // Same secret chain a real load builds, so static secrets resolve identically.
+    let defs: Vec<crate::types::SecretsBackendDef> = match tree.get("secrets") {
+        Some(v) => serde_json::from_value(v.clone()).map_err(|e| ConfigError::Schema {
+            path: "secrets".to_string(),
+            msg: e.to_string(),
+        })?,
+        None => Vec::new(),
+    };
+    let base_dir = path.parent().unwrap_or_else(|| Path::new("."));
+    let store = crate::secrets::build_store(&defs, base_dir)?;
+
+    // Pass A over the whole tree resolves `${secret:}`/`${env:}`/`${file:}` in the
+    // global and source-local `variables:` blocks (mirroring `finish`); `${var:}`
+    // is left alone. Fragment blocks were lifted off the tree, so resolve them
+    // separately, exactly as `resolve_variables` does.
+    interpolate::resolve(&mut tree, &store)?;
+    let global = match tree.get("variables") {
+        Some(v) => variables::parse_block(v, "root")?,
+        None => variables::VariableScope::new(),
+    };
+    let mut frag_scopes: HashMap<&PathBuf, variables::VariableScope> = HashMap::new();
+    for (file, block) in &asm.frag_vars {
+        let mut block = block.clone();
+        interpolate::resolve(&mut block, &store)?;
+        frag_scopes.insert(
+            file,
+            variables::parse_block(&block, &file.display().to_string())?,
+        );
+    }
+
+    let Some(sources) = tree.get("sources").and_then(Value::as_array) else {
+        return Ok(Vec::new());
+    };
+    for (i, source) in sources.iter().enumerate() {
+        if source.get("name").and_then(Value::as_str) != Some(source_name) {
+            continue;
+        }
+        let scope = source_scope(source, asm.source_chains.get(i), &global, &frag_scopes)?;
+        return Ok(variables::collect_static_refs(source, &scope, &store, vars));
+    }
+    Ok(Vec::new())
 }
 
 /// Wrapper that serializes `Config` with secrets replaced by their reference

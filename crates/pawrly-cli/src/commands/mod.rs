@@ -20,3 +20,4 @@ pub mod stop;
 pub mod uninstall;
 pub mod update;
 pub mod validate;
+pub mod variables;
