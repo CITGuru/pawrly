@@ -34,13 +34,28 @@ impl KeyringStore {
 
 impl SecretStore for KeyringStore {
     fn get(&self, name: &str) -> Result<Option<SecretString>, SecretError> {
-        let entry =
-            Entry::new(&self.service, name).map_err(|e| SecretError::Keyring(e.to_string()))?;
+        let entry = match Entry::new(&self.service, name) {
+            Ok(entry) => entry,
+            Err(e) => return classify(e),
+        };
         match entry.get_password() {
             Ok(p) => Ok(Some(SecretString::from(p))),
-            Err(keyring::Error::NoEntry) => Ok(None),
-            Err(e) => Err(SecretError::Keyring(e.to_string())),
+            Err(e) => classify(e),
         }
+    }
+}
+
+/// Map a keyring error to a lookup result. A missing entry or an unusable store
+/// (e.g. headless Linux with no secret-service) is a miss, so a fallback chain
+/// moves on instead of failing; only a malformed request surfaces an error.
+fn classify(e: keyring::Error) -> Result<Option<SecretString>, SecretError> {
+    match e {
+        keyring::Error::NoEntry => Ok(None),
+        keyring::Error::PlatformFailure(_) | keyring::Error::NoStorageAccess(_) => {
+            tracing::debug!("keyring unavailable, treating as a miss: {e}");
+            Ok(None)
+        }
+        other => Err(SecretError::Keyring(other.to_string())),
     }
 }
 
