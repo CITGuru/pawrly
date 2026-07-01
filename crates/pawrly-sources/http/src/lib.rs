@@ -24,6 +24,7 @@ pub use function::{HttpFunctionExecutor, function_spec};
 pub use raw::RawHttpTableProvider;
 pub use register::{
     HttpBuildError, HttpSourceReport, HttpTableSummary, build_http_source, register_http_source,
+    register_http_source_with_vars,
 };
 pub use source::{
     AuthHeader, AuthSpec, HttpSource, HttpTableSpec, PaginationConfig, ParamSpec, QueryCredential,

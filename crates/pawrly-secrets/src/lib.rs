@@ -18,11 +18,18 @@ mod env;
 mod file;
 mod keyring;
 mod layered;
+pub mod variables;
 
 pub use env::EnvStore;
 pub use file::{FileFormat, FileStore};
 pub use keyring::KeyringStore;
 pub use layered::LayeredStore;
+pub use variables::{
+    DevicePrompt, EncryptedFileTokenStore, FileTokenStore, KeyringTokenStore, NoopTokenStore,
+    RuntimeVariableStore, TokenStoreError, VarError, VariableStore, VariableTokenStore,
+    VariableValueStore, authorization_code_connect, authorization_code_exchange,
+    build_authorize_url, device_code_connect, pkce_pair, value_key,
+};
 
 pub use secrecy::{ExposeSecret as _, SecretBox, SecretString as Secret};
 

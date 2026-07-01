@@ -8,6 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- **Variables** — declared, typed, scoped inputs a source references with `${var:NAME}`.
+  - Non-secret config values typed as string, integer, number, boolean, or enum, with defaults, required/optional, and per-machine overrides.
+  - Static secrets resolved from the env / keyring / file chain.
+  - OAuth-minted secrets via `client_credentials`, `device_code`, and `authorization_code` grants, with optional OIDC endpoint discovery.
+  - `pawrly variables set` and `pawrly source connect` to provide values, and a `system.variables` table for introspection.
 - `pawrly update` — upgrade the installed binary in place to the latest release (or a pinned `--version`), with `--check` to report availability without installing.
 - `pawrly uninstall` — remove the installed binary, with `--purge` to also delete the Pawrly home directory (`$PAWRLY_HOME` / `~/.pawrly`).
 

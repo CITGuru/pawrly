@@ -20,6 +20,7 @@ export const docGroups: DocGroup[] = [
     heading: "Connect data",
     items: [
       { slug: "sources", title: "Sources", blurb: "Wire up APIs, files, databases, warehouses, lakehouses, and MCP servers." },
+      { slug: "variables", title: "Variables", blurb: "Declared, typed, scoped inputs: non-secret config, static secrets, and OAuth-minted credentials." },
     ],
   },
   {

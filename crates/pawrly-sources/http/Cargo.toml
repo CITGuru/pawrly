@@ -13,6 +13,7 @@ workspace = true
 [dependencies]
 pawrly-core = { workspace = true }
 pawrly-schema = { workspace = true }
+pawrly-secrets = { workspace = true }
 datafusion = { workspace = true }
 arrow-array = { workspace = true }
 arrow-schema = { workspace = true }

@@ -122,6 +122,9 @@ enum Command {
     Semantic(commands::semantic::Args),
     /// Discover and call table-valued functions (list, describe, call).
     Function(commands::function::Args),
+    /// Inspect and set declared source variables (list, set). To connect a
+    /// source's OAuth variables, use `pawrly source connect`.
+    Variables(commands::variables::Args),
     /// Run the Pawrly daemon (gRPC server).
     Serve(commands::serve::Args),
     /// Serve the web Console (gRPC-Web + embedded UI) for the workspace.
@@ -201,6 +204,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Function(args) => {
             commands::function::run(cli.home, cli.config, cli.remote, cli.no_remote, args).await
         }
+        Command::Variables(args) => commands::variables::run(cli.home, args).await,
         Command::Serve(args) => commands::serve::run(cli.home, cli.config, args).await,
         Command::Console(args) => {
             commands::console::run(cli.home, cli.config, cli.remote, cli.no_remote, args).await

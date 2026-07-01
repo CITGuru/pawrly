@@ -1,9 +1,13 @@
 //! Source dispatch table. Each `kind:` maps to one register function which
 //! knows how to install the source's tables on a DataFusion `SessionContext`.
 
+use std::collections::HashMap;
+use std::sync::Arc;
+
 use datafusion::catalog::CatalogProvider;
 use datafusion::execution::context::SessionContext;
-use pawrly_core::{ConfigError, SourceDef, SourceKind};
+use pawrly_core::{ConfigError, SourceDef, SourceKind, VarId};
+use pawrly_secrets::VariableStore;
 
 // SourceKind imported only for use in match arms.
 #[allow(dead_code)]
@@ -44,6 +48,8 @@ pub async fn register_source(
     catalog: &dyn CatalogProvider,
     workspace_dir: &std::path::Path,
     pool: &std::sync::Arc<crate::duckdb_pool::DuckDbPool>,
+    variables: &Arc<dyn VariableStore>,
+    dynamic: HashMap<String, VarId>,
 ) -> Result<RegisterReport, RegisterError> {
     let mut report = match def.kind {
         // Local files use DataFusion's native readers. A `file` source with a
@@ -72,9 +78,11 @@ pub async fn register_source(
             })
         }
         SourceKind::Http => {
-            let report = pawrly_sources_http::register_http_source(def, ctx, catalog)
-                .await
-                .map_err(|e| RegisterError::Other(e.to_string()))?;
+            let report = pawrly_sources_http::register_http_source_with_vars(
+                def, ctx, catalog, variables, dynamic,
+            )
+            .await
+            .map_err(|e| RegisterError::Other(e.to_string()))?;
             let function_handle = report
                 .source_handle
                 .clone()

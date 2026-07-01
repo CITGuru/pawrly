@@ -34,6 +34,9 @@ pub enum SourceCommand {
     /// Add a source from a kind + flags, a local file, a URL, or a catalog
     /// name; writes it to `sources/<name>.yaml`.
     Add(AddArgs),
+    /// Set up the variables a source needs: prompt for static secrets and run
+    /// the OAuth connect flow for any it references.
+    Connect(ConnectArgs),
     /// List configured sources.
     List(ListArgs),
     /// Remove a source from the engine and its `sources/<name>.yaml` file.
@@ -103,6 +106,22 @@ pub struct AddArgs {
 }
 
 #[derive(ClapArgs, Debug)]
+pub struct ConnectArgs {
+    /// Source name whose variables to set up.
+    pub name: String,
+
+    /// Restrict to these variable names (and re-prompt them even if already set).
+    /// When omitted, only variables that still need setup are handled.
+    #[arg(value_name = "VAR")]
+    pub vars: Vec<String>,
+
+    /// Re-prompt every variable the source references, overwriting any value
+    /// already stored or connected.
+    #[arg(long, visible_alias = "force")]
+    pub all: bool,
+}
+
+#[derive(ClapArgs, Debug)]
 pub struct ListArgs {
     /// Emit JSON instead of a table.
     #[arg(long)]
@@ -136,6 +155,7 @@ pub async fn run(
 ) -> anyhow::Result<()> {
     match args.command {
         SourceCommand::Add(a) => run_add(home, config, remote, no_remote, a).await,
+        SourceCommand::Connect(a) => run_connect_source(home, config, a).await,
         SourceCommand::List(a) => run_list(home, config, remote, no_remote, a).await,
         SourceCommand::Remove(a) => run_remove(home, config, remote, no_remote, a).await,
         SourceCommand::Refresh(a) => run_refresh(home, config, remote, no_remote, a).await,
@@ -182,24 +202,32 @@ async fn run_add(
     }
 
     // Reject a name already present as a per-source file or anywhere in the
-    // assembled config.
+    // assembled config. On a collision, point at `--name`: a second connection
+    // of the same kind is fully supported — sources are keyed by name, not kind
+    // — it just needs a distinct identifier.
     let yaml_path = resolve_yaml_path(config.clone(), home.as_deref())?;
     let source_path = source_file_path(&yaml_path, &source_def.name);
-    if source_path.exists() {
+    let assembled = yaml_path
+        .exists()
+        .then(|| pawrly_config::assemble_config(&yaml_path).ok())
+        .flatten()
+        .map(|(cfg, _)| cfg);
+    let taken = |name: &str| {
+        source_file_path(&yaml_path, name).exists()
+            || assembled
+                .as_ref()
+                .is_some_and(|cfg| cfg.sources.iter().any(|s| s.name == name))
+    };
+    if taken(&source_def.name) {
+        let suggestion = suggest_available_name(&source_def.name, &taken);
         anyhow::bail!(
-            "source `{}` already exists ({})",
+            "source `{}` already exists in {}\n  \
+             to add another connection of the same kind, give it a different name:\n    \
+             pawrly source add {} --name {}",
             source_def.name,
-            source_path.display()
-        );
-    }
-    if yaml_path.exists()
-        && let Ok((cfg, _)) = pawrly_config::assemble_config(&yaml_path)
-        && cfg.sources.iter().any(|s| s.name == source_def.name)
-    {
-        anyhow::bail!(
-            "source `{}` already exists in {}",
-            source_def.name,
-            yaml_path.display()
+            yaml_path.display(),
+            args.target,
+            suggestion,
         );
     }
 
@@ -208,7 +236,8 @@ async fn run_add(
         None
     } else {
         let engine =
-            crate::engine::build_engine(remote, no_remote, home, Some(yaml_path.clone())).await?;
+            crate::engine::build_engine(remote, no_remote, home.clone(), Some(yaml_path.clone()))
+                .await?;
         Some(engine.add_source(source_to_engine_def(&source_def)).await?)
     };
 
@@ -232,7 +261,348 @@ async fn run_add(
             source_path.display()
         ),
     }
+
+    // Set up whatever the new source needs, offering prompts on a TTY and
+    // printing the command to run otherwise.
+    let _ = connect_source(home, &yaml_path, &source_def.name, &[], false, true).await;
     Ok(())
+}
+
+async fn run_connect_source(
+    home: Option<PathBuf>,
+    config: Option<PathBuf>,
+    args: ConnectArgs,
+) -> anyhow::Result<()> {
+    let yaml_path = resolve_yaml_path(config, home.as_deref())?;
+    if !yaml_path.exists() {
+        anyhow::bail!("no config at {}", yaml_path.display());
+    }
+    // The source must exist before we try to set up its variables.
+    if let Ok((cfg, _)) = pawrly_config::assemble_config(&yaml_path)
+        && !cfg.sources.iter().any(|s| s.name == args.name)
+    {
+        anyhow::bail!(
+            "source `{}` not found in {}",
+            args.name,
+            yaml_path.display()
+        );
+    }
+    connect_source(home, &yaml_path, &args.name, &args.vars, args.all, false).await
+}
+
+/// Set up the variables a source references: prompt static secrets, run the OAuth
+/// connect flow, and persist each value by `VarId`. `offer` gates OAuth behind a
+/// TTY/y-N for the post-`source add` prompt; `force`/`only` re-prompt all/named.
+async fn connect_source(
+    home: Option<PathBuf>,
+    yaml_path: &Path,
+    source_name: &str,
+    only: &[String],
+    force: bool,
+    offer: bool,
+) -> anyhow::Result<()> {
+    use pawrly_secrets::VariableValueStore as _;
+
+    let store = crate::commands::variables::token_store(home.clone())?;
+    let store_ref: &dyn pawrly_secrets::VariableValueStore = &store;
+
+    let want = |name: &str, done: bool| {
+        if only.is_empty() {
+            force || !done
+        } else {
+            only.iter().any(|n| n == name)
+        }
+    };
+
+    let interactive = std::io::IsTerminal::is_terminal(&std::io::stdin());
+    let mut acted = 0usize;
+    let mut ready = 0usize;
+    let mut pending = 0usize;
+    // Only the explicit default `source connect` reports already-set variables;
+    // targeting (`[VARS]`), `--all`, and the post-`source add` offer stay terse.
+    let report_set = !offer && only.is_empty() && !force;
+
+    // --- Static variables (resolved + inlined at load; stored-wins) ---
+    let statics = pawrly_config::source_static_vars(yaml_path, source_name, Some(store_ref))?;
+    for r in &statics {
+        if !want(&r.name, r.resolves) {
+            if report_set && r.resolves {
+                ready += 1;
+                println!("  ✓ `{}` is already set", r.name);
+            }
+            continue;
+        }
+        match r.kind {
+            pawrly_config::VarKind::Secret if interactive => {
+                let value = match rpassword::prompt_password(format!("Value for `{}`: ", r.name)) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        eprintln!("  prompt failed for `{}`: {e}", r.name);
+                        pending += 1;
+                        continue;
+                    }
+                };
+                if value.is_empty() {
+                    println!("  ↪ `{}` left unset", r.name);
+                    pending += 1;
+                    continue;
+                }
+                match store.set(
+                    &pawrly_secrets::value_key(&r.var_id),
+                    &pawrly_secrets::Secret::from(value),
+                ) {
+                    Ok(()) => {
+                        println!("  ✓ stored `{}`.", r.name);
+                        acted += 1;
+                    }
+                    Err(e) => {
+                        eprintln!("  could not store `{}`: {e}", r.name);
+                        pending += 1;
+                    }
+                }
+            }
+            pawrly_config::VarKind::Secret => {
+                println!(
+                    "  ↪ `{}` needs a value — run `pawrly source connect {} {}` on a terminal",
+                    r.name, source_name, r.name
+                );
+                pending += 1;
+            }
+            pawrly_config::VarKind::Variable => {
+                println!(
+                    "  ↪ `{}` is unset — run `pawrly variables set {}`, set env `{}`, or declare a `default:`",
+                    r.name, r.name, r.input_key
+                );
+                pending += 1;
+            }
+        }
+    }
+
+    // OAuth-capable variables: a multi-method secret offers OAuth-or-paste.
+    match pawrly_config::load_auto_with_vars(yaml_path, Some(store_ref)) {
+        Ok(cfg) => {
+            if let Some(src) = cfg.sources.iter().find(|s| s.name == source_name) {
+                for b in &src.dynamic_vars {
+                    let interactive_grant = b.spec.is_interactive();
+                    let (oauth_label, manual) = var_methods(&cfg, source_name, &b.name);
+                    let value_k = pawrly_secrets::value_key(&b.id);
+                    let done = !interactive_grant
+                        || matches!(store.get(&b.id), Ok(Some(_)))
+                        || matches!(store.get(&value_k), Ok(Some(_)));
+                    if !want(&b.name, done) {
+                        if report_set && done {
+                            ready += 1;
+                            println!("  ✓ `{}` is already set up", b.name);
+                        }
+                        continue;
+                    }
+                    if !interactive_grant && manual.is_none() {
+                        println!(
+                            "  `{}` uses the client_credentials grant — minted automatically at \
+                             query time; no connect needed.",
+                            b.name
+                        );
+                        ready += 1;
+                        continue;
+                    }
+                    if !interactive {
+                        println!(
+                            "  ↪ `{}` needs setup — run `pawrly source connect {} {}` on a terminal",
+                            b.name, source_name, b.name
+                        );
+                        pending += 1;
+                        continue;
+                    }
+                    match choose_method(
+                        &b.name,
+                        &b.spec,
+                        oauth_label.as_deref(),
+                        manual.as_ref(),
+                        offer,
+                    ) {
+                        MethodChoice::Oauth => {
+                            // Clear any stored literal so the OAuth binding applies.
+                            let _ = store.delete(&value_k);
+                            match crate::commands::variables::run_connect(
+                                home.clone(),
+                                &b.id,
+                                &b.spec,
+                                &b.name,
+                            )
+                            .await
+                            {
+                                Ok(()) => acted += 1,
+                                Err(e) => {
+                                    eprintln!("  connect failed for `{}`: {e}", b.name);
+                                    pending += 1;
+                                }
+                            }
+                        }
+                        MethodChoice::Manual => {
+                            let value = match rpassword::prompt_password(format!(
+                                "Value for `{}`: ",
+                                b.name
+                            )) {
+                                Ok(v) => v,
+                                Err(e) => {
+                                    eprintln!("  prompt failed for `{}`: {e}", b.name);
+                                    pending += 1;
+                                    continue;
+                                }
+                            };
+                            if value.is_empty() {
+                                println!("  ↪ `{}` left unset", b.name);
+                                pending += 1;
+                                continue;
+                            }
+                            match store.set(&value_k, &pawrly_secrets::Secret::from(value)) {
+                                Ok(()) => {
+                                    println!("  ✓ stored `{}`.", b.name);
+                                    acted += 1;
+                                }
+                                Err(e) => {
+                                    eprintln!("  could not store `{}`: {e}", b.name);
+                                    pending += 1;
+                                }
+                            }
+                        }
+                        MethodChoice::Skip => {
+                            println!(
+                                "  ↪ `{}` skipped — run `pawrly source connect {} {}` to set it up",
+                                b.name, source_name, b.name
+                            );
+                            pending += 1;
+                        }
+                    }
+                }
+            }
+        }
+        // Expected while static secrets are still unset; only note it otherwise.
+        Err(e) if !offer && pending == 0 => {
+            eprintln!("note: could not load config to find OAuth variables: {e}");
+        }
+        Err(_) => {}
+    }
+
+    if !offer {
+        if acted + ready + pending == 0 {
+            println!("`{source_name}` references no variables to set up.");
+        } else if pending > 0 {
+            println!("`{source_name}`: {pending} variable(s) still need setup.");
+        } else if acted > 0 {
+            println!(
+                "Done — `{source_name}` is fully set up. A running daemon picks up \
+                 static-secret changes on its next reload; OAuth tokens apply immediately."
+            );
+        } else {
+            println!("Everything `{source_name}` needs is already set up.");
+        }
+    }
+    Ok(())
+}
+
+enum MethodChoice {
+    Oauth,
+    Manual,
+    Skip,
+}
+
+/// The connect-menu methods: the OAuth `label` and the manual `(input_key, label)`
+/// alternative (`None` ⇒ OAuth-only).
+fn var_methods(
+    cfg: &Config,
+    source: &str,
+    name: &str,
+) -> (Option<String>, Option<(String, Option<String>)>) {
+    let Some(def) = cfg
+        .sources
+        .iter()
+        .find(|s| s.name == source)
+        .and_then(|s| s.variables.get(name))
+        .or_else(|| cfg.variables.get(name))
+    else {
+        return (None, None);
+    };
+    let mut oauth_label = None;
+    let mut manual = None;
+    for m in &def.methods {
+        match m {
+            pawrly_config::CredentialMethod::Oauth(v) if oauth_label.is_none() => {
+                oauth_label = v.get("label").and_then(|x| x.as_str()).map(str::to_string);
+            }
+            pawrly_config::CredentialMethod::Input(im) if manual.is_none() => {
+                manual = Some((
+                    im.input.clone().unwrap_or_else(|| name.to_string()),
+                    im.label.clone(),
+                ));
+            }
+            _ => {}
+        }
+    }
+    if manual.is_none() && def.input.is_some() {
+        manual = def.input.clone().map(|k| (k, None));
+    }
+    (oauth_label, manual)
+}
+
+/// Pick a fill method: a menu when a manual alternative exists, else OAuth
+/// (y-N-gated under `offer`).
+fn choose_method(
+    name: &str,
+    spec: &pawrly_core::DynamicVarSpec,
+    oauth_label: Option<&str>,
+    manual: Option<&(String, Option<String>)>,
+    offer: bool,
+) -> MethodChoice {
+    match manual {
+        Some((key, label)) => {
+            let oauth_l = oauth_label
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("Connect with OAuth ({})", spec.grant()));
+            let manual_label = label
+                .clone()
+                .unwrap_or_else(|| format!("Paste an existing value ({key})"));
+            println!("\n`{name}` offers more than one method:");
+            println!("  1) {oauth_l}");
+            println!("  2) {manual_label}");
+            println!("  3) Skip");
+            match read_line_trimmed("Choose [1-3]: ").as_str() {
+                "1" => MethodChoice::Oauth,
+                "2" => MethodChoice::Manual,
+                _ => MethodChoice::Skip,
+            }
+        }
+        None if offer => {
+            if prompt_yes_no(&format!("Connect `{name}` now? [y/N] ")) {
+                MethodChoice::Oauth
+            } else {
+                MethodChoice::Skip
+            }
+        }
+        None => MethodChoice::Oauth,
+    }
+}
+
+fn read_line_trimmed(prompt: &str) -> String {
+    use std::io::Write as _;
+    print!("{prompt}");
+    let _ = std::io::stdout().flush();
+    let mut input = String::new();
+    if std::io::stdin().read_line(&mut input).is_err() {
+        return String::new();
+    }
+    input.trim().to_string()
+}
+
+fn prompt_yes_no(prompt: &str) -> bool {
+    use std::io::Write as _;
+    print!("{prompt}");
+    let _ = std::io::stdout().flush();
+    let mut input = String::new();
+    if std::io::stdin().read_line(&mut input).is_err() {
+        return false;
+    }
+    matches!(input.trim().to_ascii_lowercase().as_str(), "y" | "yes")
 }
 
 /// Where a source definition comes from, derived from the `add` positional.
@@ -628,6 +998,8 @@ fn build_source_def(
         wiki: None,
         examples: Vec::new(),
         from: None,
+        variables: Default::default(),
+        dynamic_vars: Vec::new(),
         config: config_value,
         cache: Default::default(),
         safety: None,
@@ -706,6 +1078,15 @@ fn source_file_path(root: &Path, name: &str) -> PathBuf {
     sources_dir(root).join(format!("{name}.yaml"))
 }
 
+/// Suggest the first free `<base><N>` (starting at `2`) for the collision hint,
+/// so adding a second connection of the same kind has a ready-to-use name.
+fn suggest_available_name(base: &str, taken: &dyn Fn(&str) -> bool) -> String {
+    (2..)
+        .map(|n| format!("{base}{n}"))
+        .find(|candidate| !taken(candidate))
+        .unwrap_or_else(|| format!("{base}_new"))
+}
+
 /// True if any `*.yaml` file remains under the workspace's `sources/` dir.
 fn any_source_files(root: &Path) -> bool {
     let Ok(entries) = std::fs::read_dir(sources_dir(root)) else {
@@ -763,6 +1144,7 @@ fn read_or_init_config(path: &Path) -> anyhow::Result<Config> {
             defaults: Default::default(),
             secrets: Vec::new(),
             include: Vec::new(),
+            variables: Default::default(),
             sources: Vec::new(),
             functions: Vec::new(),
             semantic: None,
@@ -914,11 +1296,57 @@ mod tests {
     }
 
     #[test]
+    fn suggest_available_name_skips_taken() {
+        let taken = |n: &str| matches!(n, "github" | "github2");
+        assert_eq!(suggest_available_name("github", &taken), "github3");
+        let none_taken = |_: &str| false;
+        assert_eq!(suggest_available_name("github", &none_taken), "github2");
+    }
+
+    #[test]
     fn read_or_init_config_returns_default_when_missing() {
         let tmp = TempDir::new().unwrap();
         let cfg = read_or_init_config(&tmp.path().join("pawrly.yaml")).unwrap();
         assert_eq!(cfg.version, 1);
         assert!(cfg.sources.is_empty());
+    }
+
+    #[test]
+    fn manual_method_detects_input_alternative() {
+        let yaml = r#"
+version: 1
+sources:
+  - name: gh
+    kind: http
+    variables:
+      GH_TOKEN:
+        kind: secret
+        methods:
+          - type: oauth
+            grant: { type: device_code }
+            endpoints: { device_authorization_url: https://gh/d, token_url: https://gh/t }
+            client: { id: { default: cid } }
+          - type: input
+            input: GH_PAT
+            label: Paste token
+      OAUTH_ONLY:
+        kind: secret
+        oauth:
+          grant: { type: device_code }
+          endpoints: { device_authorization_url: https://gh/d, token_url: https://gh/t }
+          client: { id: { default: cid } }
+    config:
+      base_url: https://gh
+"#;
+        let cfg = pawrly_config::load_str(yaml, &pawrly_secrets::StaticStore::new()).unwrap();
+        // A multi-method secret surfaces its OAuth label + manual (input) alternative.
+        let (oauth_label, manual) = var_methods(&cfg, "gh", "GH_TOKEN");
+        let (key, label) = manual.unwrap();
+        assert_eq!(key, "GH_PAT");
+        assert_eq!(label.as_deref(), Some("Paste token"));
+        assert_eq!(oauth_label, None, "this method declares no oauth label");
+        // An OAuth-only secret has no manual alternative.
+        assert!(var_methods(&cfg, "gh", "OAUTH_ONLY").1.is_none());
     }
 
     #[test]

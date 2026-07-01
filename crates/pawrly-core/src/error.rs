@@ -229,6 +229,9 @@ pub enum ConfigError {
     #[error("unresolved env reference: {0}")]
     UnresolvedEnv(String),
 
+    #[error("variable `{name}`: {msg}")]
+    Variable { name: String, msg: String },
+
     #[error("could not read referenced file `{path}`: {msg}")]
     ReadFile { path: String, msg: String },
 
@@ -266,6 +269,7 @@ impl ConfigError {
             Self::FunctionInvalid { .. } => "PAWRLY_CONFIG_FUNCTION_INVALID",
             Self::UnresolvedSecret(_) => "PAWRLY_CONFIG_UNRESOLVED_SECRET",
             Self::UnresolvedEnv(_) => "PAWRLY_CONFIG_UNRESOLVED_ENV",
+            Self::Variable { .. } => "PAWRLY_CONFIG_VARIABLE",
             Self::ReadFile { .. } => "PAWRLY_CONFIG_READ_FILE",
             Self::IncludeCycle(_) => "PAWRLY_CONFIG_INCLUDE_CYCLE",
             Self::Duration(_) => "PAWRLY_CONFIG_DURATION",

@@ -69,6 +69,7 @@ pub async fn build_local(
         defaults: Default::default(),
         secrets: Vec::new(),
         include: Vec::new(),
+        variables: Default::default(),
         sources: Vec::new(),
         functions: Vec::new(),
         semantic: None,
