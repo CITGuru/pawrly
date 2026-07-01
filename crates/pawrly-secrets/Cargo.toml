@@ -20,8 +20,7 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 parking_lot = { workspace = true }
-# Dynamic-variable runtime (OAuth minting + setup flows), folded in from the
-# former `pawrly-variables` crate.
+# Dynamic-variable runtime (OAuth minting + setup flows)
 async-trait = { workspace = true }
 reqwest = { workspace = true }
 tokio = { workspace = true }
@@ -43,8 +42,12 @@ keyring = { workspace = true, features = ["apple-native"] }
 [target.'cfg(target_os = "windows")'.dependencies]
 keyring = { workspace = true, features = ["windows-native"] }
 
+# Pure-Rust Secret Service backend (zbus over `async-io`), so a Linux build needs
+# no system `libdbus`/`libsecret`. `async-io` (not `tokio`) is deliberate: the
+# blocking keyring calls run inside the engine's tokio runtime, and the tokio
+# reactor here would panic on a nested runtime.
 [target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
-keyring = { workspace = true, features = ["sync-secret-service", "crypto-rust"] }
+keyring = { workspace = true, features = ["async-secret-service", "crypto-rust", "async-io"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }
