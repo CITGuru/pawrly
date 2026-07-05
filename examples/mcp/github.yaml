@@ -11,3 +11,20 @@ sources:
       command: ["npx", "-y", "@modelcontextprotocol/server-github"]
       env:
         GITHUB_TOKEN: ${secret:GITHUB_TOKEN}
+      expose: all
+      include:
+        tools: [search_repositories]
+    functions:
+      - name: search_repos
+        description: Search GitHub repositories with GitHub's search syntax.
+        tool: search_repositories
+        args:
+          - { name: q, type: varchar, required: true, tool_arg: query }
+        returns:
+          - { name: full_name, type: varchar, source: $.full_name }
+          - { name: description, type: varchar, source: $.description }
+          - { name: html_url, type: varchar, source: $.html_url }
+          - { name: default_branch, type: varchar, source: $.default_branch }
+          - { name: fork, type: bool, source: $.fork }
+          - { name: updated_at, type: varchar, source: $.updated_at }
+          - { name: q, type: varchar, source: arg }

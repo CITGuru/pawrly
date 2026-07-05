@@ -5,9 +5,10 @@
   "type": "module",
   "scripts": {
     "generate": "buf generate ../../crates/pawrly-proto/proto",
-    "dev": "vite",
-    "build": "pnpm run generate && tsc -b && vite build",
-    "typecheck": "tsc -b --noEmit",
+    "catalog": "node scripts/build-catalog.mjs",
+    "dev": "pnpm run catalog && vite",
+    "build": "pnpm run catalog && pnpm run generate && tsc -b && vite build",
+    "typecheck": "pnpm run catalog && tsc -b --noEmit",
     "preview": "vite preview"
   },
   "dependencies": {

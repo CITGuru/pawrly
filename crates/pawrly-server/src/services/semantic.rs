@@ -4,8 +4,8 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use futures::Stream;
+use pawrly_core::EngineService;
 use pawrly_core::semantic::SemanticQuery;
-use pawrly_core::{EngineService, QueryId};
 use pawrly_proto::arrow_helpers::encode_batch;
 use pawrly_proto::v1::{
     self, DescribeModelRequest, DescribeModelResponse, ListModelsRequest, ListModelsResponse,
@@ -67,18 +67,21 @@ impl SemanticService for SemanticSvc {
         req: Request<SemanticQueryRequest>,
     ) -> Result<Response<Self::SemanticQueryStream>, Status> {
         let query: SemanticQuery = req.into_inner().into();
-        let query_id = QueryId::new(uuid::Uuid::new_v4().to_string());
+        // Call the engine first so the Started frame carries the engine's id —
+        // that's what `cancel(id)` routes on.
+        let handle = match self.engine.semantic_query(query).await {
+            Ok(h) => h,
+            Err(e) => return Err(engine_error_to_status(&e)),
+        };
+        let query_id = handle.id.0.clone();
+        let completion = handle.completion;
+        let inner_stream = handle.stream;
 
         let started = QueryResponse {
             payload: Some(Payload::Started(v1::QueryStarted {
-                query_id: query_id.0.clone(),
+                query_id,
                 started_at: Some(now_timestamp()),
             })),
-        };
-
-        let inner_stream = match self.engine.semantic_query(query).await {
-            Ok(s) => s,
-            Err(e) => return Err(engine_error_to_status(&e)),
         };
 
         let stream = async_stream::try_stream! {
@@ -117,6 +120,7 @@ impl SemanticService for SemanticSvc {
                 }
             }
             let elapsed = started_at.elapsed();
+            let truncated = completion.get().map(|c| c.truncated).unwrap_or(false);
             yield QueryResponse {
                 payload: Some(Payload::Completed(v1::QueryCompleted {
                     rows_returned: row_count,
@@ -124,7 +128,7 @@ impl SemanticService for SemanticSvc {
                         seconds: elapsed.as_secs() as i64,
                         nanos: elapsed.subsec_nanos() as i32,
                     }),
-                    truncated: false,
+                    truncated,
                     explain: String::new(),
                 })),
             };

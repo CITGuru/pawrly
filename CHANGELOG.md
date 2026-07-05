@@ -15,10 +15,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   - `pawrly variables set` and `pawrly source connect` to provide values, and a `system.variables` table for introspection.
 - `pawrly update` — upgrade the installed binary in place to the latest release (or a pinned `--version`), with `--check` to report availability without installing.
 - `pawrly uninstall` — remove the installed binary, with `--purge` to also delete the Pawrly home directory (`$PAWRLY_HOME` / `~/.pawrly`).
+- **Client SDKs** — TypeScript (`@pawrly/client`) and Python (`pawrly`) clients that expose the full `EngineService` surface identically over gRPC, REST, and an in-process managed engine (a `pawrly console` child the client owns and tears down).
+  - Streaming query results with server-assigned cancel ids, semantic queries, materialized tables, and catalog / cache / source / semantic-model introspection and management.
+  - `pawrly-client` gains a REST engine client alongside gRPC, dispatched by endpoint (`tcp://` / `unix://` / `http(s)://` / in-process).
+- `pawrly explain` — show the optimized (or `--analyze`d) query plan for a SQL string.
+- `pawrly schema snapshot` — a compact full-catalog overview for grounding and tooling.
+- `pawrly config reload` — re-read the workspace config into a running engine.
+- `--json` as a shorthand for `--format json` on the output-rendering commands.
 
 ### Changed
 
 - `install.sh` / `install.ps1` now upgrade in place: re-running skips the download when already up to date (override with `PAWRLY_FORCE=1`).
+- REST `/v1/sql` and `/v1/query` results return typed JSON scalars (numbers, booleans, null) instead of stringified values.
 
 ## [0.1.0](https://github.com/CITGuru/pawrly/releases/tag/v0.1.0) - 2026-06-18
 

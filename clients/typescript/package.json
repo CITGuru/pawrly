@@ -1,0 +1,39 @@
+{
+  "name": "@pawrly/client",
+  "version": "0.1.0",
+  "description": "Transport-agnostic TypeScript client for the Pawrly engine (gRPC + REST).",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "scripts": {
+    "generate": "buf generate ../../crates/pawrly-proto/proto",
+    "build": "pnpm run generate && tsc",
+    "typecheck": "pnpm run generate && tsc --noEmit",
+    "smoke": "bash test/run-smoke.sh",
+    "smoke:grpc": "bash test/run-grpc-smoke.sh",
+    "smoke:read": "bash test/run-read-smoke.sh",
+    "smoke:mut": "bash test/run-mut-smoke.sh"
+  },
+  "dependencies": {
+    "@bufbuild/protobuf": "^2.9.0",
+    "@connectrpc/connect": "^2.1.0",
+    "@connectrpc/connect-node": "^2.1.0",
+    "apache-arrow": "^18.1.0"
+  },
+  "devDependencies": {
+    "@bufbuild/buf": "^1.59.0",
+    "@bufbuild/protoc-gen-es": "^2.9.0",
+    "@types/node": "^26.1.0",
+    "typescript": "^5.9.3"
+  }
+}

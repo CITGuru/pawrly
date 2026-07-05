@@ -5,15 +5,17 @@ use std::sync::Arc;
 
 use axum::{
     Json, Router,
+    body::Body,
     extract::{Path, Query, State},
     http::{StatusCode, header},
     response::{IntoResponse, Response},
-    routing::{get, post, put},
+    routing::{delete, get, post, put},
 };
 use futures_util::StreamExt as _;
+use pawrly_core::error::codes;
 use pawrly_core::{
-    EngineError, EngineService, MaterializeSpec, QueryRequest, SemanticQuery, TableName,
-    format_batches,
+    EngineError, EngineService, MaterializeSpec, QueryId, QueryRequest, SemanticQuery, SourceDef,
+    TableFilter, TableName, format_batches,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -22,6 +24,10 @@ use crate::auth::check_bearer;
 
 /// Default row cap when a request omits `limit`.
 const DEFAULT_LIMIT: u64 = 1000;
+
+/// Upper bound on a client-supplied `limit`, so a huge value can't ask the
+/// engine to buffer an unbounded result.
+const MAX_LIMIT: u64 = 100_000;
 
 /// The hand-maintained OpenAPI 3.0 document, embedded and served at
 /// `/v1/openapi.{json,yaml}`. Single source of truth for the REST contract.
@@ -41,18 +47,33 @@ pub(crate) fn rest_router(engine: Arc<dyn EngineService>, bearer: Option<Arc<str
     Router::new()
         .route("/v1/sql", post(rest_sql))
         .route("/v1/query", post(rest_query))
-        .route("/v1/sources", get(rest_sources))
-        .route("/v1/sources/:name", get(rest_source_detail))
+        .route("/v1/sources", get(rest_sources).post(rest_add_source))
+        .route(
+            "/v1/sources/:name",
+            get(rest_source_detail).delete(rest_remove_source),
+        )
+        .route("/v1/sources/:name/test", post(rest_test_source))
+        .route("/v1/catalog/refresh", post(rest_refresh_catalog))
         .route("/v1/tables", get(rest_tables))
         .route("/v1/tables/:name", get(rest_describe))
+        .route("/v1/tables/:name/refresh", post(rest_refresh_table))
         .route("/v1/schema", get(rest_schema))
         .route("/v1/semantic/models", get(rest_semantic_models))
         .route("/v1/semantic/models/:name", get(rest_semantic_model))
         .route("/v1/cache", get(rest_cache))
+        .route("/v1/cache/vacuum", post(rest_vacuum_cache))
+        .route("/v1/cache/:name", delete(rest_invalidate_cache))
         .route(
             "/v1/materialized/:name",
             put(rest_materialize).delete(rest_drop_materialized),
         )
+        .route("/v1/config/reload", post(rest_reload_config))
+        .route("/v1/functions", get(rest_functions))
+        .route(
+            "/v1/functions/:namespace/:name",
+            get(rest_describe_function),
+        )
+        .route("/v1/queries/:id/cancel", post(rest_cancel))
         .route("/v1/explain", post(rest_explain))
         .route("/v1/health", get(rest_health))
         .route("/v1/openapi.json", get(openapi_json))
@@ -91,6 +112,20 @@ struct SchemaParams {
     compact: bool,
 }
 
+#[derive(Deserialize)]
+struct TablesParams {
+    #[serde(default)]
+    source: Option<String>,
+    #[serde(default)]
+    name_glob: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct RefreshCatalogParams {
+    #[serde(default)]
+    source: Option<String>,
+}
+
 async fn rest_sql(
     State(state): State<RestState>,
     headers: axum::http::HeaderMap,
@@ -99,7 +134,7 @@ async fn rest_sql(
     if let Some(resp) = guard(&state, &headers) {
         return resp;
     }
-    let limit = req.limit.unwrap_or(DEFAULT_LIMIT).max(1);
+    let limit = req.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
     // Ask the engine for one extra row so `format_batches` can report truncation.
     let engine_req = QueryRequest {
         sql: req.sql,
@@ -108,7 +143,7 @@ async fn rest_sql(
         ..Default::default()
     };
     match state.engine.query(engine_req).await {
-        Ok(stream) => stream_response(stream, limit, req.format.as_deref()).await,
+        Ok(handle) => stream_response(handle.stream, limit, req.format.as_deref()).await,
         Err(e) => engine_error_response(&e),
     }
 }
@@ -121,9 +156,9 @@ async fn rest_query(
     if let Some(resp) = guard(&state, &headers) {
         return resp;
     }
-    let limit = q.limit.unwrap_or(DEFAULT_LIMIT).max(1);
+    let limit = q.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
     match state.engine.semantic_query(q).await {
-        Ok(stream) => stream_response(stream, limit, None).await,
+        Ok(handle) => stream_response(handle.stream, limit, None).await,
         Err(e) => engine_error_response(&e),
     }
 }
@@ -138,11 +173,19 @@ async fn rest_sources(State(state): State<RestState>, headers: axum::http::Heade
     }
 }
 
-async fn rest_tables(State(state): State<RestState>, headers: axum::http::HeaderMap) -> Response {
+async fn rest_tables(
+    State(state): State<RestState>,
+    headers: axum::http::HeaderMap,
+    Query(params): Query<TablesParams>,
+) -> Response {
     if let Some(resp) = guard(&state, &headers) {
         return resp;
     }
-    match state.engine.list_tables(None).await {
+    let filter = (params.source.is_some() || params.name_glob.is_some()).then_some(TableFilter {
+        source: params.source,
+        name_glob: params.name_glob,
+    });
+    match state.engine.list_tables(filter).await {
         Ok(v) => Json(json!({ "tables": v })).into_response(),
         Err(e) => engine_error_response(&e),
     }
@@ -159,7 +202,7 @@ async fn rest_describe(
     let Some(table) = TableName::parse(&name) else {
         return error_response(
             StatusCode::BAD_REQUEST,
-            "PAWRLY_INVALID_SQL",
+            codes::INVALID_SQL,
             &format!("expected `schema.table`, got `{name}`"),
         );
     };
@@ -196,7 +239,7 @@ async fn rest_source_detail(
             Some(src) => Json(src).into_response(),
             None => error_response(
                 StatusCode::NOT_FOUND,
-                "PAWRLY_UNKNOWN_SOURCE",
+                codes::UNKNOWN_SOURCE,
                 &format!("no source named `{name}`"),
             ),
         },
@@ -302,7 +345,7 @@ async fn rest_drop_materialized(
         Ok(true) => Json(json!({ "dropped": true, "name": name })).into_response(),
         Ok(false) => error_response(
             StatusCode::NOT_FOUND,
-            "PAWRLY_UNKNOWN_MATERIALIZED",
+            codes::UNKNOWN_MATERIALIZED,
             &format!("no materialized table named `{name}`"),
         ),
         Err(e) => engine_error_response(&e),
@@ -315,7 +358,7 @@ async fn openapi_json() -> Response {
         Ok(doc) => Json(doc).into_response(),
         Err(e) => error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
-            "PAWRLY_INTERNAL",
+            codes::INTERNAL,
             &format!("openapi spec: {e}"),
         ),
     }
@@ -333,18 +376,36 @@ fn guard(state: &RestState, headers: &axum::http::HeaderMap) -> Option<Response>
     } else {
         Some(error_response(
             StatusCode::UNAUTHORIZED,
-            "PAWRLY_UNAUTHORIZED",
+            codes::UNAUTHORIZED,
             "missing or invalid bearer token",
         ))
     }
 }
 
-/// Collect the result stream, then encode it in the requested format.
+/// Encode the result stream in the requested format. `ndjson` streams as batches
+/// arrive (`Body::from_stream`); `json`/`csv` buffer, since the JSON envelope
+/// needs the terminal row count.
 async fn stream_response(
     mut stream: pawrly_core::QueryStream,
     limit: u64,
     format: Option<&str>,
 ) -> Response {
+    let fmt = format.unwrap_or("json");
+    match fmt {
+        "ndjson" => {
+            let body = Body::from_stream(ndjson_stream(stream, limit as usize));
+            return ([(header::CONTENT_TYPE, "application/x-ndjson")], body).into_response();
+        }
+        "json" | "csv" => {}
+        other => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                codes::BAD_FORMAT,
+                &format!("unknown format `{other}`; use json | ndjson | csv"),
+            );
+        }
+    }
+
     let mut batches = Vec::new();
     while let Some(item) = stream.next().await {
         match item {
@@ -354,35 +415,53 @@ async fn stream_response(
     }
     let (columns, rows, total, truncated) = format_batches(&batches, limit as usize);
 
-    match format.unwrap_or("json") {
-        "json" => {
-            let objects: Vec<Value> = rows.iter().map(|r| row_object(&columns, r)).collect();
-            Json(json!({
-                "columns": columns,
-                "rows": objects,
-                "row_count": total,
-                "truncated": truncated,
-            }))
-            .into_response()
-        }
-        "ndjson" => {
-            let mut body = String::new();
-            for row in &rows {
-                body.push_str(&row_object(&columns, row).to_string());
-                body.push('\n');
-            }
-            ([(header::CONTENT_TYPE, "application/x-ndjson")], body).into_response()
-        }
-        "csv" => (
+    if fmt == "csv" {
+        return (
             [(header::CONTENT_TYPE, "text/csv")],
             rows_to_csv(&columns, &rows),
         )
-            .into_response(),
-        other => error_response(
-            StatusCode::BAD_REQUEST,
-            "PAWRLY_BAD_FORMAT",
-            &format!("unknown format `{other}`; use json | ndjson | csv"),
-        ),
+            .into_response();
+    }
+    let objects: Vec<Value> = rows.iter().map(|r| row_object(&columns, r)).collect();
+    Json(json!({
+        "columns": columns,
+        "rows": objects,
+        "row_count": total,
+        "truncated": truncated,
+    }))
+    .into_response()
+}
+
+/// Stream a result as NDJSON — one row-object per line — capped at `limit` rows,
+/// encoding and flushing each batch as it arrives rather than buffering the
+/// whole result.
+fn ndjson_stream(
+    mut stream: pawrly_core::QueryStream,
+    limit: usize,
+) -> impl futures_util::Stream<Item = Result<String, std::io::Error>> {
+    async_stream::stream! {
+        let mut remaining = limit;
+        while remaining > 0 {
+            match stream.next().await {
+                Some(Ok(batch)) => {
+                    let (columns, rows, total, _) = format_batches(&[batch], remaining);
+                    remaining -= total;
+                    let mut buf = String::new();
+                    for row in &rows {
+                        buf.push_str(&row_object(&columns, row).to_string());
+                        buf.push('\n');
+                    }
+                    if !buf.is_empty() {
+                        yield Ok(buf);
+                    }
+                }
+                Some(Err(e)) => {
+                    yield Err(std::io::Error::other(e.to_string()));
+                    return;
+                }
+                None => break,
+            }
+        }
     }
 }
 
@@ -395,21 +474,24 @@ fn row_object(columns: &[String], row: &[Value]) -> Value {
     Value::Object(map)
 }
 
-/// Render columns + rows as RFC 4180 CSV. Cells from `format_batches` are always
-/// `String` or `Null`.
+/// Render columns + rows as RFC 4180 CSV; cells are the typed JSON scalars from
+/// `format_batches`.
 fn rows_to_csv(columns: &[String], rows: &[Vec<Value>]) -> String {
     let mut out = String::new();
     push_csv_row(&mut out, columns.iter().map(String::as_str));
     for row in rows {
-        push_csv_row(
-            &mut out,
-            row.iter().map(|v| match v {
-                Value::String(s) => s.as_str(),
-                _ => "",
-            }),
-        );
+        let cells: Vec<String> = row.iter().map(csv_cell).collect();
+        push_csv_row(&mut out, cells.iter().map(String::as_str));
     }
     out
+}
+
+fn csv_cell(v: &Value) -> String {
+    match v {
+        Value::String(s) => s.clone(),
+        Value::Null => String::new(),
+        other => other.to_string(),
+    }
 }
 
 fn push_csv_row<'a>(out: &mut String, cells: impl Iterator<Item = &'a str>) {
@@ -430,6 +512,178 @@ fn push_csv_row<'a>(out: &mut String, cells: impl Iterator<Item = &'a str>) {
     out.push('\n');
 }
 
+async fn rest_add_source(
+    State(state): State<RestState>,
+    headers: axum::http::HeaderMap,
+    Json(def): Json<SourceDef>,
+) -> Response {
+    if let Some(resp) = guard(&state, &headers) {
+        return resp;
+    }
+    match state.engine.add_source(def).await {
+        Ok(info) => Json(info).into_response(),
+        Err(e) => engine_error_response(&e),
+    }
+}
+
+async fn rest_remove_source(
+    State(state): State<RestState>,
+    headers: axum::http::HeaderMap,
+    Path(name): Path<String>,
+) -> Response {
+    if let Some(resp) = guard(&state, &headers) {
+        return resp;
+    }
+    match state.engine.remove_source(&name).await {
+        Ok(true) => Json(json!({ "removed": true, "name": name })).into_response(),
+        Ok(false) => error_response(
+            StatusCode::NOT_FOUND,
+            codes::UNKNOWN_SOURCE,
+            &format!("no source named `{name}`"),
+        ),
+        Err(e) => engine_error_response(&e),
+    }
+}
+
+async fn rest_test_source(
+    State(state): State<RestState>,
+    headers: axum::http::HeaderMap,
+    Path(name): Path<String>,
+) -> Response {
+    if let Some(resp) = guard(&state, &headers) {
+        return resp;
+    }
+    match state.engine.test_source(&name).await {
+        Ok(report) => Json(report).into_response(),
+        Err(e) => engine_error_response(&e),
+    }
+}
+
+async fn rest_refresh_catalog(
+    State(state): State<RestState>,
+    headers: axum::http::HeaderMap,
+    Query(params): Query<RefreshCatalogParams>,
+) -> Response {
+    if let Some(resp) = guard(&state, &headers) {
+        return resp;
+    }
+    match state.engine.refresh_catalog(params.source.as_deref()).await {
+        Ok(outcome) => Json(outcome).into_response(),
+        Err(e) => engine_error_response(&e),
+    }
+}
+
+async fn rest_refresh_table(
+    State(state): State<RestState>,
+    headers: axum::http::HeaderMap,
+    Path(name): Path<String>,
+) -> Response {
+    if let Some(resp) = guard(&state, &headers) {
+        return resp;
+    }
+    let Some(table) = TableName::parse(&name) else {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            codes::INVALID_SQL,
+            &format!("expected `schema.table`, got `{name}`"),
+        );
+    };
+    match state.engine.refresh_table(&table).await {
+        Ok(outcome) => Json(outcome).into_response(),
+        Err(e) => engine_error_response(&e),
+    }
+}
+
+async fn rest_vacuum_cache(
+    State(state): State<RestState>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    if let Some(resp) = guard(&state, &headers) {
+        return resp;
+    }
+    match state.engine.vacuum_cache().await {
+        Ok(report) => Json(report).into_response(),
+        Err(e) => engine_error_response(&e),
+    }
+}
+
+async fn rest_invalidate_cache(
+    State(state): State<RestState>,
+    headers: axum::http::HeaderMap,
+    Path(name): Path<String>,
+) -> Response {
+    if let Some(resp) = guard(&state, &headers) {
+        return resp;
+    }
+    let Some(table) = TableName::parse(&name) else {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            codes::INVALID_SQL,
+            &format!("expected `schema.table`, got `{name}`"),
+        );
+    };
+    match state.engine.invalidate_cache(&table).await {
+        Ok(invalidated) => {
+            Json(json!({ "invalidated": invalidated, "name": name })).into_response()
+        }
+        Err(e) => engine_error_response(&e),
+    }
+}
+
+async fn rest_reload_config(
+    State(state): State<RestState>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    if let Some(resp) = guard(&state, &headers) {
+        return resp;
+    }
+    match state.engine.reload_config().await {
+        Ok(report) => Json(report).into_response(),
+        Err(e) => engine_error_response(&e),
+    }
+}
+
+async fn rest_functions(
+    State(state): State<RestState>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    if let Some(resp) = guard(&state, &headers) {
+        return resp;
+    }
+    match state.engine.list_functions().await {
+        Ok(v) => Json(json!({ "functions": v })).into_response(),
+        Err(e) => engine_error_response(&e),
+    }
+}
+
+async fn rest_describe_function(
+    State(state): State<RestState>,
+    headers: axum::http::HeaderMap,
+    Path((namespace, name)): Path<(String, String)>,
+) -> Response {
+    if let Some(resp) = guard(&state, &headers) {
+        return resp;
+    }
+    match state.engine.describe_function(&namespace, &name).await {
+        Ok(desc) => Json(desc).into_response(),
+        Err(e) => engine_error_response(&e),
+    }
+}
+
+async fn rest_cancel(
+    State(state): State<RestState>,
+    headers: axum::http::HeaderMap,
+    Path(id): Path<String>,
+) -> Response {
+    if let Some(resp) = guard(&state, &headers) {
+        return resp;
+    }
+    match state.engine.cancel(&QueryId::new(id)).await {
+        Ok(cancelled) => Json(json!({ "cancelled": cancelled })).into_response(),
+        Err(e) => engine_error_response(&e),
+    }
+}
+
 /// Map an [`EngineError`] to an HTTP status, preserving its stable `PAWRLY_*`
 /// code. Mirrors the gRPC `engine_error_to_status` categorisation.
 fn engine_error_response(err: &EngineError) -> Response {
@@ -446,6 +700,7 @@ fn engine_error_response(err: &EngineError) -> Response {
             StatusCode::from_u16(499).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR)
         }
         EngineError::Protocol(_) | EngineError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        EngineError::Unsupported(_) => StatusCode::NOT_IMPLEMENTED,
     };
     error_response(status, err.code(), &err.to_string())
 }
@@ -499,7 +754,9 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
         let v = json_body(resp).await;
         assert_eq!(v["row_count"], 1);
-        assert_eq!(v["rows"][0]["id"], "1");
+        // Integer columns come back as JSON numbers, not stringified.
+        assert_eq!(v["rows"][0]["id"], 1);
+        assert!(v["rows"][0]["id"].is_number());
         assert_eq!(v["rows"][0]["label"], "a");
     }
 
@@ -527,7 +784,122 @@ mod tests {
             .unwrap();
         let line: Value =
             serde_json::from_slice(bytes.split(|b| *b == b'\n').next().unwrap()).unwrap();
-        assert_eq!(line["id"], "7");
+        assert_eq!(line["id"], 7);
+        assert!(line["id"].is_number());
+    }
+
+    #[tokio::test]
+    async fn ndjson_streams_and_caps_at_limit() {
+        let engine = MockEngine::new();
+        engine.canned(
+            "SELECT",
+            vec![
+                MockEngine::one_row(1, "a"),
+                MockEngine::one_row(2, "b"),
+                MockEngine::one_row(3, "c"),
+            ],
+        );
+        let resp = app(engine, None)
+            .oneshot(post_json(
+                "/v1/sql",
+                r#"{"sql":"SELECT 1","format":"ndjson","limit":2}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let ct = resp
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default()
+            .to_string();
+        assert!(ct.contains("application/x-ndjson"), "content-type: {ct}");
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let text = String::from_utf8_lossy(&bytes);
+        let lines: Vec<&str> = text.lines().filter(|l| !l.is_empty()).collect();
+        assert_eq!(lines.len(), 2, "limit=2 should cap the stream: {text}");
+        let first: Value = serde_json::from_str(lines[0]).unwrap();
+        assert_eq!(first["id"], 1);
+        assert!(first["id"].is_number());
+    }
+
+    #[test]
+    fn csv_renders_typed_scalars() {
+        // With typed cells, CSV must still render numbers/bools as text
+        // (not blank) and null as empty.
+        let cols = vec!["n".to_string(), "b".to_string(), "s".to_string()];
+        let rows = vec![
+            vec![Value::from(42), Value::Bool(true), Value::from("hi")],
+            vec![Value::Null, Value::Null, Value::Null],
+        ];
+        let csv = rows_to_csv(&cols, &rows);
+        let lines: Vec<&str> = csv.lines().collect();
+        assert_eq!(lines[0], "n,b,s");
+        assert_eq!(lines[1], "42,true,hi");
+        assert_eq!(lines[2], ",,");
+    }
+
+    fn get_req(uri: &str) -> Request<Body> {
+        Request::builder().uri(uri).body(Body::empty()).unwrap()
+    }
+
+    fn delete_req(uri: &str) -> Request<Body> {
+        Request::builder()
+            .method("DELETE")
+            .uri(uri)
+            .body(Body::empty())
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn functions_list_ok() {
+        let resp = app(MockEngine::new(), None)
+            .oneshot(get_req("/v1/functions"))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert!(json_body(resp).await["functions"].is_array());
+    }
+
+    #[tokio::test]
+    async fn functions_requires_bearer() {
+        let resp = app(MockEngine::new(), Some("s3cret"))
+            .oneshot(get_req("/v1/functions"))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn cancel_reports_false_when_nothing_in_flight() {
+        let resp = app(MockEngine::new(), None)
+            .oneshot(post_json("/v1/queries/abc/cancel", ""))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(json_body(resp).await["cancelled"], false);
+    }
+
+    #[tokio::test]
+    async fn invalidate_bad_name_is_400() {
+        let resp = app(MockEngine::new(), None)
+            .oneshot(delete_req("/v1/cache/notaname"))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(json_body(resp).await["error"]["code"], "PAWRLY_INVALID_SQL");
+    }
+
+    #[tokio::test]
+    async fn tables_accepts_filter_params() {
+        let resp = app(MockEngine::new(), None)
+            .oneshot(get_req("/v1/tables?source=gh&name_glob=iss*"))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert!(json_body(resp).await["tables"].is_array());
     }
 
     #[tokio::test]
@@ -731,7 +1103,16 @@ mod tests {
             "/v1/semantic/models",
             "/v1/semantic/models/{name}",
             "/v1/cache",
+            "/v1/cache/vacuum",
+            "/v1/cache/{name}",
             "/v1/materialized/{name}",
+            "/v1/sources/{name}/test",
+            "/v1/catalog/refresh",
+            "/v1/tables/{name}/refresh",
+            "/v1/config/reload",
+            "/v1/functions",
+            "/v1/functions/{namespace}/{name}",
+            "/v1/queries/{id}/cancel",
             "/v1/health",
             "/healthz",
         ] {

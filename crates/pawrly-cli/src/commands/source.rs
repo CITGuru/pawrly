@@ -163,6 +163,13 @@ pub async fn run(
     }
 }
 
+/// True when the CLI is explicitly targeting a remote daemon (`--remote <ep>`),
+/// vs. in-process (`--remote off`, `--no-remote`, or socket auto-detect). Used
+/// to decide whether `source add`/`remove` may touch the client's local config.
+fn targeting_remote(remote: Option<&str>) -> bool {
+    remote.is_some_and(|r| !r.eq_ignore_ascii_case("off"))
+}
+
 async fn run_add(
     home: Option<PathBuf>,
     config: Option<PathBuf>,
@@ -201,12 +208,27 @@ async fn run_add(
         anyhow::bail!("source name is empty; pass --name");
     }
 
+    let yaml_path = resolve_yaml_path(config.clone(), home.as_deref())?;
+    let source_path = source_file_path(&yaml_path, &source_def.name);
+
+    // Against an explicit remote daemon, the RPC is authoritative — it registers
+    // and name-checks on the daemon; never write the client's local files.
+    if targeting_remote(remote.as_deref()) {
+        let engine =
+            crate::engine::build_engine(remote, no_remote, home.clone(), Some(yaml_path.clone()))
+                .await?;
+        let info = engine.add_source(source_to_engine_def(&source_def)).await?;
+        println!(
+            "added source {} (kind={}, tables={}) to the remote daemon",
+            info.name, info.kind, info.table_count
+        );
+        return Ok(());
+    }
+
     // Reject a name already present as a per-source file or anywhere in the
     // assembled config. On a collision, point at `--name`: a second connection
     // of the same kind is fully supported — sources are keyed by name, not kind
     // — it just needs a distinct identifier.
-    let yaml_path = resolve_yaml_path(config.clone(), home.as_deref())?;
-    let source_path = source_file_path(&yaml_path, &source_def.name);
     let assembled = yaml_path
         .exists()
         .then(|| pawrly_config::assemble_config(&yaml_path).ok())
@@ -872,8 +894,19 @@ async fn run_remove(
     args: RemoveArgs,
 ) -> anyhow::Result<()> {
     let yaml_path = resolve_yaml_path(config.clone(), home.as_deref())?;
+    let is_remote = targeting_remote(remote.as_deref());
     let svc = crate::engine::build_engine(remote, no_remote, home, Some(yaml_path.clone())).await?;
     let removed = svc.remove_source(&args.name).await?;
+
+    // Against an explicit remote daemon, the RPC is authoritative; never delete
+    // the client's local files.
+    if is_remote {
+        if !removed {
+            anyhow::bail!("source `{}` not found", args.name);
+        }
+        println!("removed source {} from the remote daemon", args.name);
+        return Ok(());
+    }
 
     let mut changed_disk = false;
 
@@ -1194,6 +1227,15 @@ mod tests {
             catalog_ref: None,
             no_verify: false,
         }
+    }
+
+    #[test]
+    fn targeting_remote_only_for_explicit_endpoint() {
+        assert!(targeting_remote(Some("unix:///x.sock")));
+        assert!(targeting_remote(Some("tcp://127.0.0.1:8788")));
+        assert!(!targeting_remote(Some("off")));
+        assert!(!targeting_remote(Some("OFF")));
+        assert!(!targeting_remote(None));
     }
 
     #[test]

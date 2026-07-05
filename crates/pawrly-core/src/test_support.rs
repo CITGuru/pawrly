@@ -20,7 +20,7 @@ use crate::schema::{
 };
 use crate::semantic::{SemanticModelDescription, SemanticModelInfo, SemanticQuery};
 use crate::service::{
-    EngineService, MaterializeOutcome, MaterializeSpec, QueryRequest, QueryStream,
+    EngineService, MaterializeOutcome, MaterializeSpec, QueryHandle, QueryRequest,
 };
 use crate::source::{
     HealthReport, RefreshCatalogOutcome, ReloadReport, SourceDef, SourceInfo, SourceStatus,
@@ -166,7 +166,7 @@ impl MockEngine {
 
 #[async_trait]
 impl EngineService for MockEngine {
-    async fn query(&self, req: QueryRequest) -> Result<QueryStream, EngineError> {
+    async fn query(&self, req: QueryRequest) -> Result<QueryHandle, EngineError> {
         let mut state = self.inner.lock();
         state.queries_seen.push(req.sql.clone());
         let batches = state
@@ -187,7 +187,7 @@ impl EngineService for MockEngine {
                 yield Ok(batch);
             }
         };
-        Ok(Box::pin(stream))
+        Ok(QueryHandle::detached(Box::pin(stream)))
     }
 
     async fn explain(&self, sql: &str, _analyze: bool) -> Result<String, EngineError> {
@@ -373,7 +373,7 @@ impl EngineService for MockEngine {
         )))
     }
 
-    async fn semantic_query(&self, _q: SemanticQuery) -> Result<QueryStream, EngineError> {
+    async fn semantic_query(&self, _q: SemanticQuery) -> Result<QueryHandle, EngineError> {
         // MockEngine returns no rows for semantic queries by default.
         let batches: Vec<RecordBatch> = Vec::new();
         let stream = async_stream::stream! {
@@ -381,7 +381,7 @@ impl EngineService for MockEngine {
                 yield Ok(batch);
             }
         };
-        Ok(Box::pin(stream))
+        Ok(QueryHandle::detached(Box::pin(stream)))
     }
 
     async fn health(&self) -> Result<HealthReport, EngineError> {

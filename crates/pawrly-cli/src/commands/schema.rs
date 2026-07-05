@@ -2,17 +2,42 @@
 
 use std::path::PathBuf;
 
-use clap::Args as ClapArgs;
+use clap::{Args as ClapArgs, Subcommand};
 use comfy_table::{ContentArrangement, Table};
 use pawrly_core::TableName;
 
 #[derive(ClapArgs, Debug)]
 pub struct Args {
-    /// If set, describe a single table (`schema.table`).
+    /// Sub-action. With none, list tables (or describe one via `TABLE`).
+    #[command(subcommand)]
+    pub command: Option<SchemaCommand>,
+
+    /// Describe a single table (`schema.table`). Ignored when a subcommand runs.
     #[arg(value_name = "TABLE")]
     pub table: Option<String>,
 
     /// Emit JSON instead of a table.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum SchemaCommand {
+    /// Full catalog snapshot (bulk introspection).
+    Snapshot(SnapshotArgs),
+}
+
+#[derive(ClapArgs, Debug)]
+pub struct SnapshotArgs {
+    /// Comma-separated source names to scope the snapshot. Absent = all.
+    #[arg(long)]
+    pub sources: Option<String>,
+
+    /// Drop per-column detail.
+    #[arg(long)]
+    pub compact: bool,
+
+    /// Emit JSON instead of a text listing.
     #[arg(long)]
     pub json: bool,
 }
@@ -24,6 +49,10 @@ pub async fn run(
     no_remote: bool,
     args: Args,
 ) -> anyhow::Result<()> {
+    if let Some(SchemaCommand::Snapshot(a)) = args.command {
+        return snapshot(home, config, remote, no_remote, a).await;
+    }
+
     let svc = crate::engine::build_engine(remote, no_remote, home, config).await?;
 
     if let Some(name) = args.table.as_deref() {
@@ -69,5 +98,45 @@ pub async fn run(
         println!("{table}");
     }
 
+    Ok(())
+}
+
+async fn snapshot(
+    home: Option<PathBuf>,
+    config: Option<PathBuf>,
+    remote: Option<String>,
+    no_remote: bool,
+    args: SnapshotArgs,
+) -> anyhow::Result<()> {
+    let svc = crate::engine::build_engine(remote, no_remote, home, config).await?;
+    let sources = args.sources.as_deref().map(|s| {
+        s.split(',')
+            .map(|x| x.trim().to_string())
+            .filter(|x| !x.is_empty())
+            .collect::<Vec<_>>()
+    });
+    let snapshot = svc.schema_snapshot(sources, args.compact).await?;
+
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&snapshot)?);
+        return Ok(());
+    }
+
+    for schema in &snapshot.schemas {
+        println!(
+            "{} ({}, {} table{})",
+            schema.name,
+            schema.kind,
+            schema.tables.len(),
+            if schema.tables.len() == 1 { "" } else { "s" }
+        );
+        for t in &schema.tables {
+            if args.compact {
+                println!("  {}", t.name);
+            } else {
+                println!("  {:<28} {}", t.name, t.columns);
+            }
+        }
+    }
     Ok(())
 }

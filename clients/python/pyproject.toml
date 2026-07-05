@@ -1,0 +1,20 @@
+[project]
+name = "pawrly"
+version = "0.1.0"
+description = "Transport-agnostic client for the Pawrly engine (gRPC + REST)."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["requests>=2.28"]
+
+[project.optional-dependencies]
+# The gRPC transport is opt-in: it pulls in grpcio + protobuf + pyarrow and
+# needs the generated stubs (see scripts/generate.sh).
+grpc = ["grpcio>=1.60", "protobuf>=4.25", "pyarrow>=14"]
+dev = ["grpcio-tools>=1.60"]
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]

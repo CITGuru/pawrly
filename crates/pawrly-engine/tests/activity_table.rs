@@ -78,7 +78,7 @@ observability:
 /// Drain a query stream fully so its activity record is finalized.
 async fn run(engine: &Arc<dyn EngineService>, sql: &str) {
     use futures_util::StreamExt as _;
-    let mut stream = engine.query(QueryRequest::sql(sql)).await.unwrap();
+    let mut stream = engine.query(QueryRequest::sql(sql)).await.unwrap().stream;
     while let Some(item) = stream.next().await {
         item.unwrap();
     }

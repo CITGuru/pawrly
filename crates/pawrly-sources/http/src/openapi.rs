@@ -138,9 +138,10 @@ pub fn synthesize(doc: &Value, opts: &SynthOptions) -> Result<Synthesis, SynthEr
 
         let name = unique_name(table_name(&op, path, opts.naming), &mut taken);
         let path_params = item.get("parameters");
-        let params = build_params(doc, path_params, &op, &name, &mut out.diagnostics);
+        let mut params = build_params(doc, path_params, &op, &name, &mut out.diagnostics);
         let response = build_response(doc, &op, &name, &mut out.diagnostics);
         let pagination = infer_pagination(&params, &response_fields(doc, &op));
+        mark_filterable(&mut params, &pagination);
 
         out.tables.push(HttpTableSpec {
             name,
@@ -158,6 +159,40 @@ pub fn synthesize(doc: &Value, opts: &SynthOptions) -> Result<Synthesis, SynthEr
 
     out.tables.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(out)
+}
+
+/// Expose every param as a queryable column except the ones pagination drives
+/// itself, so a user filter can't fight the paginator.
+fn mark_filterable(params: &mut [ParamSpec], pagination: &Option<PaginationConfig>) {
+    let managed = pagination_params(pagination);
+    for p in params.iter_mut() {
+        p.filterable = !managed.contains(&p.name);
+    }
+}
+
+fn pagination_params(pagination: &Option<PaginationConfig>) -> HashSet<String> {
+    let mut out = HashSet::new();
+    match pagination {
+        Some(
+            PaginationConfig::Cursor { param, .. } | PaginationConfig::RowCursor { param, .. },
+        ) => {
+            out.insert(param.clone());
+        }
+        Some(PaginationConfig::Page {
+            param, size_param, ..
+        }) => {
+            out.insert(param.clone());
+            out.extend(size_param.clone());
+        }
+        Some(PaginationConfig::Offset {
+            param, size_param, ..
+        }) => {
+            out.insert(param.clone());
+            out.insert(size_param.clone());
+        }
+        Some(PaginationConfig::LinkHeader | PaginationConfig::BodyCursor { .. }) | None => {}
+    }
+    out
 }
 
 fn operation_id(op: &Value) -> Option<&str> {
@@ -684,8 +719,10 @@ mod tests {
 
         let owner = t.params.iter().find(|p| p.name == "owner").unwrap();
         assert!(owner.required);
+        assert!(owner.filterable);
         let state = t.params.iter().find(|p| p.name == "state").unwrap();
         assert!(!state.required);
+        assert!(state.filterable);
         assert_eq!(state.default.as_deref(), Some("open"));
 
         let cols: BTreeMap<_, _> = t
@@ -696,6 +733,32 @@ mod tests {
             .collect();
         assert_eq!(cols["number"], "bigint");
         assert_eq!(cols["title"], "varchar");
+    }
+
+    #[test]
+    fn pagination_params_are_hidden_but_filters_are_exposed() {
+        let doc = json!({
+            "openapi": "3.0.0",
+            "paths": { "/repos/{owner}/{repo}/issues": { "get": {
+                "operationId": "listIssues",
+                "parameters": [
+                    { "name": "owner", "in": "path", "required": true, "schema": { "type": "string" } },
+                    { "name": "repo", "in": "path", "required": true, "schema": { "type": "string" } },
+                    { "name": "state", "in": "query", "schema": { "type": "string" } },
+                    { "name": "page", "in": "query", "schema": { "type": "integer" } },
+                    { "name": "per_page", "in": "query", "schema": { "type": "integer" } }
+                ],
+                "responses": { "200": { "content": { "application/json": { "schema": {
+                    "type": "array", "items": { "type": "object", "properties": { "id": { "type": "integer" } } }
+                }}}}}
+            }}}
+        });
+        let s = synth(&doc);
+        let t = table(&s, "list_issues");
+        let f = |n: &str| t.params.iter().find(|p| p.name == n).unwrap().filterable;
+        assert!(!f("page"));
+        assert!(!f("per_page"));
+        assert!(f("owner") && f("repo") && f("state"));
     }
 
     #[test]

@@ -13,6 +13,8 @@ name: openapi-sources
 
 secrets:
   - kind: env
+  - kind: file           # then the local dotenv beside this config
+    path: .env
 
 sources:
   # ----- Stripe ---------------------------------------------------------------
@@ -48,7 +50,50 @@ sources:
   # the full catalog is registered (pawrly logs a hint past ~50 tables).
   - name: gh
     kind: http
+    examples:
+      - SELECT full_name FROM gh.repos_list_for_org WHERE org = 'github'
     config:
       type: openapi
       base_url: https://raw.githubusercontent.com/github/rest-api-description/main/descriptions/api.github.com/api.github.com.json
       token: ${secret:GITHUB_TOKEN}
+      openapi:
+        include:
+          paths:
+            - /orgs/{org}/repos
+            - /users/{username}/repos
+            - /repos/{owner}/{repo}
+            - /repos/{owner}/{repo}/pulls
+            - /repos/{owner}/{repo}/issues
+            - /repos/{owner}/{repo}/commits
+            - /search/repositories
+
+  - name: linear_gql
+    kind: http
+    config:
+      base_url: https://api.linear.app
+      auth:
+        type: header
+        headers:
+          - name: Authorization
+            value: "${secret:LINEAR_API_KEY}"
+    tables:
+      - name: attachments
+        endpoint: /graphql
+        method: POST
+        description: Attachments (incl. pull requests) linked to Linear issues.
+        body:
+          kind: json
+          template: '{"query": "query Attachments($first: Int!, $after: String) {\n  attachments(first: $first, after: $after) {\n    nodes {\n      id\n      title\n      url\n      sourceType\n      issue {\n        id\n        identifier\n      }\n    }\n    pageInfo {\n      endCursor\n    }\n  }\n}\n", "variables": {"first": 100}}'
+        response:
+          path: $.data.attachments.nodes
+          schema:
+            - { name: id, type: varchar }
+            - { name: title, type: varchar }
+            - { name: url, type: varchar }
+            - { name: source_type, type: varchar, source: $.sourceType }
+            - { name: issue_id, type: varchar, source: $.issue.id }
+            - { name: issue_identifier, type: varchar, source: $.issue.identifier }
+        pagination:
+          type: body_cursor
+          cursor_path: $.variables.after
+          next_path: $.data.attachments.pageInfo.endCursor

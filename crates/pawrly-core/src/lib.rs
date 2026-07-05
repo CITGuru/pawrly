@@ -28,7 +28,7 @@ pub use cache::{CacheEntryInfo, CacheMode, CachePolicy, RefreshOutcome, VacuumRe
 pub use error::{
     ConfigError, ConfigErrors, EngineError, ErrorCode, PawrlyError, SafetyError, SourceError,
 };
-pub use format::format_batches;
+pub use format::{cell_to_json, format_batches};
 pub use function::{
     CallArg, FunctionArg, FunctionColumn, FunctionDef, FunctionDescription, FunctionInfo,
     FunctionKind, RESERVED_FUNCTION_NAMESPACES, render_call_sql,
@@ -48,7 +48,8 @@ pub use semantic::{
 };
 pub use service::{
     EngineService, EngineServiceExt, MATERIALIZED_SCHEMA, MaterializeFormat, MaterializeOutcome,
-    MaterializeSpec, QueryId, QueryRequest, QueryStream, SYSTEM_SCHEMA,
+    MaterializeSpec, QueryCompleted, QueryCompletion, QueryHandle, QueryId, QueryRequest,
+    QueryStream, SYSTEM_SCHEMA,
 };
 pub use source::{
     HealthReport, RefreshCatalogOutcome, ReloadReport, SourceDef, SourceInfo, SourceStatus,

@@ -232,3 +232,51 @@ sources:
             - { name: balances, type: json }
             - { name: flags, type: json }
             - { name: paging_token, type: varchar }
+
+  # ----- Stellar.Expert explorer API -----------------------------------------
+  # Pre-indexed balances & holder rankings that Horizon itself does not expose.
+  # Horizon's /accounts?asset= feed is ordered by account id only, so there is no
+  # way to ask it for the largest holder. Stellar.Expert's /holders endpoint is
+  # sorted by balance server-side, so `order=desc` (the default here) returns the
+  # biggest holders first — this is what answers "top USDC account".
+  - name: stellarexpert
+    kind: http
+    description: Stellar.Expert explorer — pre-indexed balances & holder rankings, no auth.
+    wiki: |
+      Public mainnet explorer API (https://api.stellar.expert/explorer/public), no
+      auth. List endpoints return a HAL envelope (records at `$._embedded.records`)
+      and page with `order` (asc|desc) / `limit` / an opaque `cursor`. Unlike Horizon,
+      the holders feed is ranked by balance, so `order=desc` yields the biggest
+      holders first. Balances are integer stroop strings — divide by 1e7 for units.
+    examples:
+      - SELECT address, balance FROM stellarexpert.asset_holders WHERE asset = 'USDC-GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN-1' LIMIT 10
+    config:
+      # Trailing slash is required: pawrly joins the endpoint as a relative path,
+      # and url::join drops a base's last segment ("public") without it.
+      base_url: https://api.stellar.expert/explorer/public/
+    raw_table: true
+    tables:
+      # ----- /asset/{asset}/holders ----------------------------------------
+      - name: asset_holders
+        wiki: |
+          Holders of an issued asset, ranked by balance (largest first by default).
+          `asset` is required and uses Stellar.Expert's `CODE-ISSUER-TYPE` id, where
+          TYPE is 1 (credit_alphanum4) or 2 (credit_alphanum12) — USDC is
+          'USDC-GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN-1'.
+          `balance` is a stroop string (divide by 1e7 for whole USDC). Because the
+          feed is already balance-sorted, `... LIMIT n` returns the top n accounts —
+          no top-level ORDER BY needed (that would force paging the whole holder set).
+        endpoint: /asset/{asset}/holders
+        params:
+          - { name: asset, required: true, filterable: true }
+          - { name: limit, required: false, default: "10" }
+          - { name: order, required: false, default: desc }
+          - { name: cursor, required: false }
+        pagination: { type: row_cursor, param: cursor, field: paging_token }
+        response:
+          path: $._embedded.records
+          schema:
+            - { name: address, type: varchar }
+            - { name: balance, type: varchar }
+            - { name: account, type: varchar }
+            - { name: paging_token, type: varchar }

@@ -3,9 +3,10 @@
 //! (which yields `Result<RecordBatch, EngineError>`), and instrument it with the
 //! query lifecycle metrics.
 
+use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::task::{Context, Poll};
 use std::time::Instant;
 
@@ -15,10 +16,20 @@ use datafusion::physical_plan::SendableRecordBatchStream;
 use futures_util::Stream;
 use futures_util::StreamExt as _;
 use opentelemetry::KeyValue;
+use parking_lot::Mutex;
 use pawrly_core::activity::{ActivityRecord, Interface, Operation, Status};
-use pawrly_core::{EngineError, QueryStream};
+use pawrly_core::{EngineError, QueryCompleted, QueryCompletion, QueryId, QueryStream};
 
 use crate::activity::ActivitySink;
+
+/// A per-query cancel flag: set by `EngineService::cancel` and polled
+/// cooperatively by the result stream between batches.
+pub type CancelFlag = Arc<AtomicBool>;
+
+/// The in-flight query registry: maps a live query's [`QueryId`] to its
+/// [`CancelFlag`]. Entries are inserted at query start and removed by the
+/// [`QueryGuard`] when the result stream ends or is dropped.
+pub type CancelRegistry = Arc<Mutex<HashMap<QueryId, CancelFlag>>>;
 
 /// The static parts of an [`ActivityRecord`], captured when a query starts. The
 /// dynamic parts (status, rows, duration) are filled by [`QueryGuard`] on drop.
@@ -56,6 +67,8 @@ pub struct QueryGuard {
     error_code: Option<String>,
     /// Set when activity logging is on; emitted as a record on drop.
     activity: Option<ActivityContext>,
+    cancel: Option<(QueryId, CancelRegistry)>,
+    completion: Option<QueryCompletion>,
 }
 
 impl QueryGuard {
@@ -71,7 +84,23 @@ impl QueryGuard {
             status: "error",
             error_code: None,
             activity: None,
+            cancel: None,
+            completion: None,
         }
+    }
+
+    /// Register this query in the cancel registry under `id`; the entry is
+    /// removed when the guard drops (the result stream ended or was dropped).
+    pub fn with_cancel(mut self, id: QueryId, registry: CancelRegistry) -> Self {
+        self.cancel = Some((id, registry));
+        self
+    }
+
+    /// Attach a write-once completion slot to fill with the terminal
+    /// `rows_returned` / `truncated` / `elapsed` when the query ends.
+    pub fn with_completion(mut self, slot: QueryCompletion) -> Self {
+        self.completion = Some(slot);
+        self
     }
 
     /// Attach an activity context so a record is emitted when the query
@@ -137,16 +166,35 @@ impl Drop for QueryGuard {
                 trace_id: ctx.trace_id,
             });
         }
+
+        if let Some(slot) = self.completion.take() {
+            let _ = slot.set(QueryCompleted {
+                rows_returned: self.rows,
+                // Real truncation isn't enforced in the engine yet; false
+                // matches the gRPC Completed frame.
+                truncated: false,
+                elapsed: self.start.elapsed(),
+            });
+        }
+        if let Some((id, registry)) = self.cancel.take() {
+            registry.lock().remove(&id);
+        }
     }
 }
 
 /// Adapt a DataFusion stream and attach a [`QueryGuard`]: counts rows as they
 /// flow and finalizes the metrics when the stream ends (or is dropped).
-pub fn adapt_instrumented(inner: SendableRecordBatchStream, guard: QueryGuard) -> QueryStream {
+pub fn adapt_instrumented(
+    inner: SendableRecordBatchStream,
+    guard: QueryGuard,
+    cancel: Option<CancelFlag>,
+) -> QueryStream {
     Box::pin(InstrumentedStream {
         inner: adapt(inner),
         guard: Some(guard),
         rows: 0,
+        cancel,
+        cancel_emitted: false,
     })
 }
 
@@ -156,6 +204,8 @@ struct InstrumentedStream {
     /// guard's `Drop` (and the final metric records) exactly once.
     guard: Option<QueryGuard>,
     rows: u64,
+    cancel: Option<CancelFlag>,
+    cancel_emitted: bool,
 }
 
 impl Stream for InstrumentedStream {
@@ -165,6 +215,23 @@ impl Stream for InstrumentedStream {
         // `QueryStream` is `Pin<Box<..>>` (Unpin), and the other fields are
         // Unpin, so the whole struct is Unpin and `get_mut` is sound.
         let this = self.get_mut();
+
+        // Cooperative cancellation: emit one `Cancelled`, then end (dropping the
+        // guard finalizes metrics/completion and deregisters).
+        if this.cancel_emitted {
+            this.guard.take();
+            return Poll::Ready(None);
+        }
+        if let Some(flag) = &this.cancel {
+            if flag.load(Ordering::Relaxed) {
+                this.cancel_emitted = true;
+                if let Some(guard) = this.guard.as_mut() {
+                    guard.mark_error(&EngineError::Cancelled);
+                }
+                return Poll::Ready(Some(Err(EngineError::Cancelled)));
+            }
+        }
+
         match this.inner.as_mut().poll_next(cx) {
             Poll::Ready(Some(Ok(batch))) => {
                 this.rows += batch.num_rows() as u64;

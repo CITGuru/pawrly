@@ -16,6 +16,8 @@ pub enum ConnectError {
         #[source]
         source: std::io::Error,
     },
+    #[error("endpoint is not a gRPC transport (use `pawrly_client::connect`)")]
+    NotGrpc,
 }
 
 /// How the client should reach the server.
@@ -32,6 +34,12 @@ pub enum Endpoint {
     Uds { path: PathBuf },
     /// A pre-existing tonic channel; used for tests.
     InProcess(Channel),
+    /// REST/JSON over HTTP (`pawrly console` / `serve --console`). `base_url`
+    /// like `http://127.0.0.1:8787`; bearer carried per request.
+    Rest {
+        base_url: String,
+        bearer: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Default)]
@@ -49,7 +57,7 @@ impl Endpoint {
     #[must_use]
     pub fn bearer_token(&self) -> Option<String> {
         match self {
-            Endpoint::Tcp { bearer, .. } => bearer.clone(),
+            Endpoint::Tcp { bearer, .. } | Endpoint::Rest { bearer, .. } => bearer.clone(),
             _ => None,
         }
     }
@@ -88,6 +96,7 @@ impl Endpoint {
                 Ok(channel)
             }
             Endpoint::InProcess(channel) => Ok(channel),
+            Endpoint::Rest { .. } => Err(ConnectError::NotGrpc),
         }
     }
 }

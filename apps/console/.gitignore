@@ -3,5 +3,7 @@ node_modules
 # `buf generate` writes src/gen/. Both are produced in CI before they're used.
 dist
 src/gen
+# Generated before `pnpm dev` / `pnpm build` by scripts/build-catalog.mjs.
+src/catalog/generated.ts
 *.local
 .DS_Store

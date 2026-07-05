@@ -1,0 +1,107 @@
+<svg width="1200" height="630" viewBox="0 0 1200 630" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">SQL code mode for MCP</title>
+  <desc id="desc">A violet Pawrly-themed diagram contrasting a naive chain of MCP tool calls that pushes intermediate records through the model context with a single SQL query that the engine executes, returning a small capped result.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1200" y2="630" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#160B2A"/>
+      <stop offset="0.52" stop-color="#241245"/>
+      <stop offset="1" stop-color="#2E1852"/>
+    </linearGradient>
+    <linearGradient id="gold" x1="680" y1="118" x2="1136" y2="518" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FDE68A"/>
+      <stop offset="1" stop-color="#F59E0B"/>
+    </linearGradient>
+    <linearGradient id="arrow" x1="524" y1="316" x2="676" y2="316" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FBBF24"/>
+      <stop offset="1" stop-color="#F472B6"/>
+    </linearGradient>
+    <filter id="softShadow" x="-20%" y="-20%" width="140%" height="140%" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="24" stdDeviation="28" flood-color="#000000" flood-opacity="0.38"/>
+    </filter>
+    <filter id="glow" x="-30%" y="-30%" width="160%" height="160%" color-interpolation-filters="sRGB">
+      <feGaussianBlur stdDeviation="22" result="blur"/>
+      <feColorMatrix in="blur" type="matrix" values="0 0 0 0 0.98 0 0 0 0 0.70 0 0 0 0 0.22 0 0 0 0.42 0"/>
+      <feBlend in2="SourceGraphic" mode="screen"/>
+    </filter>
+    <pattern id="grid" width="48" height="48" patternUnits="userSpaceOnUse">
+      <path d="M 48 0 L 0 0 0 48" stroke="#FFFFFF" stroke-opacity="0.05" stroke-width="1"/>
+    </pattern>
+  </defs>
+
+  <rect width="1200" height="630" fill="url(#bg)"/>
+  <rect width="1200" height="630" fill="url(#grid)"/>
+  <circle cx="1045" cy="90" r="260" fill="#8B5CF6" opacity="0.12"/>
+  <circle cx="160" cy="570" r="230" fill="#F472B6" opacity="0.10"/>
+
+  <!-- Pawrly logo -->
+  <g transform="translate(32 28)">
+    <g transform="scale(0.32)">
+      <ellipse cx="30" cy="58" rx="9" ry="12" fill="#F5EEFF" transform="rotate(-20 30 58)"/>
+      <ellipse cx="48" cy="40" rx="9.5" ry="13" fill="#F5EEFF" transform="rotate(-8 48 40)"/>
+      <ellipse cx="72" cy="40" rx="9.5" ry="13" fill="#F5EEFF" transform="rotate(8 72 40)"/>
+      <ellipse cx="90" cy="58" rx="9" ry="12" fill="#F5EEFF" transform="rotate(20 90 58)"/>
+      <path d="M60 60 C78 60 92 72 92 88 C92 104 78 112 60 112 C42 112 28 104 28 88 C28 72 42 60 60 60 Z" fill="#F5EEFF"/>
+      <g fill="none" stroke="#160B2A" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M52 80 L60 88 L52 96"/>
+        <path d="M64 96 L72 96"/>
+      </g>
+    </g>
+  </g>
+
+  <text x="600" y="82" text-anchor="middle" fill="#F5EEFF" font-family="ui-sans-serif, system-ui, sans-serif" font-size="46" font-weight="800" letter-spacing="-1">SQL Code Mode for MCP</text>
+
+  <!-- LEFT: naive MCP tool choreography (dull) -->
+  <g filter="url(#softShadow)">
+    <rect x="64" y="118" width="456" height="400" rx="28" fill="#1E1338" stroke="#C4B5FD" stroke-opacity="0.16"/>
+  </g>
+  <rect x="92" y="146" width="252" height="40" rx="14" fill="#FFFFFF" fill-opacity="0.05" stroke="#C4B5FD" stroke-opacity="0.20"/>
+  <text x="112" y="172" fill="#B6A6D6" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="16" font-weight="700" letter-spacing="1">NAIVE MCP FLOW</text>
+
+  <!-- chain connector -->
+  <line x1="84" y1="220" x2="84" y2="316" stroke="#A78BFA" stroke-opacity="0.30" stroke-width="2" stroke-dasharray="2 6" stroke-linecap="round"/>
+  <circle cx="84" cy="220" r="3.5" fill="#A78BFA" opacity="0.48"/>
+  <circle cx="84" cy="252" r="3.5" fill="#A78BFA" opacity="0.48"/>
+  <circle cx="84" cy="284" r="3.5" fill="#A78BFA" opacity="0.48"/>
+  <circle cx="84" cy="316" r="3.5" fill="#A78BFA" opacity="0.48"/>
+
+  <text x="104" y="226" fill="#A99BC0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="16">list_customers(plan)</text>
+  <text x="104" y="258" fill="#A99BC0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="16">list_orders(ids, this_q)</text>
+  <text x="104" y="290" fill="#A99BC0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="16">list_orders(ids, prev_q)</text>
+  <text x="104" y="322" fill="#A99BC0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="16">list_support_tickets(ids)</text>
+
+  <line x1="92" y1="346" x2="492" y2="346" stroke="#FFFFFF" stroke-opacity="0.08" stroke-width="1"/>
+
+  <text x="104" y="378" fill="#7E7299" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="15" font-style="italic">join rows in context</text>
+  <text x="104" y="406" fill="#7E7299" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="15" font-style="italic">compute deltas in context</text>
+  <text x="104" y="434" fill="#7E7299" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="15" font-style="italic">count + sort in context</text>
+
+  <rect x="92" y="458" width="400" height="42" rx="12" fill="#FFFFFF" fill-opacity="0.04" stroke="#C4B5FD" stroke-opacity="0.14"/>
+  <text x="292" y="485" text-anchor="middle" fill="#A99BC0" font-family="ui-sans-serif, system-ui, sans-serif" font-size="16">≈150K tokens through the model</text>
+
+  <!-- CENTER arrow -->
+  <g>
+    <line x1="530" y1="316" x2="656" y2="316" stroke="url(#arrow)" stroke-width="5" stroke-linecap="round"/>
+    <path d="M654 304 L676 316 L654 328 Z" fill="#FBBF24"/>
+    <text x="600" y="356" text-anchor="middle" fill="#FBBF24" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14" font-weight="700" letter-spacing="2">ONE QUERY</text>
+    <text x="600" y="282" text-anchor="middle" fill="#A99BC0" font-family="ui-sans-serif, system-ui, sans-serif" font-size="15">collapses to</text>
+  </g>
+
+  <!-- RIGHT: SQL code mode (vivid) -->
+  <g filter="url(#glow)">
+    <rect x="680" y="118" width="456" height="400" rx="28" fill="#1B1030" stroke="url(#gold)" stroke-width="2"/>
+  </g>
+  <rect x="708" y="146" width="220" height="40" rx="14" fill="#FBBF24" fill-opacity="0.14" stroke="#FCD34D" stroke-opacity="0.36"/>
+  <text x="728" y="172" fill="#FBF3E0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="16" font-weight="700" letter-spacing="1">SQL CODE MODE</text>
+
+  <text x="726" y="228" xml:space="preserve" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="16"><tspan fill="#FBBF24">SELECT</tspan><tspan fill="#FBF3E0"> c.name, revenue, tickets</tspan></text>
+  <text x="726" y="260" xml:space="preserve" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="16"><tspan fill="#FBBF24">FROM</tspan><tspan fill="#FBF3E0"> customers c</tspan></text>
+  <text x="726" y="292" xml:space="preserve" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="16"><tspan fill="#FBBF24">JOIN</tspan><tspan fill="#FBF3E0"> orders   USING (id)</tspan></text>
+  <text x="726" y="324" xml:space="preserve" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="16"><tspan fill="#FBBF24">JOIN</tspan><tspan fill="#FBF3E0"> tickets  USING (id)</tspan></text>
+  <text x="726" y="356" xml:space="preserve" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="16"><tspan fill="#FBBF24">WHERE</tspan><tspan fill="#FBF3E0"> plan = 'enterprise'</tspan></text>
+  <text x="726" y="388" xml:space="preserve" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="16"><tspan fill="#FBBF24">ORDER BY</tspan><tspan fill="#FBF3E0"> delta DESC</tspan><tspan fill="#FBBF24"> LIMIT</tspan><tspan fill="#FBF3E0"> 20</tspan></text>
+
+  <rect x="708" y="458" width="400" height="42" rx="12" fill="#FBBF24" fill-opacity="0.12" stroke="#FCD34D" stroke-opacity="0.30"/>
+  <text x="908" y="485" text-anchor="middle" fill="#FBF3E0" font-family="ui-sans-serif, system-ui, sans-serif" font-size="16">≈2K tokens back to the model</text>
+
+  <text x="600" y="584" text-anchor="middle" fill="#D8C9EC" font-family="ui-sans-serif, system-ui, sans-serif" font-size="20">MCP for actions. SQL for context.</text>
+</svg>
