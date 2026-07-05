@@ -21,6 +21,8 @@ pub struct Args {
 pub enum ConfigCommand {
     /// Print the resolved workspace config.
     Show(ShowArgs),
+    /// Re-read the workspace config into the running engine.
+    Reload(ReloadArgs),
 }
 
 #[derive(ClapArgs, Debug)]
@@ -34,10 +36,44 @@ pub struct ShowArgs {
     pub tree: bool,
 }
 
-pub async fn run(config: Option<PathBuf>, args: Args) -> anyhow::Result<()> {
+#[derive(ClapArgs, Debug)]
+pub struct ReloadArgs {
+    /// Emit JSON instead of plain text.
+    #[arg(long)]
+    pub json: bool,
+}
+
+pub async fn run(
+    home: Option<PathBuf>,
+    config: Option<PathBuf>,
+    remote: Option<String>,
+    no_remote: bool,
+    args: Args,
+) -> anyhow::Result<()> {
     match args.command {
         ConfigCommand::Show(a) => run_show(config, a),
+        ConfigCommand::Reload(a) => run_reload(home, config, remote, no_remote, a).await,
     }
+}
+
+async fn run_reload(
+    home: Option<PathBuf>,
+    config: Option<PathBuf>,
+    remote: Option<String>,
+    no_remote: bool,
+    args: ReloadArgs,
+) -> anyhow::Result<()> {
+    let svc = crate::engine::build_engine(remote, no_remote, home, config).await?;
+    let report = svc.reload_config().await?;
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        println!(
+            "reloaded: {} added, {} removed, {} changed",
+            report.sources_added, report.sources_removed, report.sources_changed
+        );
+    }
+    Ok(())
 }
 
 fn run_show(config: Option<PathBuf>, args: ShowArgs) -> anyhow::Result<()> {

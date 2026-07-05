@@ -58,6 +58,10 @@ pub struct CallArgs {
     /// Output format.
     #[arg(long, value_enum, default_value_t = Format::Table)]
     pub format: Format,
+
+    /// Shortcut for `--format json` (takes precedence over `--format`).
+    #[arg(long)]
+    pub json: bool,
 }
 
 pub async fn run(
@@ -172,7 +176,8 @@ async fn call(
 
     let batches = svc.query_collect(&sql).await?;
     let mut out = std::io::stdout();
-    args.format.write_batches(&mut out, &batches)?;
+    let format = if args.json { Format::Json } else { args.format };
+    format.write_batches(&mut out, &batches)?;
     Ok(())
 }
 

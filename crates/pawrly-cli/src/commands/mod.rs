@@ -4,6 +4,7 @@ pub mod cache;
 pub mod check;
 pub mod config;
 pub mod console;
+pub mod explain;
 pub mod format;
 pub mod function;
 pub mod init;

@@ -123,10 +123,7 @@ fn mcp_http_initialize_round_trip() {
     );
     assert_eq!(call["id"], json!(2));
     assert_eq!(call["result"]["isError"], json!(false));
-    assert_eq!(
-        call["result"]["structuredContent"]["rows"][0][0],
-        json!("5")
-    );
+    assert_eq!(call["result"]["structuredContent"]["rows"][0][0], json!(5));
 
     // `cancel_query` is reachable; nothing is in-flight, so it reports false.
     let cancel = post_mcp(

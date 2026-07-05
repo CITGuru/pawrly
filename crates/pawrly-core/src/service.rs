@@ -5,6 +5,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::pin::Pin;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use arrow_array::RecordBatch;
@@ -74,6 +75,63 @@ impl QueryRequest {
 /// The streaming output of a `query` call. Each item is one Arrow batch
 /// (or a per-batch error). The schema can be obtained from the first batch.
 pub type QueryStream = Pin<Box<dyn Stream<Item = Result<RecordBatch, EngineError>> + Send>>;
+
+/// Terminal metadata for a query, observable once its [`QueryStream`] has been
+/// fully drained. Filled exactly once by the engine when the stream ends.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct QueryCompleted {
+    pub rows_returned: u64,
+    /// `true` if a row cap cut the result short (more rows existed).
+    pub truncated: bool,
+    pub elapsed: Duration,
+}
+
+/// A shared, write-once slot for a query's [`QueryCompleted`] metadata. The
+/// engine keeps one clone (filled when the stream ends); the caller keeps
+/// another and reads it *after* draining the stream. Empty until then.
+pub type QueryCompletion = Arc<OnceLock<QueryCompleted>>;
+
+/// The result of a [`query`](EngineService::query) /
+/// [`semantic_query`](EngineService::semantic_query) call: the batch `stream`
+/// plus the `id` needed to [`cancel`](EngineService::cancel) it and a
+/// `completion` slot that surfaces `rows_returned` / `truncated` / `elapsed`
+/// once the stream is drained. Widens the former bare `QueryStream` return so
+/// these are observable on every transport.
+pub struct QueryHandle {
+    pub id: QueryId,
+    pub stream: QueryStream,
+    pub completion: QueryCompletion,
+}
+
+impl QueryHandle {
+    #[must_use]
+    pub fn new(id: QueryId, stream: QueryStream, completion: QueryCompletion) -> Self {
+        Self {
+            id,
+            stream,
+            completion,
+        }
+    }
+
+    /// A handle for engines that don't track ids or completion (in-memory
+    /// mocks, trivial wrappers): an empty id and a completion slot that is
+    /// never filled.
+    #[must_use]
+    pub fn detached(stream: QueryStream) -> Self {
+        Self {
+            id: QueryId::new(String::new()),
+            stream,
+            completion: Arc::new(OnceLock::new()),
+        }
+    }
+
+    /// Discard the id and completion, yielding just the batch stream. For
+    /// callers that only want rows.
+    #[must_use]
+    pub fn into_stream(self) -> QueryStream {
+        self.stream
+    }
+}
 
 /// The reserved schema/`source` name that materialized tables live under. No
 /// data source may use this name (enforced in the config validator and
@@ -193,8 +251,9 @@ pub struct MaterializeOutcome {
 pub trait EngineService: Send + Sync + 'static {
     // -------- query --------
 
-    /// Execute a SQL query and return a streaming result.
-    async fn query(&self, req: QueryRequest) -> Result<QueryStream, EngineError>;
+    /// Execute a SQL query and return a [`QueryHandle`] — a streaming result
+    /// plus its cancel `id` and a `completion` slot.
+    async fn query(&self, req: QueryRequest) -> Result<QueryHandle, EngineError>;
 
     /// Return the optimized plan for a SQL string. If `analyze` is true,
     /// the plan is executed and timings are included.
@@ -270,9 +329,9 @@ pub trait EngineService: Send + Sync + 'static {
         name: &str,
     ) -> Result<SemanticModelDescription, EngineError>;
 
-    /// Compile and execute a structured query, returning a streaming result
-    /// in the same shape as [`EngineService::query`].
-    async fn semantic_query(&self, q: SemanticQuery) -> Result<QueryStream, EngineError>;
+    /// Compile and execute a structured query, returning a [`QueryHandle`] in
+    /// the same shape as [`EngineService::query`].
+    async fn semantic_query(&self, q: SemanticQuery) -> Result<QueryHandle, EngineError>;
 
     // -------- functions --------
 
@@ -310,7 +369,7 @@ pub trait EngineServiceExt: EngineService {
     async fn query_collect(&self, sql: &str) -> Result<Vec<RecordBatch>, EngineError> {
         use futures_util::StreamExt as _;
 
-        let mut stream = self.query(QueryRequest::sql(sql)).await?;
+        let mut stream = self.query(QueryRequest::sql(sql)).await?.stream;
         let mut out = Vec::new();
         while let Some(batch) = stream.next().await {
             out.push(batch?);
@@ -335,7 +394,7 @@ pub trait EngineServiceExt: EngineService {
     ) -> Result<Vec<RecordBatch>, EngineError> {
         use futures_util::StreamExt as _;
 
-        let mut stream = self.semantic_query(q).await?;
+        let mut stream = self.semantic_query(q).await?.stream;
         let mut out = Vec::new();
         while let Some(batch) = stream.next().await {
             out.push(batch?);

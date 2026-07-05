@@ -56,18 +56,21 @@ impl QueryService for QuerySvc {
             principal: None,
             traceparent,
         };
-        let query_id = QueryId::new(uuid::Uuid::new_v4().to_string());
+        // Call the engine first so the Started frame carries the engine's id —
+        // that's what `cancel(id)` routes on.
+        let handle = match self.engine.query(core_req).await {
+            Ok(h) => h,
+            Err(e) => return Err(engine_error_to_status(&e)),
+        };
+        let query_id = handle.id.0.clone();
+        let completion = handle.completion;
+        let inner_stream = handle.stream;
 
         let started = QueryResponse {
             payload: Some(Payload::Started(v1::QueryStarted {
-                query_id: query_id.0.clone(),
+                query_id,
                 started_at: Some(now_timestamp()),
             })),
-        };
-
-        let inner_stream = match self.engine.query(core_req).await {
-            Ok(s) => s,
-            Err(e) => return Err(engine_error_to_status(&e)),
         };
 
         let stream = async_stream::try_stream! {
@@ -106,6 +109,7 @@ impl QueryService for QuerySvc {
                 }
             }
             let elapsed = started_at.elapsed();
+            let truncated = completion.get().map(|c| c.truncated).unwrap_or(false);
             yield QueryResponse {
                 payload: Some(Payload::Completed(v1::QueryCompleted {
                     rows_returned: row_count,
@@ -113,7 +117,7 @@ impl QueryService for QuerySvc {
                         seconds: elapsed.as_secs() as i64,
                         nanos: elapsed.subsec_nanos() as i32,
                     }),
-                    truncated: false,
+                    truncated,
                     explain: String::new(),
                 })),
             };

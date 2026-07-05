@@ -3,7 +3,7 @@
 use std::io::Write;
 use std::sync::Arc;
 
-use arrow_array::{Array, RecordBatch};
+use arrow_array::RecordBatch;
 use arrow_cast::display::{ArrayFormatter, FormatOptions};
 use arrow_schema::Schema;
 use clap::ValueEnum;
@@ -156,11 +156,7 @@ fn batch_to_rows(batch: &RecordBatch) -> anyhow::Result<Vec<serde_json::Value>> 
         let array = batch.column(col_idx);
         let f = ArrayFormatter::try_new(array.as_ref(), &opts)?;
         for (row_idx, row_map) in rows.iter_mut().enumerate() {
-            let value = if array.is_null(row_idx) {
-                serde_json::Value::Null
-            } else {
-                serde_json::Value::String(format!("{}", f.value(row_idx)))
-            };
+            let value = pawrly_core::cell_to_json(array.as_ref(), row_idx, &f);
             row_map.insert(field.name().clone(), value);
         }
     }

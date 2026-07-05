@@ -10,6 +10,20 @@ use thiserror::Error;
 /// Stable machine-readable error code, surfaced over MCP and gRPC.
 pub type ErrorCode = &'static str;
 
+/// Stable `PAWRLY_*` codes minted directly by transports (REST/CLI), not tied to
+/// a single error-enum variant. Kept here so every code has one home in the
+/// taxonomy instead of living as an ad-hoc literal in a handler.
+pub mod codes {
+    use super::ErrorCode;
+
+    pub const INVALID_SQL: ErrorCode = "PAWRLY_INVALID_SQL";
+    pub const INTERNAL: ErrorCode = "PAWRLY_INTERNAL";
+    pub const UNKNOWN_SOURCE: ErrorCode = "PAWRLY_UNKNOWN_SOURCE";
+    pub const UNKNOWN_MATERIALIZED: ErrorCode = "PAWRLY_UNKNOWN_MATERIALIZED";
+    pub const BAD_FORMAT: ErrorCode = "PAWRLY_BAD_FORMAT";
+    pub const UNAUTHORIZED: ErrorCode = "PAWRLY_UNAUTHORIZED";
+}
+
 /// Top-level Pawrly error. Every public API returns this (or a `Result`
 /// that wraps it).
 #[derive(Debug, Error)]
@@ -83,6 +97,11 @@ pub enum EngineError {
 
     #[error("internal error: {0}")]
     Internal(String),
+
+    /// A method that isn't available over the chosen transport; the string names
+    /// the method + transport.
+    #[error("{0}")]
+    Unsupported(String),
 }
 
 impl EngineError {
@@ -97,11 +116,12 @@ impl EngineError {
             Self::Safety(s) => s.code(),
             Self::Timeout(_) => "PAWRLY_TIMEOUT",
             Self::OutOfMemory(_) => "PAWRLY_OOM",
-            Self::InvalidSql(_) => "PAWRLY_INVALID_SQL",
+            Self::InvalidSql(_) => codes::INVALID_SQL,
             Self::SemanticPlan(_) => "PAWRLY_SEMANTIC_PLAN",
             Self::Cancelled => "PAWRLY_CANCELLED",
             Self::Protocol(_) => "PAWRLY_PROTOCOL",
-            Self::Internal(_) => "PAWRLY_INTERNAL",
+            Self::Internal(_) => codes::INTERNAL,
+            Self::Unsupported(_) => "PAWRLY_UNSUPPORTED",
         }
     }
 }
@@ -159,7 +179,13 @@ pub enum SafetyError {
     #[error("refusing to scan `{table}`: would return more than {max_rows} rows")]
     TooManyRows { table: String, max_rows: u64 },
 
-    #[error("refusing to scan `{table}`: would page more than {max_pages} times")]
+    #[error(
+        "refusing to scan `{table}`: would page more than {max_pages} times. \
+         A top-level ORDER BY, GROUP BY, or aggregate forces the whole feed to be paged \
+         because the LIMIT can no longer push into the scan. Drop the outer sort and rely \
+         on the source's default order, or bound the scan first: \
+         SELECT ... FROM (SELECT * FROM {table} LIMIT 200) t ORDER BY ..."
+    )]
     TooManyPages { table: String, max_pages: u32 },
 
     /// A required predicate references `${param:NAME}` but the param was not

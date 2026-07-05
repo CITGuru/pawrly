@@ -9,9 +9,9 @@ use futures_util::StreamExt as _;
 use pawrly_core::semantic::{SemanticModelDescription, SemanticModelInfo, SemanticQuery};
 use pawrly_core::{
     CacheEntryInfo, CacheMode, CatalogSnapshot, EngineError, EngineService, HealthReport,
-    MaterializeOutcome, MaterializeSpec, QueryId, QueryRequest, QueryStream, RefreshCatalogOutcome,
-    RefreshOutcome, ReloadReport, SourceDef, SourceInfo, SourceTestReport, TableDescription,
-    TableFilter, TableInfo, TableName, VacuumReport,
+    MaterializeOutcome, MaterializeSpec, QueryCompleted, QueryCompletion, QueryHandle, QueryId,
+    QueryRequest, RefreshCatalogOutcome, RefreshOutcome, ReloadReport, SourceDef, SourceInfo,
+    SourceTestReport, TableDescription, TableFilter, TableInfo, TableName, VacuumReport,
 };
 use pawrly_proto::arrow_helpers::decode_frame;
 use pawrly_proto::conv::{engine_error_to_status, status_to_engine_error};
@@ -104,9 +104,47 @@ fn ts(t: prost_types::Timestamp) -> chrono::DateTime<chrono::Utc> {
         .unwrap_or_else(Utc::now)
 }
 
+/// Pull the leading `Started` frame and return its `query_id` (so `cancel` has
+/// it before the caller drains). A leading `Error` frame is propagated; any
+/// other/absent leading frame is a protocol error.
+async fn read_started_id(
+    stream: &mut tonic::Streaming<v1::QueryResponse>,
+) -> Result<QueryId, EngineError> {
+    match stream.next().await {
+        Some(frame) => match frame.map_err(status_to_engine_error)?.payload {
+            Some(QueryPayload::Started(s)) => Ok(QueryId::new(s.query_id)),
+            Some(QueryPayload::Error(err)) => {
+                let mut st = Status::internal(err.message.clone());
+                if let Ok(v) = err.code.parse() {
+                    st.metadata_mut().insert("pawrly-error-code", v);
+                }
+                Err(status_to_engine_error(st))
+            }
+            _ => Err(EngineError::Protocol(
+                "expected a Started frame first".into(),
+            )),
+        },
+        None => Ok(QueryId::new(String::new())),
+    }
+}
+
+/// Convert a proto `QueryCompleted` frame into the core completion metadata.
+fn proto_completed(c: &v1::QueryCompleted) -> QueryCompleted {
+    let elapsed = c
+        .elapsed
+        .as_ref()
+        .map(|d| Duration::new(d.seconds.max(0) as u64, d.nanos.max(0) as u32))
+        .unwrap_or_default();
+    QueryCompleted {
+        rows_returned: c.rows_returned,
+        truncated: c.truncated,
+        elapsed,
+    }
+}
+
 #[async_trait]
 impl EngineService for RemoteEngineClient {
-    async fn query(&self, req: QueryRequest) -> Result<QueryStream, EngineError> {
+    async fn query(&self, req: QueryRequest) -> Result<QueryHandle, EngineError> {
         let mut client = self.query.clone();
         let proto: v1::QueryRequest = req.into();
         let mut server_stream = client
@@ -114,6 +152,11 @@ impl EngineService for RemoteEngineClient {
             .await
             .map_err(status_to_engine_error)?
             .into_inner();
+
+        // Capture the id up front (for `cancel`); `Completed` fills `completion`.
+        let query_id = read_started_id(&mut server_stream).await?;
+        let completion: QueryCompletion = Arc::new(std::sync::OnceLock::new());
+        let completion_slot = completion.clone();
 
         let stream = async_stream::try_stream! {
             while let Some(frame) = server_stream.next().await {
@@ -128,7 +171,9 @@ impl EngineService for RemoteEngineClient {
                             yield b;
                         }
                     }
-                    QueryPayload::Completed(_) => continue,
+                    QueryPayload::Completed(c) => {
+                        let _ = completion_slot.set(proto_completed(&c));
+                    }
                     QueryPayload::Error(err) => {
                         let mut s = tonic::Status::internal(err.message.clone());
                         if let Ok(v) = err.code.parse() {
@@ -140,7 +185,7 @@ impl EngineService for RemoteEngineClient {
             }
         };
 
-        Ok(Box::pin(stream))
+        Ok(QueryHandle::new(query_id, Box::pin(stream), completion))
     }
 
     async fn explain(&self, sql: &str, analyze: bool) -> Result<String, EngineError> {
@@ -500,7 +545,7 @@ impl EngineService for RemoteEngineClient {
             .map_err(|e: pawrly_proto::conv::ConvError| EngineError::Protocol(e.to_string()))
     }
 
-    async fn semantic_query(&self, q: SemanticQuery) -> Result<QueryStream, EngineError> {
+    async fn semantic_query(&self, q: SemanticQuery) -> Result<QueryHandle, EngineError> {
         let mut client = self.semantic.clone();
         let proto: v1::SemanticQueryRequest = q.into();
         let mut server_stream = client
@@ -508,6 +553,10 @@ impl EngineService for RemoteEngineClient {
             .await
             .map_err(status_to_engine_error)?
             .into_inner();
+
+        let query_id = read_started_id(&mut server_stream).await?;
+        let completion: QueryCompletion = Arc::new(std::sync::OnceLock::new());
+        let completion_slot = completion.clone();
 
         let stream = async_stream::try_stream! {
             while let Some(frame) = server_stream.next().await {
@@ -522,7 +571,9 @@ impl EngineService for RemoteEngineClient {
                             yield b;
                         }
                     }
-                    QueryPayload::Completed(_) => continue,
+                    QueryPayload::Completed(c) => {
+                        let _ = completion_slot.set(proto_completed(&c));
+                    }
                     QueryPayload::Error(err) => {
                         let mut s = tonic::Status::internal(err.message.clone());
                         if let Ok(v) = err.code.parse() {
@@ -534,7 +585,7 @@ impl EngineService for RemoteEngineClient {
             }
         };
 
-        Ok(Box::pin(stream))
+        Ok(QueryHandle::new(query_id, Box::pin(stream), completion))
     }
 
     async fn health(&self) -> Result<HealthReport, EngineError> {

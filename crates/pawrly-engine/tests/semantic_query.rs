@@ -13,7 +13,7 @@ use std::sync::Arc;
 use arrow_array::{Int64Array, StringArray};
 use futures::StreamExt as _;
 use pawrly_core::semantic::{FilterOp, SemanticFilter, SemanticOrder, SemanticQuery};
-use pawrly_core::{EngineService, QueryStream};
+use pawrly_core::{EngineService, QueryHandle};
 use pawrly_engine::{LocalEngine, LocalEngineConfig};
 
 async fn build_engine() -> Arc<dyn EngineService> {
@@ -134,8 +134,8 @@ semantic:
     Arc::new(engine)
 }
 
-async fn collect(stream: QueryStream) -> Vec<arrow_array::RecordBatch> {
-    let mut stream = stream;
+async fn collect(handle: QueryHandle) -> Vec<arrow_array::RecordBatch> {
+    let mut stream = handle.stream;
     let mut out = Vec::new();
     while let Some(batch) = stream.next().await {
         out.push(batch.expect("batch"));

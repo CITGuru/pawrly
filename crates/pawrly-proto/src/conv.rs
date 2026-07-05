@@ -421,6 +421,7 @@ pub fn status_to_engine_error(status: tonic::Status) -> core::EngineError {
         "PAWRLY_INVALID_SQL" => core::EngineError::InvalidSql(msg),
         "PAWRLY_SEMANTIC_PLAN" => core::EngineError::SemanticPlan(msg),
         "PAWRLY_PROTOCOL" => core::EngineError::Protocol(msg),
+        "PAWRLY_UNSUPPORTED" => core::EngineError::Unsupported(msg),
         _ => core::EngineError::Internal(format!("{code}: {msg}")),
     }
 }
@@ -439,6 +440,7 @@ fn grpc_code(err: &core::EngineError) -> tonic::Code {
         core::EngineError::OutOfMemory(_) => tonic::Code::ResourceExhausted,
         core::EngineError::Cancelled => tonic::Code::Cancelled,
         core::EngineError::Protocol(_) | core::EngineError::Internal(_) => tonic::Code::Internal,
+        core::EngineError::Unsupported(_) => tonic::Code::Unimplemented,
     }
 }
 

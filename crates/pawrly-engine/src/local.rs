@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 
 use arrow_schema::SchemaRef;
 use async_trait::async_trait;
@@ -14,7 +14,7 @@ use parking_lot::{Mutex, RwLock};
 use pawrly_core::semantic::{SemanticModelDescription, SemanticModelInfo, SemanticQuery};
 use pawrly_core::{
     CacheEntryInfo, CachePolicy, CatalogSnapshot, ColumnSpec, EngineError, EngineService,
-    HealthReport, MaterializeOutcome, MaterializeSpec, QueryId, QueryRequest, QueryStream,
+    HealthReport, MaterializeOutcome, MaterializeSpec, QueryHandle, QueryId, QueryRequest,
     RefreshCatalogOutcome, RefreshOutcome, ReloadReport, SchemaSummary, SourceDef, SourceInfo,
     SourceStatus, SourceTestReport, TableDescription, TableFilter, TableInfo, TableName,
     TableSummary, VacuumReport,
@@ -91,6 +91,9 @@ pub(crate) struct LocalEngineInner {
     /// In-flight query count, incremented at query start and decremented when
     /// the result stream finishes or is dropped. Read by `health()`.
     active_queries: Arc<AtomicI64>,
+    /// In-flight query cancel registry. Populated at query start; entries removed
+    /// by the `QueryGuard` when the stream ends. `cancel(id)` sets the flag.
+    cancellations: crate::stream::CancelRegistry,
     /// Activity-log sink (disabled unless `observability.activity` is enabled).
     activity: crate::activity::ActivitySink,
     /// SQL redaction policy for activity records.
@@ -366,6 +369,7 @@ impl LocalEngine {
             duckdb,
             allow_inline_materialize: cfg.config.defaults.materialize.allow_inline,
             active_queries: Arc::new(AtomicI64::new(0)),
+            cancellations: Arc::new(Mutex::new(HashMap::new())),
             activity,
             redact_sql,
             activity_durable,
@@ -921,12 +925,23 @@ impl EngineService for LocalEngine {
         skip_all,
         fields(pawrly.engine = "local")
     )]
-    async fn query(&self, req: QueryRequest) -> Result<QueryStream, EngineError> {
+    async fn query(&self, req: QueryRequest) -> Result<QueryHandle, EngineError> {
         let inner = self.inner.clone();
-        // Tracks active count + terminal metrics. Dropping it on any `?` error
-        // below records `status = error`; on success it moves into the result
-        // stream and finalizes when that stream ends.
-        let mut guard = crate::stream::QueryGuard::start(inner.active_queries.clone());
+        // Register a cancel flag so `cancel(id)` can find this query; the guard
+        // removes the entry when the stream ends.
+        let query_id = QueryId::new(uuid::Uuid::new_v4().to_string());
+        let cancel_flag: crate::stream::CancelFlag = Arc::new(AtomicBool::new(false));
+        inner
+            .cancellations
+            .lock()
+            .insert(query_id.clone(), cancel_flag.clone());
+        let completion = Arc::new(std::sync::OnceLock::new());
+        // The guard tracks active count, terminal metrics, completion, and
+        // registry cleanup: dropping it on any `?` error records `status = error`;
+        // on success it moves into the stream and finalizes when the stream ends.
+        let mut guard = crate::stream::QueryGuard::start(inner.active_queries.clone())
+            .with_cancel(query_id.clone(), inner.cancellations.clone())
+            .with_completion(completion.clone());
         if let Some(actx) = self.activity_context(
             &req.context,
             pawrly_core::activity::Operation::Query,
@@ -969,7 +984,11 @@ impl EngineService for LocalEngine {
                 .await
                 .map_err(|e| EngineError::Internal(format!("datafusion: {e}")))
                 .inspect_err(|e| guard.mark_error(e))?;
-            return Ok(crate::stream::adapt_instrumented(stream, guard));
+            return Ok(QueryHandle::new(
+                query_id,
+                crate::stream::adapt_instrumented(stream, guard, Some(cancel_flag)),
+                completion,
+            ));
         }
 
         // Rewrite namespaced function calls (`ns.fn(...)`) to their UDTF names
@@ -993,7 +1012,11 @@ impl EngineService for LocalEngine {
             .await
             .map_err(|e| EngineError::Internal(format!("datafusion: {e}")))
             .inspect_err(|e| guard.mark_error(e))?;
-        Ok(crate::stream::adapt_instrumented(stream, guard))
+        Ok(QueryHandle::new(
+            query_id,
+            crate::stream::adapt_instrumented(stream, guard, Some(cancel_flag)),
+            completion,
+        ))
     }
 
     #[tracing::instrument(name = "pawrly.engine.explain", skip_all, fields(pawrly.engine = "local"))]
@@ -1012,9 +1035,16 @@ impl EngineService for LocalEngine {
         Ok(plan)
     }
 
-    async fn cancel(&self, _query_id: &QueryId) -> Result<bool, EngineError> {
-        // No in-flight tracking; cancellation is not yet supported.
-        Ok(false)
+    async fn cancel(&self, query_id: &QueryId) -> Result<bool, EngineError> {
+        // Set the query's cancel flag; the stream observes it and ends with
+        // `Cancelled`. The entry is removed by the stream's guard, not here.
+        match self.inner.cancellations.lock().get(query_id) {
+            Some(flag) => {
+                flag.store(true, Ordering::Relaxed);
+                Ok(true)
+            }
+            None => Ok(false),
+        }
     }
 
     async fn list_sources(&self) -> Result<Vec<SourceInfo>, EngineError> {
@@ -1407,8 +1437,17 @@ impl EngineService for LocalEngine {
     }
 
     #[tracing::instrument(name = "pawrly.engine.semantic_query", skip_all, fields(pawrly.engine = "local"))]
-    async fn semantic_query(&self, q: SemanticQuery) -> Result<QueryStream, EngineError> {
-        let mut guard = crate::stream::QueryGuard::start(self.inner.active_queries.clone());
+    async fn semantic_query(&self, q: SemanticQuery) -> Result<QueryHandle, EngineError> {
+        let query_id = QueryId::new(uuid::Uuid::new_v4().to_string());
+        let cancel_flag: crate::stream::CancelFlag = Arc::new(AtomicBool::new(false));
+        self.inner
+            .cancellations
+            .lock()
+            .insert(query_id.clone(), cancel_flag.clone());
+        let completion = Arc::new(std::sync::OnceLock::new());
+        let mut guard = crate::stream::QueryGuard::start(self.inner.active_queries.clone())
+            .with_cancel(query_id.clone(), self.inner.cancellations.clone())
+            .with_completion(completion.clone());
         // SemanticQuery carries no RequestContext, so activity attribution
         // defaults to in-process here.
         if let Some(actx) = self.activity_context(
@@ -1440,7 +1479,11 @@ impl EngineService for LocalEngine {
             .await
             .map_err(|e| EngineError::Internal(format!("datafusion: {e}")))
             .inspect_err(|e| guard.mark_error(e))?;
-        Ok(crate::stream::adapt_instrumented(stream, guard))
+        Ok(QueryHandle::new(
+            query_id,
+            crate::stream::adapt_instrumented(stream, guard, Some(cancel_flag)),
+            completion,
+        ))
     }
 
     async fn health(&self) -> Result<HealthReport, EngineError> {

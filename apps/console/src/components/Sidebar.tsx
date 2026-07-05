@@ -34,7 +34,7 @@ const NAV: { group: string; items: NavItem[] }[] = [
   {
     group: "Workspace",
     items: [
-      { id: "sources", label: "Sources", icon: Boxes },
+      { id: "sources", label: "Connectors", icon: Boxes },
       { id: "catalog", label: "Catalog", icon: Table2 },
       { id: "semantic", label: "Semantic", icon: Shapes },
     ],

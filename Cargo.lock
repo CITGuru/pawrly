@@ -3731,6 +3731,8 @@ dependencies = [
 name = "pawrly-client"
 version = "0.1.0"
 dependencies = [
+ "arrow-array",
+ "arrow-schema",
  "async-stream",
  "async-trait",
  "chrono",
@@ -3739,9 +3741,13 @@ dependencies = [
  "http",
  "hyper-util",
  "pawrly-core",
+ "pawrly-engine",
  "pawrly-proto",
+ "pawrly-server",
  "prost 0.13.5",
  "prost-types 0.13.5",
+ "reqwest 0.12.28",
+ "serde",
  "serde_json",
  "serde_yaml",
  "thiserror 1.0.69",

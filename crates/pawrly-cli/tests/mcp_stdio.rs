@@ -118,5 +118,5 @@ fn mcp_stdio_query_round_trip() {
     assert_eq!(payload["columns"], json!(["n"]));
     let rows = payload["rows"].as_array().unwrap();
     assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0][0], json!("5"));
+    assert_eq!(rows[0][0], json!(5));
 }

@@ -1,0 +1,369 @@
+# yaml-language-server: $schema=../schemas/pawrly.schema.json
+version: 1
+name: graphql-sources
+
+defaults:
+  http:
+    user_agent: pawrly-graphql-example
+
+secrets:
+  - kind: env
+  - kind: file
+    path: .env
+
+sources:
+  - name: linear
+    kind: http
+    description: Linear issue tracker over its GraphQL API.
+    config:
+      base_url: https://api.linear.app
+      auth:
+        type: header
+        headers:
+          - name: Authorization
+            value: "${secret:LINEAR_API_KEY}"
+    examples:
+      - SELECT identifier, title, state_name FROM linear.issues LIMIT 10
+      - SELECT issue_identifier, url FROM linear.attachments WHERE source_type = 'github' LIMIT 10
+
+    tables:
+      - name: teams
+        endpoint: /graphql
+        method: POST
+        description: Teams in the Linear workspace.
+        body:
+          kind: json
+          template: '{"query": "query Teams($first: Int!, $after: String) {\n  teams(first: $first, after: $after) {\n    nodes {\n      id\n      key\n      name\n      private\n    }\n    pageInfo {\n      endCursor\n    }\n  }\n}\n", "variables": {"first": 100}}'
+        response:
+          path: $.data.teams.nodes
+          schema:
+            - { name: id, type: varchar }
+            - { name: key, type: varchar }
+            - { name: name, type: varchar }
+            - { name: private, type: bool }
+        pagination:
+          type: body_cursor
+          cursor_path: $.variables.after
+          next_path: $.data.teams.pageInfo.endCursor
+
+      - name: users
+        endpoint: /graphql
+        method: POST
+        description: Users in the Linear workspace.
+        body:
+          kind: json
+          template: '{"query": "query Users($first: Int!, $after: String) {\n  users(first: $first, after: $after) {\n    nodes {\n      id\n      name\n      displayName\n      email\n      active\n    }\n    pageInfo {\n      endCursor\n    }\n  }\n}\n", "variables": {"first": 100}}'
+        response:
+          path: $.data.users.nodes
+          schema:
+            - { name: id, type: varchar }
+            - { name: name, type: varchar }
+            - { name: display_name, type: varchar, source: $.displayName }
+            - { name: email, type: varchar }
+            - { name: active, type: bool }
+        pagination:
+          type: body_cursor
+          cursor_path: $.variables.after
+          next_path: $.data.users.pageInfo.endCursor
+
+      - name: issues
+        endpoint: /graphql
+        method: POST
+        description: Issues in the Linear workspace.
+        wiki: |
+          Filter by `team_key` (e.g. `WHERE team_key = 'FIN'`) to scope a team.
+          Join `assignee_email`/`creator_email` to `users`, `team_id` to `teams`.
+        params:
+          - { name: team_id, filterable: true }
+          - { name: team_key, filterable: true }
+        body:
+          kind: json
+          template: '{"query": "query Issues($filter: IssueFilter, $first: Int!, $after: String) {\n  issues(filter: $filter, first: $first, after: $after) {\n    nodes {\n      id\n      identifier\n      title\n      priority\n      priorityLabel\n      branchName\n      url\n      createdAt\n      updatedAt\n      completedAt\n      team {\n        id\n        key\n      }\n      state {\n        name\n        type\n      }\n      assignee {\n        email\n      }\n      creator {\n        email\n      }\n    }\n    pageInfo {\n      endCursor\n    }\n  }\n}\n", "variables": {"filter": {"team": {"id": {"eq": "{team_id}"}, "key": {"eq": "{team_key}"}}}, "first": 100}}'
+        response:
+          path: $.data.issues.nodes
+          schema:
+            - { name: id, type: varchar }
+            - { name: identifier, type: varchar }
+            - { name: title, type: varchar }
+            - { name: priority, type: bigint }
+            - { name: priority_label, type: varchar, source: $.priorityLabel }
+            - { name: branch_name, type: varchar, source: $.branchName }
+            - { name: url, type: varchar }
+            - { name: team_id, type: varchar, source: $.team.id }
+            - { name: team_key, type: varchar, source: $.team.key }
+            - { name: state_name, type: varchar, source: $.state.name }
+            - { name: state_type, type: varchar, source: $.state.type }
+            - { name: assignee_email, type: varchar, source: $.assignee.email }
+            - { name: creator_email, type: varchar, source: $.creator.email }
+            - { name: created_at, type: varchar, source: $.createdAt }
+            - { name: completed_at, type: varchar, source: $.completedAt }
+        pagination:
+          type: body_cursor
+          cursor_path: $.variables.after
+          next_path: $.data.issues.pageInfo.endCursor
+
+      - name: attachments
+        endpoint: /graphql
+        method: POST
+        description: Attachments (incl. pull requests) linked to Linear issues.
+        body:
+          kind: json
+          template: '{"query": "query Attachments($first: Int!, $after: String) {\n  attachments(first: $first, after: $after) {\n    nodes {\n      id\n      title\n      url\n      sourceType\n      issue {\n        id\n        identifier\n      }\n    }\n    pageInfo {\n      endCursor\n    }\n  }\n}\n", "variables": {"first": 100}}'
+        response:
+          path: $.data.attachments.nodes
+          schema:
+            - { name: id, type: varchar }
+            - { name: title, type: varchar }
+            - { name: url, type: varchar }
+            - { name: source_type, type: varchar, source: $.sourceType }
+            - { name: issue_id, type: varchar, source: $.issue.id }
+            - { name: issue_identifier, type: varchar, source: $.issue.identifier }
+        pagination:
+          type: body_cursor
+          cursor_path: $.variables.after
+          next_path: $.data.attachments.pageInfo.endCursor
+
+      - name: projects
+        endpoint: /graphql
+        method: POST
+        description: Projects in the Linear workspace.
+        wiki: |
+          Discover `project_id` values here before querying `project_milestones`.
+          `team_id`/`team_key` are the project's first team.
+        body:
+          kind: json
+          template: '{"query": "query Projects($first: Int!, $after: String) {\n  projects(first: $first, after: $after) {\n    nodes {\n      id\n      name\n      state\n      progress\n      targetDate\n      teams(first: 1) {\n        nodes {\n          id\n          key\n        }\n      }\n    }\n    pageInfo {\n      endCursor\n    }\n  }\n}\n", "variables": {"first": 50}}'
+        response:
+          path: $.data.projects.nodes
+          schema:
+            - { name: id, type: varchar }
+            - { name: name, type: varchar }
+            - { name: state, type: varchar }
+            - { name: progress, type: double }
+            - { name: target_date, type: varchar, source: $.targetDate }
+            - { name: team_id, type: varchar, expr: { kind: first_of, path: [teams, nodes], item_path: [id] } }
+            - { name: team_key, type: varchar, expr: { kind: first_of, path: [teams, nodes], item_path: [key] } }
+        pagination:
+          type: body_cursor
+          cursor_path: $.variables.after
+          next_path: $.data.projects.pageInfo.endCursor
+
+      - name: cycles
+        endpoint: /graphql
+        method: POST
+        description: Cycles (iterations) in the Linear workspace.
+        wiki: |
+          Optionally scope to one team with `WHERE team_key = 'FIN'`, or narrow to
+          the live iteration with `WHERE is_active = true`.
+        params:
+          - { name: is_active, type: bool, filterable: true }
+          - { name: is_next, type: bool, filterable: true }
+          - { name: is_previous, type: bool, filterable: true }
+          - { name: team_id, filterable: true }
+          - { name: team_key, filterable: true }
+        body:
+          kind: json
+          template: '{"query": "query Cycles($filter: CycleFilter, $first: Int!, $after: String) {\n  cycles(filter: $filter, first: $first, after: $after) {\n    nodes {\n      id\n      number\n      name\n      startsAt\n      endsAt\n      completedAt\n      isActive\n      isPrevious\n      isNext\n      team {\n        id\n        key\n      }\n    }\n    pageInfo {\n      endCursor\n    }\n  }\n}\n", "variables": {"filter": {"team": {"id": {"eq": "{team_id}"}, "key": {"eq": "{team_key}"}}, "isActive": {"eq": {is_active}}, "isPrevious": {"eq": {is_previous}}, "isNext": {"eq": {is_next}}}, "first": 100}}'
+        response:
+          path: $.data.cycles.nodes
+          schema:
+            - { name: id, type: varchar }
+            - { name: number, type: bigint }
+            - { name: name, type: varchar }
+            - { name: starts_at, type: varchar, source: $.startsAt }
+            - { name: ends_at, type: varchar, source: $.endsAt }
+            - { name: completed_at, type: varchar, source: $.completedAt }
+            - { name: is_active, type: bool, source: $.isActive }
+            - { name: team_id, type: varchar, source: $.team.id }
+            - { name: team_key, type: varchar, source: $.team.key }
+        pagination:
+          type: body_cursor
+          cursor_path: $.variables.after
+          next_path: $.data.cycles.pageInfo.endCursor
+
+      - name: issue_labels
+        endpoint: /graphql
+        method: POST
+        description: Issue labels defined in the Linear workspace.
+        body:
+          kind: json
+          template: '{"query": "query IssueLabels($first: Int!, $after: String) {\n  issueLabels(first: $first, after: $after) {\n    nodes {\n      id\n      name\n      color\n      isGroup\n    }\n    pageInfo {\n      endCursor\n    }\n  }\n}\n", "variables": {"first": 100}}'
+        response:
+          path: $.data.issueLabels.nodes
+          schema:
+            - { name: id, type: varchar }
+            - { name: name, type: varchar }
+            - { name: color, type: varchar }
+            - { name: is_group, type: bool, source: $.isGroup }
+        pagination:
+          type: body_cursor
+          cursor_path: $.variables.after
+          next_path: $.data.issueLabels.pageInfo.endCursor
+
+      - name: project_milestones
+        endpoint: /graphql
+        method: POST
+        description: Milestones for a specific Linear project (requires project_id).
+        params:
+          - { name: project_id, required: true, filterable: true }
+        body:
+          kind: json
+          template: '{"query": "query ProjectMilestones($projectId: String!, $first: Int!, $after: String) {\n  project(id: $projectId) {\n    id\n    projectMilestones(first: $first, after: $after) {\n      nodes {\n        id\n        name\n        progress\n        targetDate\n        status\n      }\n      pageInfo {\n        endCursor\n      }\n    }\n  }\n}\n", "variables": {"projectId": "{project_id}", "first": 100}}'
+        response:
+          path: $.data.project.projectMilestones.nodes
+          schema:
+            - { name: id, type: varchar }
+            - { name: name, type: varchar }
+            - { name: progress, type: double }
+            - { name: target_date, type: varchar, source: $.targetDate }
+            - { name: status, type: varchar }
+        pagination:
+          type: body_cursor
+          cursor_path: $.variables.after
+          next_path: $.data.project.projectMilestones.pageInfo.endCursor
+
+      - name: issue_comments
+        endpoint: /graphql
+        method: POST
+        description: Comments on a specific Linear issue (requires issue, e.g. FIN-527).
+        params:
+          - { name: issue, required: true, filterable: true }
+          - { name: issueNumber, type: bigint, derive: { kind: split, from: issue, separator: '-', part: 1 } }
+          - { name: teamKey, derive: { kind: split, from: issue, separator: '-', part: 0 } }
+        body:
+          kind: json
+          template: '{"query": "query IssueComments($teamKey: String!, $issueNumber: Float!, $first: Int!, $after: String) {\n  issues(filter: { team: { key: { eq: $teamKey } }, number: { eq: $issueNumber } }, first: 1) {\n    nodes {\n      id\n      identifier\n      comments(first: $first, after: $after) {\n        nodes {\n          id\n          body\n          createdAt\n          user {\n            name\n            email\n          }\n        }\n        pageInfo {\n          endCursor\n        }\n      }\n    }\n  }\n}\n", "variables": {"teamKey": "{teamKey}", "issueNumber": {issueNumber}, "first": 100}}'
+        response:
+          path: $.data.issues.nodes.0.comments.nodes
+          schema:
+            - { name: id, type: varchar }
+            - { name: body, type: varchar }
+            - { name: author_name, type: varchar, source: $.user.name }
+            - { name: author_email, type: varchar, source: $.user.email }
+            - { name: created_at, type: varchar, source: $.createdAt }
+        pagination:
+          type: body_cursor
+          cursor_path: $.variables.after
+          next_path: $.data.issues.nodes.0.comments.pageInfo.endCursor
+
+  - name: github
+    kind: http
+    description: GitHub over its GraphQL API (v4).
+    config:
+      base_url: https://api.github.com
+      auth:
+        type: header
+        headers:
+          - name: Authorization
+            bearer: ${secret:GITHUB_TOKEN}
+    examples:
+      - SELECT full_name, stargazers FROM github.org_repositories WHERE org = 'finic-ai' LIMIT 10
+      - SELECT number, title, state FROM github.repo_pull_requests WHERE owner = 'finic-ai' AND repo = 'finic-private' LIMIT 10
+
+    tables:
+      - name: org_repositories
+        endpoint: /graphql
+        method: POST
+        description: Repositories owned by an organization (requires org).
+        params:
+          - { name: org, required: true, filterable: true }
+        body:
+          kind: json
+          template: '{"query": "query OrgRepos($login: String!, $first: Int!, $after: String) {\n  organization(login: $login) {\n    repositories(first: $first, after: $after, orderBy: {field: UPDATED_AT, direction: DESC}) {\n      nodes {\n        name\n        nameWithOwner\n        isPrivate\n        stargazerCount\n        url\n        updatedAt\n        primaryLanguage {\n          name\n        }\n      }\n      pageInfo {\n        endCursor\n      }\n    }\n  }\n}\n", "variables": {"login": "{org}", "first": 50}}'
+        response:
+          path: $.data.organization.repositories.nodes
+          schema:
+            - { name: name, type: varchar }
+            - { name: full_name, type: varchar, source: $.nameWithOwner }
+            - { name: is_private, type: bool, source: $.isPrivate }
+            - { name: stargazers, type: bigint, source: $.stargazerCount }
+            - { name: language, type: varchar, source: $.primaryLanguage.name }
+            - { name: url, type: varchar }
+            - { name: updated_at, type: varchar, source: $.updatedAt }
+        pagination:
+          type: body_cursor
+          cursor_path: $.variables.after
+          next_path: $.data.organization.repositories.pageInfo.endCursor
+
+      - name: repo_pull_requests
+        endpoint: /graphql
+        method: POST
+        description: Pull requests in a repository (requires owner + repo).
+        wiki: |
+          Filter results in SQL on the `state` column (OPEN / CLOSED / MERGED).
+          `head_ref` is the branch name — handy for correlating with Linear.
+        params:
+          - { name: owner, required: true, filterable: true }
+          - { name: repo, required: true, filterable: true }
+        body:
+          kind: json
+          template: '{"query": "query RepoPRs($owner: String!, $name: String!, $first: Int!, $after: String) {\n  repository(owner: $owner, name: $name) {\n    pullRequests(first: $first, after: $after, orderBy: {field: UPDATED_AT, direction: DESC}) {\n      nodes {\n        number\n        title\n        state\n        url\n        createdAt\n        mergedAt\n        headRefName\n        baseRefName\n        author {\n          login\n        }\n      }\n      pageInfo {\n        endCursor\n      }\n    }\n  }\n}\n", "variables": {"owner": "{owner}", "name": "{repo}", "first": 50}}'
+        response:
+          path: $.data.repository.pullRequests.nodes
+          schema:
+            - { name: number, type: bigint }
+            - { name: title, type: varchar }
+            - { name: state, type: varchar }
+            - { name: url, type: varchar }
+            - { name: author_login, type: varchar, source: $.author.login }
+            - { name: head_ref, type: varchar, source: $.headRefName }
+            - { name: base_ref, type: varchar, source: $.baseRefName }
+            - { name: created_at, type: varchar, source: $.createdAt }
+            - { name: merged_at, type: varchar, source: $.mergedAt }
+        pagination:
+          type: body_cursor
+          cursor_path: $.variables.after
+          next_path: $.data.repository.pullRequests.pageInfo.endCursor
+
+      - name: repo_issues
+        endpoint: /graphql
+        method: POST
+        description: Issues in a repository (requires owner + repo).
+        wiki: |
+          `label_names` flattens the first labels into a comma-joined string via a
+          `map_join` expr. Filter on `state` (OPEN / CLOSED) in SQL.
+        params:
+          - { name: owner, required: true, filterable: true }
+          - { name: repo, required: true, filterable: true }
+        body:
+          kind: json
+          template: '{"query": "query RepoIssues($owner: String!, $name: String!, $first: Int!, $after: String) {\n  repository(owner: $owner, name: $name) {\n    issues(first: $first, after: $after, orderBy: {field: UPDATED_AT, direction: DESC}) {\n      nodes {\n        number\n        title\n        state\n        url\n        createdAt\n        closedAt\n        author {\n          login\n        }\n        labels(first: 10) {\n          nodes {\n            name\n          }\n        }\n      }\n      pageInfo {\n        endCursor\n      }\n    }\n  }\n}\n", "variables": {"owner": "{owner}", "name": "{repo}", "first": 50}}'
+        response:
+          path: $.data.repository.issues.nodes
+          schema:
+            - { name: number, type: bigint }
+            - { name: title, type: varchar }
+            - { name: state, type: varchar }
+            - { name: url, type: varchar }
+            - { name: author_login, type: varchar, source: $.author.login }
+            - { name: created_at, type: varchar, source: $.createdAt }
+            - { name: closed_at, type: varchar, source: $.closedAt }
+            - { name: label_names, type: varchar, expr: { kind: map_join, path: [labels, nodes], item_path: [name] } }
+        pagination:
+          type: body_cursor
+          cursor_path: $.variables.after
+          next_path: $.data.repository.issues.pageInfo.endCursor
+
+    functions:
+      - name: search_repos
+        description: Search repositories with GitHub's search syntax.
+        endpoint: /graphql
+        method: POST
+        body:
+          kind: json
+          template: '{"query": "query SearchRepos($q: String!, $first: Int!, $after: String) {\n  search(query: $q, type: REPOSITORY, first: $first, after: $after) {\n    nodes {\n      ... on Repository {\n        nameWithOwner\n        stargazerCount\n        url\n        isPrivate\n        primaryLanguage {\n          name\n        }\n      }\n    }\n    pageInfo {\n      endCursor\n    }\n  }\n}\n", "variables": {"q": "{q}", "first": 25}}'
+        args:
+          - { name: q, type: varchar, required: true }
+        response:
+          path: $.data.search.nodes
+        pagination:
+          type: body_cursor
+          cursor_path: $.variables.after
+          next_path: $.data.search.pageInfo.endCursor
+        returns:
+          - { name: full_name, type: varchar, source: $.nameWithOwner }
+          - { name: stargazers, type: bigint, source: $.stargazerCount }
+          - { name: is_private, type: bool, source: $.isPrivate }
+          - { name: language, type: varchar, source: $.primaryLanguage.name }
+          - { name: url, type: varchar }
+          - { name: q, type: varchar, source: arg }

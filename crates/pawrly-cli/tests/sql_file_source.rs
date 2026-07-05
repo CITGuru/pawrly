@@ -70,10 +70,7 @@ fn local_sql_count_against_fixture_parquet() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(out.status.success(), "non-zero exit: stderr={stderr}");
-    assert!(
-        stdout.contains("\"n\":\"5\""),
-        "unexpected stdout: {stdout}"
-    );
+    assert!(stdout.contains("\"n\":5"), "unexpected stdout: {stdout}");
 }
 
 #[test]
@@ -166,7 +163,7 @@ fn daemon_mode_sql_round_trip() {
     let _ = daemon.wait();
 
     assert!(out.status.success(), "stderr={stderr}");
-    assert!(stdout.contains("\"n\":\"5\""), "stdout={stdout}");
+    assert!(stdout.contains("\"n\":5"), "stdout={stdout}");
 }
 
 /// Acceptance: local (`--no-remote`) and daemon (`--remote`) modes must
@@ -251,4 +248,74 @@ fn local_and_daemon_byte_for_byte_parity() {
     let _ = daemon.wait();
 
     assert!(failures.is_empty(), "{}", failures.join("\n---\n"));
+}
+
+/// `source add` against an explicit `--remote` daemon registers via RPC and
+/// must NOT write the client's local config.
+#[test]
+fn source_add_remote_leaves_client_disk_untouched() {
+    let daemon_dir = TempDir::new().unwrap();
+    let client_dir = TempDir::new().unwrap();
+    let cfg = write_workspace(daemon_dir.path());
+    std::fs::write(client_dir.path().join("pawrly.yaml"), "version: 1\n").unwrap();
+    let sock = daemon_dir.path().join("pawrly.sock");
+
+    let mut daemon = pawrly()
+        .args([
+            "--config",
+            cfg.to_str().unwrap(),
+            "--home",
+            daemon_dir.path().to_str().unwrap(),
+            "serve",
+            "--addr",
+            &format!("unix://{}", sock.display()),
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn daemon");
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !sock.exists() {
+        if Instant::now() > deadline {
+            let _ = daemon.kill();
+            let _ = daemon.wait();
+            panic!("daemon never created socket at {}", sock.display());
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    let fx = fixtures_dir();
+    let out = pawrly()
+        .args([
+            "--remote",
+            &format!("unix://{}", sock.display()),
+            "--config",
+            client_dir.path().join("pawrly.yaml").to_str().unwrap(),
+            "--home",
+            client_dir.path().to_str().unwrap(),
+            "source",
+            "add",
+            "file",
+            "--name",
+            "extra",
+            "--path",
+            fx.join("customers.csv").to_str().unwrap(),
+        ])
+        .output()
+        .expect("remote source add");
+
+    let ok = out.status.success();
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    let client_sources = client_dir.path().join("sources");
+
+    let _ = daemon.kill();
+    let _ = daemon.wait();
+
+    assert!(ok, "remote source add failed: {stderr}");
+    assert!(
+        !client_sources.exists(),
+        "client disk was mutated: {} exists",
+        client_sources.display()
+    );
 }

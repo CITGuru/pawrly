@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+src/pawrly/v1/
+*.egg-info/
+dist/
+build/

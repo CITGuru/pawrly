@@ -95,6 +95,22 @@ paths:
                   sources:
                     type: array
                     items: { $ref: '#/components/schemas/SourceInfo' }
+    post:
+      tags: [catalog]
+      summary: Add a source
+      operationId: addSource
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SourceDef' }
+      responses:
+        '200':
+          description: The registered source.
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/SourceInfo' } }
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
   /v1/sources/{name}:
     get:
       tags: [catalog]
@@ -108,11 +124,70 @@ paths:
           content:
             application/json: { schema: { $ref: '#/components/schemas/SourceInfo' } }
         '404': { $ref: '#/components/responses/Error' }
+    delete:
+      tags: [catalog]
+      summary: Remove a source
+      operationId: removeSource
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Removed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  removed: { type: boolean }
+                  name: { type: string }
+        '404': { $ref: '#/components/responses/Error' }
+  /v1/sources/{name}/test:
+    post:
+      tags: [catalog]
+      summary: Probe a source's connectivity
+      operationId: testSource
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Source test report.
+          content:
+            application/json: { schema: { type: object, additionalProperties: true } }
+        '400': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+  /v1/catalog/refresh:
+    post:
+      tags: [catalog]
+      summary: Refresh the catalog (optionally one source)
+      operationId: refreshCatalog
+      parameters:
+        - name: source
+          in: query
+          required: false
+          description: Limit the refresh to one source.
+          schema: { type: string }
+      responses:
+        '200':
+          description: Refresh outcome.
+          content:
+            application/json: { schema: { type: object, additionalProperties: true } }
+        '400': { $ref: '#/components/responses/Error' }
   /v1/tables:
     get:
       tags: [catalog]
       summary: List tables
       operationId: listTables
+      parameters:
+        - name: source
+          in: query
+          required: false
+          description: Limit to one source.
+          schema: { type: string }
+        - name: name_glob
+          in: query
+          required: false
+          description: Glob over table name (without schema prefix).
+          schema: { type: string }
       responses:
         '200':
           description: All tables across sources.
@@ -142,6 +217,23 @@ paths:
             application/json: { schema: { $ref: '#/components/schemas/TableDescription' } }
         '400': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
+  /v1/tables/{name}/refresh:
+    post:
+      tags: [catalog, cache]
+      summary: Refresh one cached table
+      operationId: refreshTable
+      parameters:
+        - name: name
+          in: path
+          required: true
+          description: "`schema.table`"
+          schema: { type: string }
+      responses:
+        '200':
+          description: Refresh outcome.
+          content:
+            application/json: { schema: { type: object, additionalProperties: true } }
+        '400': { $ref: '#/components/responses/Error' }
   /v1/schema:
     get:
       tags: [catalog]
@@ -208,6 +300,38 @@ paths:
                   entries:
                     type: array
                     items: { $ref: '#/components/schemas/CacheEntryInfo' }
+  /v1/cache/vacuum:
+    post:
+      tags: [cache]
+      summary: Reclaim expired cache entries
+      operationId: vacuumCache
+      responses:
+        '200':
+          description: Vacuum report.
+          content:
+            application/json: { schema: { type: object, additionalProperties: true } }
+  /v1/cache/{name}:
+    delete:
+      tags: [cache]
+      summary: Invalidate a cached table
+      operationId: invalidateCache
+      parameters:
+        - name: name
+          in: path
+          required: true
+          description: "`schema.table`"
+          schema: { type: string }
+      responses:
+        '200':
+          description: Whether an entry was invalidated.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  invalidated: { type: boolean }
+                  name: { type: string }
+        '400': { $ref: '#/components/responses/Error' }
   /v1/materialized/{name}:
     put:
       tags: [materialized]
@@ -243,6 +367,63 @@ paths:
                   dropped: { type: boolean }
                   name: { type: string }
         '404': { $ref: '#/components/responses/Error' }
+  /v1/config/reload:
+    post:
+      tags: [system]
+      summary: Re-read the workspace config
+      operationId: reloadConfig
+      responses:
+        '200':
+          description: Reload report.
+          content:
+            application/json: { schema: { type: object, additionalProperties: true } }
+        '400': { $ref: '#/components/responses/Error' }
+  /v1/functions:
+    get:
+      tags: [catalog]
+      summary: List table-valued functions
+      operationId: listFunctions
+      responses:
+        '200':
+          description: Functions.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  functions:
+                    type: array
+                    items: { type: object, additionalProperties: true }
+  /v1/functions/{namespace}/{name}:
+    get:
+      tags: [catalog]
+      summary: Describe one function
+      operationId: describeFunction
+      parameters:
+        - { name: namespace, in: path, required: true, schema: { type: string } }
+        - { name: name, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Function description.
+          content:
+            application/json: { schema: { type: object, additionalProperties: true } }
+        '404': { $ref: '#/components/responses/Error' }
+  /v1/queries/{id}/cancel:
+    post:
+      tags: [query]
+      summary: Cancel an in-flight query
+      operationId: cancelQuery
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Whether a matching query was signaled.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  cancelled: { type: boolean }
   /v1/health:
     get:
       tags: [system]
@@ -407,6 +588,13 @@ components:
       properties:
         schema: { type: string }
         table: { type: string }
+    SourceDef:
+      type: object
+      required: [name, kind]
+      properties:
+        name: { type: string }
+        kind: { type: string }
+      additionalProperties: true
     SourceInfo:
       type: object
       properties:

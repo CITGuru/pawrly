@@ -43,6 +43,16 @@ struct Cli {
     #[arg(long, env = "PAWRLY_LOG_FORMAT", global = true, default_value = "text")]
     log_format: LogFormat,
 
+    /// Error output on failure: text | json. `json` prints a
+    /// `{"error":{code,message}}` line to stderr for machine parsing.
+    #[arg(
+        long,
+        env = "PAWRLY_ERROR_FORMAT",
+        global = true,
+        default_value = "text"
+    )]
+    error_format: ErrorFormat,
+
     /// OTLP collector endpoint. When set, enables OpenTelemetry trace + log export.
     #[arg(long, env = "PAWRLY_OTEL_ENDPOINT", global = true)]
     otel_endpoint: Option<String>,
@@ -82,6 +92,13 @@ impl From<LogFormat> for pawrly_telemetry::LogFormat {
     }
 }
 
+/// How to render a fatal error on stderr.
+#[derive(Clone, Copy, Debug, clap::ValueEnum)]
+enum ErrorFormat {
+    Text,
+    Json,
+}
+
 /// CLI mirror of [`pawrly_telemetry::OtelProtocol`].
 #[derive(Clone, Copy, Debug, clap::ValueEnum)]
 enum OtelProtocol {
@@ -106,11 +123,13 @@ enum Command {
     Validate(commands::validate::Args),
     /// Run each source's `examples:` statements as live probes.
     Check(commands::check::Args),
-    /// Inspect the workspace config (show, with --raw / --tree).
+    /// Inspect the workspace config (show / reload).
     Config(commands::config::Args),
     /// Run a SQL query.
     Sql(commands::sql::Args),
-    /// Show the SQL catalog (or describe a single table).
+    /// Show the optimized (or --analyze'd) plan for a SQL string.
+    Explain(commands::explain::Args),
+    /// Show the SQL catalog (or describe a single table, or `snapshot`).
     Schema(commands::schema::Args),
     /// Manage the cache (list, show, refresh, invalidate, vacuum).
     Cache(commands::cache::Args),
@@ -166,10 +185,11 @@ fn main() -> ExitCode {
         let _enter = runtime.enter();
         pawrly_telemetry::init(&telemetry_config, role_for(&cli.command))
     };
+    let error_format = cli.error_format;
     match runtime.block_on(run(cli)) {
         Ok(()) => ExitCode::from(0),
         Err(e) => {
-            eprintln!("error: {e}");
+            print_error(&e, error_format);
             ExitCode::from(exit_code_for(&e))
         }
     }
@@ -182,9 +202,14 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Check(args) => {
             commands::check::run(cli.home, cli.config, cli.remote, cli.no_remote, args).await
         }
-        Command::Config(args) => commands::config::run(cli.config, args).await,
+        Command::Config(args) => {
+            commands::config::run(cli.home, cli.config, cli.remote, cli.no_remote, args).await
+        }
         Command::Sql(args) => {
             commands::sql::run(cli.home, cli.config, cli.remote, cli.no_remote, args).await
+        }
+        Command::Explain(args) => {
+            commands::explain::run(cli.home, cli.config, cli.remote, cli.no_remote, args).await
         }
         Command::Schema(args) => {
             commands::schema::run(cli.home, cli.config, cli.remote, cli.no_remote, args).await
@@ -348,6 +373,102 @@ fn role_for(command: &Command) -> pawrly_telemetry::ServiceRole {
     }
 }
 
-fn exit_code_for(_err: &anyhow::Error) -> u8 {
+/// Print a fatal error to stderr, either human-readable or as a machine-parsable
+/// `{"error":{code,message}}` JSON line.
+fn print_error(err: &anyhow::Error, format: ErrorFormat) {
+    match format {
+        ErrorFormat::Text => eprintln!("error: {err}"),
+        ErrorFormat::Json => {
+            let line = serde_json::json!({
+                "error": { "code": error_code_for(err), "message": err.to_string() }
+            });
+            eprintln!("{line}");
+        }
+    }
+}
+
+/// The stable `PAWRLY_*` code for a fatal error, drawn from the shared taxonomy
+/// when the cause is a Pawrly error; `PAWRLY_INTERNAL` otherwise.
+fn error_code_for(err: &anyhow::Error) -> pawrly_core::ErrorCode {
+    use pawrly_core::{ConfigError, EngineError, PawrlyError, SourceError};
+    if let Some(e) = err.downcast_ref::<PawrlyError>() {
+        e.code()
+    } else if let Some(e) = err.downcast_ref::<EngineError>() {
+        e.code()
+    } else if let Some(e) = err.downcast_ref::<SourceError>() {
+        e.code()
+    } else if let Some(e) = err.downcast_ref::<ConfigError>() {
+        e.code()
+    } else {
+        pawrly_core::error::codes::INTERNAL
+    }
+}
+
+/// Map a fatal error to a stable exit code by category (sysexits.h-aligned) so
+/// scripts can branch on the failure kind instead of a blanket `1`.
+fn exit_code_for(err: &anyhow::Error) -> u8 {
+    use pawrly_core::{EngineError, PawrlyError};
+
+    // Engine errors, whether raw or wrapped in a PawrlyError.
+    let engine =
+        err.downcast_ref::<EngineError>()
+            .or_else(|| match err.downcast_ref::<PawrlyError>() {
+                Some(PawrlyError::Engine(e)) => Some(e),
+                _ => None,
+            });
+    if let Some(e) = engine {
+        return match e {
+            EngineError::InvalidSql(_)
+            | EngineError::SemanticPlan(_)
+            | EngineError::UnknownKind(_) => 65, // EX_DATAERR
+            EngineError::UnknownTable(_) | EngineError::UnknownFunction(_) => 66, // EX_NOINPUT
+            EngineError::Safety(_) => 77,                                         // EX_NOPERM
+            EngineError::SourceRegistration { .. } => 69,                         // EX_UNAVAILABLE
+            EngineError::Timeout(_) => 75,                                        // EX_TEMPFAIL
+            EngineError::OutOfMemory(_) => 71,                                    // EX_OSERR
+            EngineError::Cancelled => 130,                                        // terminated
+            EngineError::Protocol(_) | EngineError::Internal(_) => 70,            // EX_SOFTWARE
+            EngineError::Unsupported(_) => 69,                                    // EX_UNAVAILABLE
+        };
+    }
+    if let Some(e) = err.downcast_ref::<PawrlyError>() {
+        return match e {
+            PawrlyError::Config(_) => 78, // EX_CONFIG
+            PawrlyError::Safety(_) => 77,
+            PawrlyError::Source(_) => 69,
+            PawrlyError::Engine(_) => 70,
+        };
+    }
     1
+}
+
+#[cfg(test)]
+mod tests {
+    use pawrly_core::EngineError;
+
+    use super::*;
+
+    #[test]
+    fn exit_codes_distinct_by_category() {
+        assert_eq!(
+            exit_code_for(&EngineError::InvalidSql("x".into()).into()),
+            65
+        );
+        assert_eq!(
+            exit_code_for(&EngineError::UnknownTable("t".into()).into()),
+            66
+        );
+        assert_eq!(exit_code_for(&EngineError::Cancelled.into()), 130);
+        assert_eq!(exit_code_for(&EngineError::Internal("x".into()).into()), 70);
+        assert_eq!(exit_code_for(&anyhow::anyhow!("plain")), 1);
+    }
+
+    #[test]
+    fn error_code_maps_to_taxonomy() {
+        assert_eq!(
+            error_code_for(&EngineError::InvalidSql("x".into()).into()),
+            "PAWRLY_INVALID_SQL"
+        );
+        assert_eq!(error_code_for(&anyhow::anyhow!("plain")), "PAWRLY_INTERNAL");
+    }
 }

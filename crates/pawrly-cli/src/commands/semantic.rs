@@ -92,6 +92,10 @@ pub struct QueryArgs {
     /// Output format.
     #[arg(long, value_enum, default_value_t = Format::Table)]
     pub format: Format,
+
+    /// Shortcut for `--format json` (takes precedence over `--format`).
+    #[arg(long)]
+    pub json: bool,
 }
 
 pub async fn run(
@@ -215,8 +219,8 @@ async fn query(
 
     let svc = crate::engine::build_engine(remote, no_remote, home, config).await?;
     let batches = svc.semantic_query_collect(q).await?;
-    args.format
-        .write_batches(&mut std::io::stdout(), &batches)?;
+    let format = if args.json { Format::Json } else { args.format };
+    format.write_batches(&mut std::io::stdout(), &batches)?;
     Ok(())
 }
 
