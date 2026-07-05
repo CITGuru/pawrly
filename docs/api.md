@@ -38,7 +38,7 @@ curl -s localhost:8787/v1/sql \
 ```
 
 ```json
-{ "columns": ["hello"], "rows": [{ "hello": "1" }], "row_count": 1, "truncated": false }
+{ "columns": ["hello"], "rows": [{ "hello": 1 }], "row_count": 1, "truncated": false }
 ```
 
 ## Endpoints
@@ -48,16 +48,27 @@ curl -s localhost:8787/v1/sql \
 | `POST /v1/sql` | Run raw SQL |
 | `POST /v1/query` | Run a governed semantic query |
 | `POST /v1/explain` | Optimized / analyzed plan for a SQL string |
+| `POST /v1/queries/{id}/cancel` | Cancel an in-flight query |
 | `GET /v1/sources` | List sources |
 | `GET /v1/sources/{name}` | One source's info |
+| `POST /v1/sources` | Add a source |
+| `DELETE /v1/sources/{name}` | Remove a source |
+| `POST /v1/sources/{name}/test` | Probe a source's connectivity |
 | `GET /v1/tables` | List tables |
 | `GET /v1/tables/{schema}.{table}` | Describe a table |
+| `POST /v1/tables/{schema}.{table}/refresh` | Refresh one cached table |
 | `GET /v1/schema` | Full catalog snapshot |
+| `POST /v1/catalog/refresh` | Re-introspect sources (optionally one) |
+| `GET /v1/functions` | List table-valued functions |
+| `GET /v1/functions/{namespace}/{name}` | Describe a function |
 | `GET /v1/semantic/models` | List semantic models |
 | `GET /v1/semantic/models/{name}` | Describe a semantic model |
 | `GET /v1/cache` | Cache inventory |
+| `DELETE /v1/cache/{schema}.{table}` | Invalidate a cached table |
+| `POST /v1/cache/vacuum` | Reclaim expired cache entries |
 | `PUT /v1/materialized/{name}` | Create or replace a materialized table |
 | `DELETE /v1/materialized/{name}` | Drop a materialized table |
+| `POST /v1/config/reload` | Re-read the workspace config |
 | `GET /v1/health` | Engine health report |
 | `GET /healthz` | Liveness (unauthenticated) |
 | `GET /v1/openapi.json` / `.yaml` | OpenAPI 3.0 spec (unauthenticated) |
@@ -73,7 +84,7 @@ Run raw SQL. Body fields:
 | `format` | `json` | `json`, `ndjson`, or `csv` |
 | `limit` | `1000` | row cap |
 
-`json` returns `{ columns, rows, row_count, truncated }` with `rows` as objects. `ndjson` streams one JSON object per line (`application/x-ndjson`); `csv` is RFC 4180.
+`json` returns `{ columns, rows, row_count, truncated }` with `rows` as objects. Scalar values are typed — integers and floats as JSON numbers, booleans as `true`/`false`, nulls as `null`; temporal and decimal types render as strings. `ndjson` streams one JSON object per line (`application/x-ndjson`); `csv` is RFC 4180.
 
 ```bash
 curl -s localhost:8787/v1/sql -H 'content-type: application/json' \
@@ -81,8 +92,8 @@ curl -s localhost:8787/v1/sql -H 'content-type: application/json' \
 ```
 
 ```
-{"id":"1","customer":"acme","amount_cents":"1000"}
-{"id":"2","customer":"ben","amount_cents":"2500"}
+{"id":1,"customer":"acme","amount_cents":1000}
+{"id":2,"customer":"ben","amount_cents":2500}
 ```
 
 ### `POST /v1/query`
@@ -131,8 +142,30 @@ curl -s localhost:8787/v1/tables                  # all tables
 curl -s localhost:8787/v1/tables/github.pulls     # one table's schema + wiki
 curl -s 'localhost:8787/v1/schema?sources=github,data&compact=true'   # whole catalog in one call
 curl -s localhost:8787/v1/semantic/models         # semantic models
+curl -s localhost:8787/v1/functions               # table-valued functions
 curl -s localhost:8787/v1/cache                   # cached tables
 curl -s localhost:8787/v1/health                  # { ok, version, active_queries, sources_ok, ... }
+```
+
+### Managing sources & the cache
+
+These mutate workspace or cache state; like the CLI, source changes edit `pawrly.yaml` and propagate to the running engine.
+
+```bash
+# sources: add (JSON body is the source definition), probe, remove
+curl -s -X POST localhost:8787/v1/sources -H 'content-type: application/json' \
+  -d '{"name":"logs","kind":"file","config":{"path":"./logs/*.parquet"}}'
+curl -s -X POST localhost:8787/v1/sources/logs/test     # { name, ok, latency, detail }
+curl -s -X DELETE localhost:8787/v1/sources/logs        # { removed, name }
+
+# catalog / cache
+curl -s -X POST localhost:8787/v1/catalog/refresh       # re-introspect all sources (?source=logs for one)
+curl -s -X POST localhost:8787/v1/tables/logs.events/refresh  # rebuild one cached table
+curl -s -X DELETE localhost:8787/v1/cache/logs.events   # invalidate its cache
+curl -s -X POST localhost:8787/v1/cache/vacuum          # reclaim expired entries
+
+# config: re-read pawrly.yaml into the running engine
+curl -s -X POST localhost:8787/v1/config/reload         # { sources_added, sources_removed, sources_changed }
 ```
 
 ### Materialized tables
@@ -185,4 +218,4 @@ curl -s localhost:8787/v1/openapi.json    # JSON
 curl -s localhost:8787/v1/openapi.yaml    # YAML
 ```
 
-Point Swagger UI, Postman, or a client generator at it to explore the API or generate a typed client.
+Point Swagger UI, Postman, or a client generator at it to explore the API. For application code, prefer the first-party [client SDKs](./clients.md) — TypeScript and Python — which speak this REST API and gRPC behind one typed surface.

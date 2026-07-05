@@ -59,6 +59,21 @@ pawrly sql --file report.sql --format csv > report.csv
 
 ---
 
+### `pawrly explain`
+
+Show the query plan for a SQL string. By default it plans without scanning; with `--analyze` it runs the query and annotates the plan with runtime metrics.
+
+```bash
+pawrly explain "SELECT status, COUNT(*) FROM data.orders GROUP BY status"
+pawrly explain --analyze "SELECT * FROM data.orders WHERE status = 'paid'"
+```
+
+- `[SQL]` — the query to plan; use `-` to read from stdin, or `--file <PATH>`.
+- `--analyze` — execute and annotate the plan with runtime metrics.
+- `--json` — emit `{ "plan": "..." }` instead of plain text.
+
+---
+
 ### `pawrly semantic`
 
 Browse and query the [semantic layer](./semantic.md).
@@ -93,9 +108,11 @@ List every registered table, or describe one.
 ```bash
 pawrly schema                 # all tables (--json)
 pawrly schema data.orders     # columns + types for one table (--json)
+pawrly schema snapshot        # compact full-catalog overview for grounding/tooling
 ```
 
 - `--json` — emit JSON instead of a table.
+- `snapshot` accepts `--sources <a,b>` to scope it and `--compact` for a terser form.
 
 ---
 
@@ -178,6 +195,7 @@ Inspect the assembled configuration (after `include:`/`from:` resolution and sec
 pawrly config show          # the effective config
 pawrly config show --raw    # verbatim, secrets unmasked
 pawrly config show --tree   # show which file each piece came from
+pawrly config reload        # re-read pawrly.yaml into a running engine (--json)
 ```
 
 ---
