@@ -1,21 +1,22 @@
 # Architecture
 
-Pawrly is one binary split between a query engine and frontends (CLI, MCP server). They talk through a single trait, so the same engine runs in-process or behind a daemon with no behavioural difference.
+Pawrly is one binary split between a query engine and frontends (CLI, MCP server, REST/HTTP + Console, Flight SQL). They talk through a single trait, so the same engine runs in-process or behind a daemon with no behavioural difference.
 
 ## The big picture
 
 ```
-        ┌─────────────┐   ┌─────────────┐
-        │     CLI      │   │  MCP server │     ← frontends
-        └──────┬──────┘   └──────┬──────┘
-               │                 │
-               └────────┬────────┘
-                        ▼
-                 EngineService            ← one trait, two implementations
-                 ┌──────┴───────┐
-                 ▼              ▼
-           LocalEngine    RemoteEngineClient
-          (in-process)    (gRPC to a daemon)
+   CLI    MCP server        browser / BI / scripts        ← surfaces
+    │         │                      │
+    │         │        ┌─────────────┼──────────────┐
+    │         │     REST · gRPC-Web · Console   Flight SQL
+    │         │       (pawrly-server, HTTP)   (pawrly-flight)   ← transports
+    └────┬────┴──────────────┬───────────────────┬──┘
+         ▼                    ▼                   ▼
+                     EngineService                       ← one trait, two impls
+                 ┌────────┴────────┐
+                 ▼                 ▼
+           LocalEngine      RemoteEngineClient
+          (in-process)      (gRPC to a daemon)
                  │
                  ▼
             DataFusion  ──►  sources: files, HTTP, SQLite, Postgres,
@@ -68,9 +69,12 @@ On top of raw tables, you can define **business models** — named dimensions, m
 Transports are pluggable: each one wraps an `EngineService` and exposes it over a wire protocol, so the same engine can serve multiple surfaces at once.
 
 - **gRPC (`pawrly-server`)** — the default daemon transport, reachable over a Unix domain socket (the default for local use) or TCP. The CLI auto-discovers a running daemon over its socket and falls back to in-process execution if none is found.
-- **Arrow Flight SQL (`pawrly-flight`)** — exposes the engine over the Flight SQL protocol so BI and analytics clients (`pyarrow.flight`, ADBC drivers, Dremio, Tableau, Power BI) can talk to Pawrly like any Flight SQL database. An operator can run both: Flight SQL for BI tools and custom gRPC for the CLI/MCP, both backed by one `EngineService`.
+- **HTTP (`pawrly-server`)** — one TCP port fronting three browser-friendly surfaces off the same engine: the **[REST/JSON API](./api.md)** (`/v1/sql`, `/v1/query`, catalog reads, materialized-table management), **gRPC-Web** for the browser client, and the embedded **[Console](./console.md)** SPA. Started with `pawrly console` or `pawrly serve --console`; gRPC-Web and REST share the six service definitions with the machine wire so the two can't drift.
+- **Arrow Flight SQL (`pawrly-flight`)** — exposes the engine over the Flight SQL protocol so BI and analytics clients (`pyarrow.flight`, ADBC drivers, Dremio, Tableau, Power BI) can talk to Pawrly like any Flight SQL database.
 
-A UDS leans on file permissions (mode 0600) as its trust boundary. TCP can be secured with **bearer-token auth** and **TLS** (PEM cert + key); a non-loopback TCP listener refuses to start without auth configured.
+An operator can run several at once — Flight SQL for BI tools, gRPC for the CLI/MCP, HTTP for the browser — all backed by one `EngineService`.
+
+A UDS leans on file permissions (mode 0600) as its trust boundary. A TCP listener refuses to bind a non-loopback address without **bearer-token auth**. The gRPC transport can also terminate **TLS** directly (PEM cert + key); the HTTP transport runs through axum and carries no built-in TLS, so a public deployment terminates TLS in front (e.g. a reverse proxy) to keep the token off the wire in cleartext.
 
 The [MCP server](./mcp.md) is itself a frontend, so it can run the engine in-process or proxy to a daemon — letting several agents share one engine and one cache.
 

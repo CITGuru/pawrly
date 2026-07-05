@@ -9,41 +9,41 @@ export type TocEntry = { id: string; text: string; depth: 2 | 3 };
 // (synced from the repo's docs/ by scripts/sync-install.mjs).
 export const docGroups: DocGroup[] = [
   {
-    heading: "Start here",
+    heading: "Get started",
     items: [
       { slug: "overview", title: "Overview", blurb: "What Pawrly is and how the pieces fit together." },
-      { slug: "cli", title: "CLI", blurb: "Every command: sql, schema, validate, serve, status, mcp-stdio." },
-      { slug: "config", title: "Configuration", blurb: "The pawrly.yaml schema — sources, secrets, caching, safety." },
+      { slug: "architecture", title: "Architecture", blurb: "Engine internals and local vs daemon behavior." },
     ],
   },
   {
-    heading: "Connect data",
+    heading: "Configure",
     items: [
+      { slug: "config", title: "Configuration", blurb: "The pawrly.yaml schema — sources, secrets, caching, safety." },
       { slug: "sources", title: "Sources", blurb: "Wire up APIs, files, databases, warehouses, lakehouses, and MCP servers." },
       { slug: "variables", title: "Variables", blurb: "Declared, typed, scoped inputs: non-secret config, static secrets, and OAuth-minted credentials." },
     ],
   },
   {
-    heading: "Model & serve",
+    heading: "Model your data",
     items: [
       { slug: "semantic", title: "Semantic layer", blurb: "Dimensions, measures, relationships, segments, RLS, and pre-aggregations." },
       { slug: "functions", title: "Functions", blurb: "Reusable, table-valued functions called as FROM ns.fn(args) — builtin or declared over http, mcp, and files." },
       { slug: "materialize", title: "Materialized tables", blurb: "Pin a query, file, or URL as a self-backed table." },
-      { slug: "api", title: "REST API", blurb: "Query and manage a workspace over JSON-over-HTTP, with an OpenAPI spec." },
     ],
   },
   {
-    heading: "For agents",
+    heading: "Interfaces",
     items: [
+      { slug: "cli", title: "CLI", blurb: "Every command: sql, schema, validate, serve, status, mcp-stdio." },
+      { slug: "api", title: "REST API", blurb: "Query and manage a workspace over JSON-over-HTTP, with an OpenAPI spec." },
       { slug: "mcp", title: "MCP server", blurb: "Run Pawrly as an MCP server and consume other MCP servers as sources." },
+      { slug: "console", title: "Console", blurb: "The web console for browsing sources and running queries." },
     ],
   },
   {
     heading: "Operate",
     items: [
       { slug: "observability", title: "Observability", blurb: "Traces, metrics, and a queryable activity log." },
-      { slug: "architecture", title: "Architecture", blurb: "Engine internals and local vs daemon behavior." },
-      { slug: "console", title: "Console", blurb: "The web console for browsing sources and running queries." },
     ],
   },
 ];

@@ -14,6 +14,7 @@ One SQL dialect over your APIs, files, databases, and AI models — no ETL, no w
 - **[Variables](./variables.md)** — declared, typed, scoped `${var:NAME}` inputs: non-secret config, static secrets, and OAuth-minted credentials.
 - **[CLI](./cli.md)** — the `pawrly` command reference.
 - **[REST API](./api.md)** — query and manage a workspace over JSON-over-HTTP; OpenAPI spec included.
+- **[Client SDKs](./clients.md)** — first-party TypeScript and Python clients over gRPC, REST, or an in-process engine.
 - **[Materialized tables](./materialize.md)** — persist a query, file, or URL as a named, self-backed table.
 - **[MCP server](./mcp.md)** — connect AI agents (Claude Desktop, Cursor, Codex, …) over the Model Context Protocol.
 - **[Console](./console.md)** — the browser UI: browse sources, catalog, and semantic models, and run SQL with live results.
