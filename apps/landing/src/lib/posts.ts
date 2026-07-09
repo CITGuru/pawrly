@@ -23,6 +23,7 @@ const BLOG_DIR = path.join(process.cwd(), "blogs");
 
 // Curated order — newest / most foundational first.
 const ORDER = [
+  "sql-code-mode-for-mcp",
   "how-to-query-any-api-with-sql",
   "sql-over-apis-the-missing-layer-between-mcp-and-etl",
   "agents-need-a-query-surface-not-more-tools",

@@ -1,7 +1,6 @@
 # SQL Code Mode for MCP
 
 <!-- published: 2026-07-01 -->
-<!-- draft: true -->
 
 ![A naive chain of MCP tool calls, pushing intermediate records through the model context, collapsing into a single SQL query the engine executes](/blog/sql-code-mode-for-mcp.png)
 
