@@ -3,8 +3,20 @@ name: CI
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
+      - "apps/landing/**"
+      - "assets/**"
+      - "LICENSE"
   pull_request:
     branches: [main]
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
+      - "apps/landing/**"
+      - "assets/**"
+      - "LICENSE"
 
 env:
   CARGO_TERM_COLOR: always
