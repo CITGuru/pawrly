@@ -266,7 +266,10 @@ impl EngineService for MockEngine {
         Ok(RefreshCatalogOutcome::default())
     }
 
-    async fn cache_entries(&self) -> Result<Vec<CacheEntryInfo>, EngineError> {
+    async fn cache_entries(
+        &self,
+        _namespace: Option<&str>,
+    ) -> Result<Vec<CacheEntryInfo>, EngineError> {
         Ok(self.inner.lock().cache_entries.clone())
     }
 
@@ -292,6 +295,7 @@ impl EngineService for MockEngine {
         &self,
         name: &str,
         _spec: MaterializeSpec,
+        _namespace: Option<&str>,
     ) -> Result<MaterializeOutcome, EngineError> {
         Ok(MaterializeOutcome {
             name: TableName::new(crate::MATERIALIZED_SCHEMA, name),
@@ -301,7 +305,11 @@ impl EngineService for MockEngine {
         })
     }
 
-    async fn drop_materialized(&self, _name: &str) -> Result<bool, EngineError> {
+    async fn drop_materialized(
+        &self,
+        _name: &str,
+        _namespace: Option<&str>,
+    ) -> Result<bool, EngineError> {
         Ok(false)
     }
 

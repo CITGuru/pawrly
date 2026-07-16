@@ -25,8 +25,13 @@ message CacheEntryInfo {
   uint32 file_count = 7;
 }
 
-message ListEntriesRequest {}
-message ListEntriesResponse { repeated CacheEntryInfo entries = 1; }
+// Empty namespace = the default workspace namespace.
+message ListEntriesRequest { string namespace = 1; }
+message ListEntriesResponse {
+  repeated CacheEntryInfo entries = 1;
+  // Echo of the request's namespace (see MaterializeResponse.namespace).
+  string namespace = 2;
+}
 
 message RefreshRequest { TableName name = 1; }
 message RefreshResponse {
@@ -88,13 +93,27 @@ message InlineSpec {
 message MaterializeRequest {
   string name = 1;
   MaterializeSpec spec = 2;
+  // Target namespace — the table becomes queryable as
+  // `<namespace>.materialized.<name>`. Empty = the default workspace namespace.
+  string namespace = 3;
 }
 message MaterializeResponse {
   TableName name = 1;
   string file_path = 2;
   uint64 row_count = 3;
   uint64 size_bytes = 4;
+  // Echo of the request's namespace; empty when the server predates
+  // namespaces — how a client detects that its namespace was ignored.
+  string namespace = 5;
 }
 
-message DropMaterializedRequest { string name = 1; }
-message DropMaterializedResponse { bool dropped = 1; }
+message DropMaterializedRequest {
+  string name = 1;
+  // Empty = the default workspace namespace.
+  string namespace = 2;
+}
+message DropMaterializedResponse {
+  bool dropped = 1;
+  // Echo of the request's namespace (see MaterializeResponse.namespace).
+  string namespace = 2;
+}

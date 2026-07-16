@@ -26,7 +26,7 @@ use crate::cache::CacheManager;
 use crate::duckdb_pool::DuckDbPool;
 use crate::registry;
 
-const PAWRLY_CATALOG: &str = "pawrly";
+pub(crate) const PAWRLY_CATALOG: &str = "pawrly";
 
 /// Configuration for [`LocalEngine::new`].
 #[derive(Debug, Clone)]
@@ -75,7 +75,12 @@ pub(crate) struct LocalEngineInner {
     /// pattern as `sources`.
     functions: RwLock<crate::functions::FunctionRegistry>,
     workspace_dir: PathBuf,
+    /// The default namespace's manager, used directly by the read-through
+    /// cache paths; the materialize verbs resolve through `namespaces`.
     pub(crate) cache: Arc<CacheManager>,
+    /// Per-call materialize namespaces, shared with the session's catalog
+    /// list so a namespaced table is queryable the moment it exists.
+    pub(crate) namespaces: Arc<crate::namespace::NamespaceRegistry>,
     /// Compiled semantic-layer models. Empty when no `semantic:` block exists.
     pub(crate) semantic: Arc<SemanticCatalog>,
     /// Background cache refreshers keyed by source name (one entry per
@@ -203,32 +208,6 @@ impl LocalEngine {
         use datafusion::execution::config::SessionConfig;
         use datafusion::execution::session_state::SessionStateBuilder;
 
-        let session_config = SessionConfig::new()
-            .with_default_catalog_and_schema(PAWRLY_CATALOG, "default")
-            .with_create_default_catalog_and_schema(false)
-            .with_information_schema(true);
-        // Register the dependent-join rule (last, after the built-in physical
-        // rules) so a required-param HTTP table can be driven by another table's
-        // ids — e.g. a ranked-id list joined to a get-by-id detail endpoint.
-        let session_state = SessionStateBuilder::new()
-            .with_config(session_config)
-            .with_default_features()
-            .with_physical_optimizer_rule(Arc::new(pawrly_sources_http::DependentJoinRule::new()))
-            .build();
-        let mut ctx = SessionContext::new_with_state(session_state);
-        // Register the JSON SQL functions so `json`-typed columns (stored as
-        // Utf8) are queryable in SQL.
-        crate::json_udf::register(&mut ctx)
-            .map_err(|e| EngineError::Internal(format!("register json udfs: {e}")))?;
-        let catalog: Arc<MemoryCatalogProvider> = Arc::new(MemoryCatalogProvider::new());
-        // Register a `default` schema so `SELECT * FROM unqualified_table` resolves.
-        let default_schema: Arc<dyn datafusion::catalog::SchemaProvider> =
-            Arc::new(datafusion::catalog::MemorySchemaProvider::new());
-        let _ = catalog
-            .register_schema("default", default_schema)
-            .map_err(|e| EngineError::Internal(format!("register default schema: {e}")))?;
-        ctx.register_catalog(PAWRLY_CATALOG, catalog.clone());
-
         // The cache root comes from `defaults.cache.storage` when set (with
         // `~` / `~/` expanded against `$HOME`), otherwise `<home>/cache` under
         // the resolved Pawrly home — NOT the workspace dir, so cached data
@@ -258,6 +237,40 @@ impl LocalEngine {
             CacheManager::new(cache_root)
                 .map_err(|e| EngineError::Internal(format!("cache init: {e}")))?,
         );
+        let namespaces = Arc::new(crate::namespace::NamespaceRegistry::new(
+            storage,
+            namespace.clone(),
+            cache.clone(),
+        ));
+
+        let session_config = SessionConfig::new()
+            .with_default_catalog_and_schema(PAWRLY_CATALOG, "default")
+            .with_create_default_catalog_and_schema(false)
+            .with_information_schema(true);
+        // Register the dependent-join rule (last, after the built-in physical
+        // rules) so a required-param HTTP table can be driven by another table's
+        // ids — e.g. a ranked-id list joined to a get-by-id detail endpoint.
+        let session_state = SessionStateBuilder::new()
+            .with_config(session_config)
+            .with_default_features()
+            .with_catalog_list(Arc::new(crate::namespace::DynamicNamespaceCatalogs::new(
+                namespaces.clone(),
+            )))
+            .with_physical_optimizer_rule(Arc::new(pawrly_sources_http::DependentJoinRule::new()))
+            .build();
+        let mut ctx = SessionContext::new_with_state(session_state);
+        // Register the JSON SQL functions so `json`-typed columns (stored as
+        // Utf8) are queryable in SQL.
+        crate::json_udf::register(&mut ctx)
+            .map_err(|e| EngineError::Internal(format!("register json udfs: {e}")))?;
+        let catalog: Arc<MemoryCatalogProvider> = Arc::new(MemoryCatalogProvider::new());
+        // Register a `default` schema so `SELECT * FROM unqualified_table` resolves.
+        let default_schema: Arc<dyn datafusion::catalog::SchemaProvider> =
+            Arc::new(datafusion::catalog::MemorySchemaProvider::new());
+        let _ = catalog
+            .register_schema("default", default_schema)
+            .map_err(|e| EngineError::Internal(format!("register default schema: {e}")))?;
+        ctx.register_catalog(PAWRLY_CATALOG, catalog.clone());
 
         // The read-only namespace catalog gives cached snapshots a second,
         // SQL-addressable face at `<namespace>.<source>.<table>`, without
@@ -363,6 +376,7 @@ impl LocalEngine {
             functions: RwLock::new(crate::functions::FunctionRegistry::default()),
             workspace_dir: cfg.workspace_dir.clone(),
             cache,
+            namespaces,
             semantic,
             refreshers: Mutex::new(HashMap::new()),
             config_path,
@@ -631,7 +645,7 @@ fn cache_namespace(
 
 /// Keep a path segment filesystem-safe: alphanumerics, `_`, `-`, `.` pass
 /// through; every other character becomes `-`.
-fn sanitize_segment(s: &str) -> String {
+pub(crate) fn sanitize_segment(s: &str) -> String {
     s.chars()
         .map(|c| {
             if c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.') {
@@ -965,6 +979,7 @@ impl EngineService for LocalEngine {
                     sql: body,
                     params: req.params.clone(),
                 },
+                None,
             )
             .await
             .inspect_err(|e| guard.mark_error(e))?;
@@ -1227,8 +1242,16 @@ impl EngineService for LocalEngine {
         })
     }
 
-    async fn cache_entries(&self) -> Result<Vec<CacheEntryInfo>, EngineError> {
-        Ok(self.inner.cache.list())
+    async fn cache_entries(
+        &self,
+        namespace: Option<&str>,
+    ) -> Result<Vec<CacheEntryInfo>, EngineError> {
+        Ok(self
+            .inner
+            .namespaces
+            .for_read(namespace)?
+            .map(|cache| cache.list())
+            .unwrap_or_default())
     }
 
     async fn refresh_table(&self, name: &TableName) -> Result<RefreshOutcome, EngineError> {
@@ -1270,22 +1293,26 @@ impl EngineService for LocalEngine {
     #[tracing::instrument(
         name = "pawrly.engine.materialize",
         skip_all,
-        fields(pawrly.engine = "local", pawrly.table = %name)
+        fields(
+            pawrly.engine = "local",
+            pawrly.table = %name,
+            pawrly.namespace = namespace.unwrap_or_default()
+        )
     )]
     async fn materialize(
         &self,
         name: &str,
         spec: MaterializeSpec,
+        namespace: Option<&str>,
     ) -> Result<MaterializeOutcome, EngineError> {
         validate_materialized_name(name)?;
+        let cache = self.inner.namespaces.for_write(namespace)?;
 
         // Every origin reduces to "produce Arrow batches + a schema". `_tmp`
         // keeps an Inline spec's backing file alive until the read completes.
         let (schema, batches, _tmp) = self.produce_materialize(&spec).await?;
 
-        let entry = self
-            .inner
-            .cache
+        let entry = cache
             .materialize(name, schema, &batches, spec)
             .map_err(|e| EngineError::Internal(format!("materialize write: {e}")))?;
 
@@ -1297,8 +1324,15 @@ impl EngineService for LocalEngine {
         })
     }
 
-    async fn drop_materialized(&self, name: &str) -> Result<bool, EngineError> {
-        self.inner.cache.drop_materialized(name)
+    async fn drop_materialized(
+        &self,
+        name: &str,
+        namespace: Option<&str>,
+    ) -> Result<bool, EngineError> {
+        match self.inner.namespaces.for_read(namespace)? {
+            Some(cache) => cache.drop_materialized(name),
+            None => Ok(false),
+        }
     }
 
     async fn add_source(&self, def: SourceDef) -> Result<SourceInfo, EngineError> {

@@ -64,8 +64,8 @@ The server exposes these tools:
 | `describe_table` | `{ table }` | one table's columns, descriptions, pushdown affordances, examples, and agent-facing `wiki` notes |
 | `get_schema` | `{ sources?, compact? }` | a compact catalog overview for grounding an LLM |
 | `refresh_table` | `{ table }` | forces a cache refresh; returns rows written, size, and expiry |
-| `materialize` | `{ name, sql? \| file? \| url?, format?, params? }` | persists a named, self-backed table; `{ name, file_path, row_count, size_bytes }` |
-| `drop_materialized` | `{ name }` | drops a materialized table; `{ dropped }` |
+| `materialize` | `{ name, sql? \| file? \| url?, format?, params?, namespace? }` | persists a named, self-backed table; `{ name, file_path, row_count, size_bytes }` |
+| `drop_materialized` | `{ name, namespace? }` | drops a materialized table; `{ dropped }` |
 | `list_semantic_models` | `{}` | the semantic models with dimension/measure counts |
 | `describe_semantic_model` | `{ name }` | one model's full spec — dimensions, measures, relationships |
 | `semantic_query` | a structured query (below) | `{ columns, rows, row_count, truncated }` |
@@ -144,7 +144,7 @@ Force an immediate cache refresh of a fully-qualified table. Only valid for tabl
 
 ### `materialize`
 
-Persist data as a named, self-backed table queryable as `<namespace>.materialized.<name>` (see [materialize](./materialize.md)). Provide exactly one origin: `sql` (a query), `file` (a local CSV/Parquet/JSON path), or `url` (an http(s) file). Create-or-replace by name; the table is pinned and never auto-evicted. Returns `{ name, file_path, row_count, size_bytes }`.
+Persist data as a named, self-backed table queryable as `<namespace>.materialized.<name>` (see [materialize](./materialize.md)). Provide exactly one origin: `sql` (a query), `file` (a local CSV/Parquet/JSON path), or `url` (an http(s) file). Create-or-replace by name; the table is pinned and never auto-evicted. An optional `namespace` targets an isolated [materialize namespace](./materialize.md#custom-namespaces); omitted = the default workspace namespace. Returns `{ name, file_path, row_count, size_bytes }`.
 
 ```json
 { "name": "top_customers", "sql": "SELECT * FROM data.customers ORDER BY revenue DESC LIMIT 100" }
@@ -152,7 +152,7 @@ Persist data as a named, self-backed table queryable as `<namespace>.materialize
 
 ### `drop_materialized`
 
-Drop a materialized table by name. Returns `{ dropped }` — `false` if no such table existed.
+Drop a materialized table by name (optionally from a `namespace`). Returns `{ dropped }` — `false` if no such table existed.
 
 ```json
 { "name": "top_customers" }

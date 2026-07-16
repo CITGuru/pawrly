@@ -285,7 +285,11 @@ pub trait EngineService: Send + Sync + 'static {
 
     // -------- cache --------
 
-    async fn cache_entries(&self) -> Result<Vec<CacheEntryInfo>, EngineError>;
+    /// List cache entries. `None`/empty `namespace` = the default workspace
+    async fn cache_entries(
+        &self,
+        namespace: Option<&str>,
+    ) -> Result<Vec<CacheEntryInfo>, EngineError>;
 
     async fn refresh_table(&self, name: &TableName) -> Result<RefreshOutcome, EngineError>;
 
@@ -297,16 +301,20 @@ pub trait EngineService: Send + Sync + 'static {
 
     /// Run `spec` and persist its result as a self-backed Parquet table named
     /// `name`, queryable as `<namespace>.materialized.<name>`. Pinned (never
-    /// auto-reclaimed by TTL/vacuum); create-or-replace by name.
+    /// auto-reclaimed by TTL/vacuum); create-or-replace by name
     async fn materialize(
         &self,
         name: &str,
         spec: MaterializeSpec,
+        namespace: Option<&str>,
     ) -> Result<MaterializeOutcome, EngineError>;
 
-    /// Drop a materialized table (entry + file). Returns `false` if no such
-    /// table existed. Only acts on `materialized.<name>`.
-    async fn drop_materialized(&self, name: &str) -> Result<bool, EngineError>;
+    /// Drop a materialized table, returns `false` if no such table existed.
+    async fn drop_materialized(
+        &self,
+        name: &str,
+        namespace: Option<&str>,
+    ) -> Result<bool, EngineError>;
 
     // -------- source mgmt --------
 

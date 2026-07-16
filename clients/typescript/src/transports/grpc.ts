@@ -111,15 +111,21 @@ export class GrpcTransport implements Transport {
     return (await unary(this.query_.cancel({ queryId }))).cancelled;
   }
 
-  async materialize(name: string, spec: MaterializeSpec): Promise<MaterializeOutcome> {
+  async materialize(
+    name: string,
+    spec: MaterializeSpec,
+    namespace?: string,
+  ): Promise<MaterializeOutcome> {
     const resp = await unary(
       this.cache_.materialize({
         name,
+        namespace: namespace ?? "",
         spec: {
           spec: { case: "query", value: { sql: spec.sql, params: spec.params ?? {} } },
         },
       }),
     );
+    requireNamespaceEcho(namespace, resp.namespace);
     return {
       name: { schema: resp.name?.schema ?? "", table: resp.name?.table ?? "" },
       filePath: resp.filePath,
@@ -157,8 +163,9 @@ export class GrpcTransport implements Transport {
     return convert.catalogSnapshot(JSON.parse(new TextDecoder().decode(resp.snapshotJson)));
   }
 
-  async cacheEntries(): Promise<CacheEntryInfo[]> {
-    const resp = await unary(this.cache_.listEntries({}));
+  async cacheEntries(namespace?: string): Promise<CacheEntryInfo[]> {
+    const resp = await unary(this.cache_.listEntries({ namespace: namespace ?? "" }));
+    requireNamespaceEcho(namespace, resp.namespace);
     return resp.entries.map(pbCacheEntry);
   }
 
@@ -244,8 +251,10 @@ export class GrpcTransport implements Transport {
     };
   }
 
-  async dropMaterialized(name: string): Promise<boolean> {
-    return (await unary(this.cache_.dropMaterialized({ name }))).dropped;
+  async dropMaterialized(name: string, namespace?: string): Promise<boolean> {
+    const resp = await unary(this.cache_.dropMaterialized({ name, namespace: namespace ?? "" }));
+    requireNamespaceEcho(namespace, resp.namespace);
+    return resp.dropped;
   }
 
   async health(): Promise<HealthReport> {
@@ -315,6 +324,16 @@ async function unary<T>(call: Promise<T>): Promise<T> {
 /** Map a Connect status error to a `PawrlyError`, reading the stable `PAWRLY_*`
  * code the server puts in trailing metadata (`pawrly-error-code`). An in-stream
  * `error` frame already surfaces as a `PawrlyError`; pass those through. */
+function requireNamespaceEcho(requested: string | undefined, echoed: string | undefined): void {
+  if (requested && requested !== echoed) {
+    throw new PawrlyError(
+      "PAWRLY_PROTOCOL",
+      `server ignored namespace \`${requested}\` — it predates materialize namespaces, so the ` +
+        "operation targeted the default namespace instead; upgrade the server",
+    );
+  }
+}
+
 function toPawrlyError(e: unknown): PawrlyError {
   if (e instanceof PawrlyError) return e;
   const ce = ConnectError.from(e);

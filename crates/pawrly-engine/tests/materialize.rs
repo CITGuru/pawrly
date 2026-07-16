@@ -15,7 +15,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use pawrly_config::Config;
-use pawrly_core::{EngineService, EngineServiceExt, MaterializeSpec, TableName};
+use pawrly_core::{CacheMode, EngineService, EngineServiceExt, MaterializeSpec, TableName};
 use pawrly_engine::{LocalEngine, LocalEngineConfig};
 use tempfile::TempDir;
 
@@ -100,6 +100,7 @@ async fn materialize_query_persists_and_is_addressable() {
         .materialize(
             "rev_by_customer",
             query("SELECT customer, SUM(amount_cents) AS total FROM data.orders GROUP BY customer"),
+            None,
         )
         .await
         .unwrap();
@@ -134,7 +135,7 @@ async fn materialize_query_persists_and_is_addressable() {
     assert_eq!(count_of(&ben), 6700);
 
     // It shows up as a cache entry (so `pawrly cache list` surfaces it).
-    let entries = svc.cache_entries().await.unwrap();
+    let entries = svc.cache_entries(None).await.unwrap();
     assert!(
         entries
             .iter()
@@ -149,7 +150,7 @@ async fn materialized_table_is_pinned_against_vacuum() {
     let svc = build_engine(workspace.path()).await;
 
     let outcome = svc
-        .materialize("snap", query("SELECT * FROM data.orders"))
+        .materialize("snap", query("SELECT * FROM data.orders"), None)
         .await
         .unwrap();
     assert!(outcome.file_path.exists());
@@ -174,7 +175,7 @@ async fn materialize_is_create_or_replace_and_droppable() {
     let svc = build_engine(workspace.path()).await;
 
     // First version: all 5 rows.
-    svc.materialize("t", query("SELECT * FROM data.orders"))
+    svc.materialize("t", query("SELECT * FROM data.orders"), None)
         .await
         .unwrap();
     let v1 = svc
@@ -188,6 +189,7 @@ async fn materialize_is_create_or_replace_and_droppable() {
         .materialize(
             "t",
             query("SELECT * FROM data.orders WHERE amount_cents > 1000"),
+            None,
         )
         .await
         .unwrap();
@@ -199,7 +201,7 @@ async fn materialize_is_create_or_replace_and_droppable() {
     assert_eq!(count_of(&v2), 2, "re-materialize must overwrite by name");
 
     // Drop it.
-    assert!(svc.drop_materialized("t").await.unwrap());
+    assert!(svc.drop_materialized("t", None).await.unwrap());
     assert!(
         svc.query_collect("SELECT * FROM test.materialized.t")
             .await
@@ -207,7 +209,7 @@ async fn materialize_is_create_or_replace_and_droppable() {
         "dropped table must no longer resolve"
     );
     // Dropping again is a no-op.
-    assert!(!svc.drop_materialized("t").await.unwrap());
+    assert!(!svc.drop_materialized("t", None).await.unwrap());
 }
 
 #[tokio::test]
@@ -215,7 +217,7 @@ async fn materialize_survives_restart() {
     let workspace = TempDir::new().unwrap();
     {
         let svc = build_engine(workspace.path()).await;
-        svc.materialize("keep", query("SELECT * FROM data.orders"))
+        svc.materialize("keep", query("SELECT * FROM data.orders"), None)
             .await
             .unwrap();
     }
@@ -243,6 +245,7 @@ async fn materialize_from_local_file_infers_format() {
                 path: fixtures_dir().join("orders.parquet"),
                 format: None,
             },
+            None,
         )
         .await
         .unwrap();
@@ -262,6 +265,7 @@ async fn materialize_from_local_file_infers_format() {
                 path: fixtures_dir().join("customers.csv"),
                 format: Some(MaterializeFormat::Csv),
             },
+            None,
         )
         .await
         .unwrap();
@@ -282,6 +286,7 @@ async fn materialize_from_inline_bytes() {
                 bytes: b"city,pop\nlagos,15000000\nabuja,3000000\n".to_vec(),
                 format: MaterializeFormat::Csv,
             },
+            None,
         )
         .await
         .unwrap();
@@ -311,6 +316,7 @@ async fn refresh_reruns_materialized_origin() {
                 path: src.clone(),
                 format: Some(MaterializeFormat::Csv),
             },
+            None,
         )
         .await
         .unwrap();
@@ -342,7 +348,7 @@ async fn refresh_reruns_materialized_origin() {
 async fn unqualified_materialized_name_resolves() {
     let workspace = TempDir::new().unwrap();
     let svc = build_engine(workspace.path()).await;
-    svc.materialize("t", query("SELECT * FROM data.orders"))
+    svc.materialize("t", query("SELECT * FROM data.orders"), None)
         .await
         .unwrap();
 
@@ -430,8 +436,153 @@ async fn invalid_materialized_name_is_rejected() {
 
     for bad in ["", "a.b", "a/b", "has space", " leading"] {
         assert!(
-            svc.materialize(bad, query("SELECT 1")).await.is_err(),
+            svc.materialize(bad, query("SELECT 1"), None).await.is_err(),
             "name `{bad}` should be rejected"
         );
     }
+}
+
+#[tokio::test]
+async fn namespaced_materialize_isolates_same_name() {
+    let workspace = TempDir::new().unwrap();
+    let svc = build_engine(workspace.path()).await;
+
+    svc.materialize("t", query("SELECT * FROM data.orders"), None)
+        .await
+        .unwrap();
+    let a = svc
+        .materialize(
+            "t",
+            query("SELECT * FROM data.orders WHERE amount_cents > 1000"),
+            Some("sess_a"),
+        )
+        .await
+        .unwrap();
+    let b = svc
+        .materialize("t", query("SELECT 1 AS x"), Some("sess_b"))
+        .await
+        .unwrap();
+
+    let root = storage_root(workspace.path());
+    assert!(a.file_path.starts_with(root.join("sess_a")));
+    assert!(b.file_path.starts_with(root.join("sess_b")));
+
+    let default = svc
+        .query_collect("SELECT COUNT(*) AS n FROM test.materialized.t")
+        .await
+        .unwrap();
+    assert_eq!(count_of(&default), 5);
+    let in_a = svc
+        .query_collect("SELECT COUNT(*) AS n FROM sess_a.materialized.t")
+        .await
+        .unwrap();
+    assert_eq!(count_of(&in_a), 2);
+    let in_b = svc
+        .query_collect("SELECT COUNT(*) AS n FROM sess_b.materialized.t")
+        .await
+        .unwrap();
+    assert_eq!(count_of(&in_b), 1);
+
+    let list_a = svc.cache_entries(Some("sess_a")).await.unwrap();
+    assert_eq!(list_a.len(), 1);
+    assert_eq!(list_a[0].name, TableName::new("materialized", "t"));
+    assert_eq!(list_a[0].mode, CacheMode::Pinned);
+    let default_list = svc.cache_entries(None).await.unwrap();
+    assert_eq!(
+        default_list
+            .iter()
+            .filter(|e| e.name == TableName::new("materialized", "t"))
+            .count(),
+        1
+    );
+
+    // Passing the workspace's own namespace explicitly is an alias for the
+    // default, not a new store.
+    let aliased = svc.cache_entries(Some("test")).await.unwrap();
+    assert_eq!(aliased.len(), default_list.len());
+}
+
+#[tokio::test]
+async fn namespaced_drop_is_scoped() {
+    let workspace = TempDir::new().unwrap();
+    let svc = build_engine(workspace.path()).await;
+
+    svc.materialize("t", query("SELECT * FROM data.orders"), None)
+        .await
+        .unwrap();
+    svc.materialize("t", query("SELECT 1 AS x"), Some("sess_a"))
+        .await
+        .unwrap();
+
+    assert!(svc.drop_materialized("t", Some("sess_a")).await.unwrap());
+    assert!(
+        svc.query_collect("SELECT * FROM sess_a.materialized.t")
+            .await
+            .is_err(),
+        "dropped namespaced table must not resolve"
+    );
+    let still_there = svc
+        .query_collect("SELECT COUNT(*) AS n FROM test.materialized.t")
+        .await
+        .unwrap();
+    assert_eq!(count_of(&still_there), 5);
+
+    // A namespace that never existed reports false (and is not created).
+    assert!(
+        !svc.drop_materialized("t", Some("never_seen"))
+            .await
+            .unwrap()
+    );
+    assert!(!storage_root(workspace.path()).join("never_seen").exists());
+    assert!(
+        svc.cache_entries(Some("never_seen"))
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn invalid_or_reserved_namespace_is_rejected() {
+    let workspace = TempDir::new().unwrap();
+    let svc = build_engine(workspace.path()).await;
+
+    for bad in [
+        "has space",
+        "a/b",
+        "..",
+        "---",
+        "pawrly",
+        "materialized",
+        "system",
+        "information_schema",
+    ] {
+        assert!(
+            svc.materialize("t", query("SELECT 1"), Some(bad))
+                .await
+                .is_err(),
+            "namespace `{bad}` should be rejected"
+        );
+    }
+}
+
+#[tokio::test]
+async fn namespaced_table_survives_engine_restart() {
+    let workspace = TempDir::new().unwrap();
+    {
+        let svc = build_engine(workspace.path()).await;
+        svc.materialize("t", query("SELECT 1 AS x"), Some("sess_a"))
+            .await
+            .unwrap();
+    }
+
+    // A fresh engine has never seen `sess_a`, but the catalog list resolves it
+    // from the storage root — the table is queryable with no prior touch.
+    let svc = build_engine(workspace.path()).await;
+    let rows = svc
+        .query_collect("SELECT COUNT(*) AS n FROM sess_a.materialized.t")
+        .await
+        .unwrap();
+    assert_eq!(count_of(&rows), 1);
+    assert_eq!(svc.cache_entries(Some("sess_a")).await.unwrap().len(), 1);
 }

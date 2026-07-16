@@ -30,7 +30,7 @@ A materialized table lives under the reserved `materialized` schema and is addre
 pawrly sql "SELECT * FROM materialized.top_customers ORDER BY total DESC"
 ```
 
-The unqualified `materialized.<name>` form resolves within the workspace. The fully-qualified `<namespace>.materialized.<name>` form is also available — see [Direct cache reads](#direct-cache-reads) below. Materialized tables show up in `pawrly cache list` alongside cached entries.
+The unqualified `materialized.<name>` form resolves within the workspace. The fully-qualified `<namespace>.materialized.<name>` form is also available — see [Direct cache reads](#direct-cache-reads) below. Materialized tables show up in `pawrly cache list` alongside cached entries, with mode `pinned`.
 
 ## Create-or-replace, refresh, and drop
 
@@ -52,6 +52,23 @@ pawrly cache refresh materialized.sales
 ```bash
 pawrly materialize sales --drop
 ```
+
+## Custom namespaces
+
+By default a materialized table lands in the workspace namespace. Pass `--namespace` to target a different one — each namespace is a fully isolated store (its own storage directory, manifest, and SQL address), so the same table name never collides across namespaces:
+
+```bash
+pawrly materialize top_customers "SELECT …" --namespace sess_a
+pawrly materialize top_customers "SELECT …" --namespace sess_b   # no clobber
+
+pawrly sql "SELECT * FROM sess_a.materialized.top_customers"
+pawrly cache list --namespace sess_a
+pawrly materialize top_customers --drop --namespace sess_a
+```
+
+A namespace is created on first write and resolves in SQL from then on — including after a daemon restart, and when written by another process sharing the storage root. Namespace names use alphanumerics, `_`, `-`, and `.`; `pawrly`, `materialized`, `system`, and `information_schema` are reserved.
+
+The same knob rides on every surface: `--namespace` on the CLI, a `namespace` field on the `Materialize` `DropMaterialized`/`ListEntries` RPCs, a `?namespace=` query parameter on the REST endpoints, and a `namespace` argument on the MCP tools. Omitted or empty always means the default workspace namespace. This is one shared engine's organizational boundary, not a security boundary — any caller holding the server's bearer token can address any namespace.
 
 ## Inline directive
 

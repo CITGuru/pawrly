@@ -154,16 +154,21 @@ class GrpcTransport:
             )
         ).cancelled
 
-    def materialize(self, name: str, spec: MaterializeSpec) -> MaterializeOutcome:
+    def materialize(
+        self, name: str, spec: MaterializeSpec, namespace: str | None = None
+    ) -> MaterializeOutcome:
         proto_spec = cache_pb2.MaterializeSpec(
             query=cache_pb2.QuerySpec(sql=spec.sql, params=spec.params or {})
         )
         resp = self._unary(
             lambda: self._cache.Materialize(
-                cache_pb2.MaterializeRequest(name=name, spec=proto_spec),
+                cache_pb2.MaterializeRequest(
+                    name=name, spec=proto_spec, namespace=namespace or ""
+                ),
                 metadata=self._metadata,
             )
         )
+        _require_namespace_echo(namespace, resp.namespace)
         return MaterializeOutcome(
             name={"schema": resp.name.schema, "table": resp.name.table},
             file_path=resp.file_path,
@@ -221,12 +226,14 @@ class GrpcTransport:
         # The snapshot travels as serde JSON bytes — the same shape REST returns.
         return convert.catalog_snapshot(json.loads(resp.snapshot_json))
 
-    def cache_entries(self) -> list[CacheEntryInfo]:
+    def cache_entries(self, namespace: str | None = None) -> list[CacheEntryInfo]:
         resp = self._unary(
             lambda: self._cache.ListEntries(
-                cache_pb2.ListEntriesRequest(), metadata=self._metadata
+                cache_pb2.ListEntriesRequest(namespace=namespace or ""),
+                metadata=self._metadata,
             )
         )
+        _require_namespace_echo(namespace, resp.namespace)
         return [_cache_entry(e) for e in resp.entries]
 
     def list_functions(self) -> list[FunctionInfo]:
@@ -363,12 +370,17 @@ class GrpcTransport:
             bytes_reclaimed=resp.bytes_reclaimed,
         )
 
-    def drop_materialized(self, name: str) -> bool:
-        return self._unary(
+    def drop_materialized(self, name: str, namespace: str | None = None) -> bool:
+        resp = self._unary(
             lambda: self._cache.DropMaterialized(
-                cache_pb2.DropMaterializedRequest(name=name), metadata=self._metadata
+                cache_pb2.DropMaterializedRequest(
+                    name=name, namespace=namespace or ""
+                ),
+                metadata=self._metadata,
             )
-        ).dropped
+        )
+        _require_namespace_echo(namespace, resp.namespace)
+        return resp.dropped
 
     def health(self) -> HealthReport:
         resp = self._unary(
@@ -431,6 +443,16 @@ def _status_to_error(err: grpc.RpcError) -> PawrlyError:
             code = value.decode() if isinstance(value, (bytes, bytearray)) else value
             break
     return PawrlyError(code, err.details() or "")
+
+
+def _require_namespace_echo(requested: str | None, echoed: str | None) -> None:
+    if requested and requested != echoed:
+        raise PawrlyError(
+            "PAWRLY_PROTOCOL",
+            f"server ignored namespace `{requested}` — it predates materialize "
+            "namespaces, so the operation targeted the default namespace instead; "
+            "upgrade the server",
+        )
 
 
 def _denum(enum_cls, value: int, prefix: str) -> str:

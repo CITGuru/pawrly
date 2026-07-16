@@ -34,6 +34,11 @@ pub struct ListArgs {
     /// Emit JSON instead of a table.
     #[arg(long)]
     pub json: bool,
+
+    /// List a materialize namespace's entries instead of the default
+    /// workspace namespace's.
+    #[arg(long, value_name = "NS")]
+    pub namespace: Option<String>,
 }
 
 #[derive(ClapArgs, Debug)]
@@ -88,7 +93,7 @@ async fn list(
     args: ListArgs,
 ) -> anyhow::Result<()> {
     let svc = crate::engine::build_engine(remote, no_remote, home, config).await?;
-    let entries = svc.cache_entries().await?;
+    let entries = svc.cache_entries(args.namespace.as_deref()).await?;
 
     if args.json {
         println!("{}", serde_json::to_string(&entries)?);
@@ -125,7 +130,7 @@ async fn show(
     let name = TableName::parse(&args.id)
         .ok_or_else(|| anyhow::anyhow!("invalid id `{}`; expected `<source>.<table>`", args.id))?;
     let svc = crate::engine::build_engine(remote, no_remote, home, config).await?;
-    let entries = svc.cache_entries().await?;
+    let entries = svc.cache_entries(None).await?;
     let Some(e) = entries.into_iter().find(|e| e.name == name) else {
         println!("no cache entry for {name}");
         return Ok(());

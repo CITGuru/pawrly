@@ -28,11 +28,12 @@ impl CacheSvc {
 impl CacheService for CacheSvc {
     async fn list_entries(
         &self,
-        _req: Request<ListEntriesRequest>,
+        req: Request<ListEntriesRequest>,
     ) -> Result<Response<ListEntriesResponse>, Status> {
+        let namespace = req.into_inner().namespace;
         let entries = self
             .engine
-            .cache_entries()
+            .cache_entries(none_if_empty(&namespace))
             .await
             .map_err(|e| engine_error_to_status(&e))?;
         let proto = entries
@@ -47,7 +48,10 @@ impl CacheService for CacheSvc {
                 file_count: e.file_count,
             })
             .collect();
-        Ok(Response::new(ListEntriesResponse { entries: proto }))
+        Ok(Response::new(ListEntriesResponse {
+            entries: proto,
+            namespace,
+        }))
     }
 
     async fn refresh(
@@ -119,24 +123,33 @@ impl CacheService for CacheSvc {
         let core_spec = pawrly_core::MaterializeSpec::try_from(spec)?;
         let outcome = self
             .engine
-            .materialize(&req.name, core_spec)
+            .materialize(&req.name, core_spec, none_if_empty(&req.namespace))
             .await
             .map_err(|e| engine_error_to_status(&e))?;
-        Ok(Response::new(outcome.into()))
+        let mut resp: MaterializeResponse = outcome.into();
+        resp.namespace = req.namespace;
+        Ok(Response::new(resp))
     }
 
     async fn drop_materialized(
         &self,
         req: Request<DropMaterializedRequest>,
     ) -> Result<Response<DropMaterializedResponse>, Status> {
-        let name = req.into_inner().name;
+        let req = req.into_inner();
         let dropped = self
             .engine
-            .drop_materialized(&name)
+            .drop_materialized(&req.name, none_if_empty(&req.namespace))
             .await
             .map_err(|e| engine_error_to_status(&e))?;
-        Ok(Response::new(DropMaterializedResponse { dropped }))
+        Ok(Response::new(DropMaterializedResponse {
+            dropped,
+            namespace: req.namespace,
+        }))
     }
+}
+
+fn none_if_empty(s: &str) -> Option<&str> {
+    if s.is_empty() { None } else { Some(s) }
 }
 
 fn timestamp(t: chrono::DateTime<chrono::Utc>) -> Timestamp {

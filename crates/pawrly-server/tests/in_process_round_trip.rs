@@ -151,18 +151,37 @@ async fn materialize_round_trip() {
             "rev",
             MaterializeSpec::Query {
                 sql: "SELECT * FROM data.orders WHERE amount_cents > ${param:min}".into(),
-                params,
+                params: params.clone(),
             },
+            None,
         )
         .await
         .expect("materialize over gRPC");
     assert_eq!(outcome.name, TableName::new("materialized", "rev"));
 
+    let outcome = client
+        .materialize(
+            "rev",
+            MaterializeSpec::Query {
+                sql: "SELECT 1".into(),
+                params,
+            },
+            Some("sess_abc"),
+        )
+        .await
+        .expect("namespaced materialize over gRPC");
+    assert_eq!(outcome.name, TableName::new("materialized", "rev"));
+
     // drop_materialized round-trips its bool.
     let dropped = client
-        .drop_materialized("rev")
+        .drop_materialized("rev", None)
         .await
         .expect("drop_materialized over gRPC");
+    assert!(!dropped, "mock reports nothing to drop");
+    let dropped = client
+        .drop_materialized("rev", Some("sess_abc"))
+        .await
+        .expect("namespaced drop_materialized over gRPC");
     assert!(!dropped, "mock reports nothing to drop");
 }
 

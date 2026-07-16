@@ -97,6 +97,16 @@ fn dur(d: Option<prost_types::Duration>) -> Duration {
     .unwrap_or(Duration::ZERO)
 }
 
+fn require_namespace_echo(requested: Option<&str>, echoed: &str) -> Result<(), EngineError> {
+    match requested {
+        Some(ns) if !ns.is_empty() && ns != echoed => Err(EngineError::Protocol(format!(
+            "daemon ignored namespace `{ns}` — it predates materialize namespaces, so the \
+             operation targeted the default namespace instead; upgrade the daemon"
+        ))),
+        _ => Ok(()),
+    }
+}
+
 fn ts(t: prost_types::Timestamp) -> chrono::DateTime<chrono::Utc> {
     let nanos = u32::try_from(t.nanos).unwrap_or(0);
     chrono::TimeZone::timestamp_opt(&Utc, t.seconds, nanos)
@@ -348,25 +358,39 @@ impl EngineService for RemoteEngineClient {
         })
     }
 
-    async fn cache_entries(&self) -> Result<Vec<CacheEntryInfo>, EngineError> {
+    async fn cache_entries(
+        &self,
+        namespace: Option<&str>,
+    ) -> Result<Vec<CacheEntryInfo>, EngineError> {
         let mut client = self.cache.clone();
         let resp = client
-            .list_entries(ListEntriesRequest {})
+            .list_entries(ListEntriesRequest {
+                namespace: namespace.unwrap_or_default().to_string(),
+            })
             .await
             .map_err(status_to_engine_error)?
             .into_inner();
+        require_namespace_echo(namespace, &resp.namespace)?;
         let entries = resp
             .entries
             .into_iter()
             .filter_map(|e| {
                 let name = e.name?.into();
-                let mode = match v1::CacheMode::try_from(e.mode).ok()? {
-                    v1::CacheMode::None => CacheMode::None,
-                    v1::CacheMode::Ttl => CacheMode::Ttl,
-                    v1::CacheMode::Refresh => CacheMode::Refresh,
-                    v1::CacheMode::Cron => CacheMode::Cron,
-                    v1::CacheMode::Append => CacheMode::Append,
-                    v1::CacheMode::Unspecified => return None,
+                let mode = match v1::CacheMode::try_from(e.mode) {
+                    Ok(v1::CacheMode::None) => CacheMode::None,
+                    Ok(v1::CacheMode::Ttl) => CacheMode::Ttl,
+                    Ok(v1::CacheMode::Refresh) => CacheMode::Refresh,
+                    Ok(v1::CacheMode::Cron) => CacheMode::Cron,
+                    Ok(v1::CacheMode::Append) => CacheMode::Append,
+                    Ok(v1::CacheMode::Pinned) => CacheMode::Pinned,
+                    // An unknown (newer) mode must not drop the row.
+                    Ok(v1::CacheMode::Unspecified) | Err(_) => {
+                        if e.expires_at.is_none() {
+                            CacheMode::Pinned
+                        } else {
+                            CacheMode::Ttl
+                        }
+                    }
                 };
                 Some(CacheEntryInfo {
                     name,
@@ -430,28 +454,37 @@ impl EngineService for RemoteEngineClient {
         &self,
         name: &str,
         spec: MaterializeSpec,
+        namespace: Option<&str>,
     ) -> Result<MaterializeOutcome, EngineError> {
         let mut client = self.cache.clone();
         let resp = client
             .materialize(MaterializeRequest {
                 name: name.to_string(),
                 spec: Some(spec.into()),
+                namespace: namespace.unwrap_or_default().to_string(),
             })
             .await
             .map_err(status_to_engine_error)?
             .into_inner();
+        require_namespace_echo(namespace, &resp.namespace)?;
         Ok(resp.into())
     }
 
-    async fn drop_materialized(&self, name: &str) -> Result<bool, EngineError> {
+    async fn drop_materialized(
+        &self,
+        name: &str,
+        namespace: Option<&str>,
+    ) -> Result<bool, EngineError> {
         let mut client = self.cache.clone();
         let resp = client
             .drop_materialized(DropMaterializedRequest {
                 name: name.to_string(),
+                namespace: namespace.unwrap_or_default().to_string(),
             })
             .await
             .map_err(status_to_engine_error)?
             .into_inner();
+        require_namespace_echo(namespace, &resp.namespace)?;
         Ok(resp.dropped)
     }
 

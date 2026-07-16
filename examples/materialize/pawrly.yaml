@@ -29,6 +29,15 @@
 #   pawrly --config examples/materialize/pawrly.yaml cache list
 #   pawrly --config examples/materialize/pawrly.yaml cache refresh materialized.raw_sales
 #   pawrly --config examples/materialize/pawrly.yaml materialize region_totals --drop
+#
+#   # 5. Custom namespaces — an isolated store per --namespace, so the same
+#   #    name never collides (see docs/materialize.md#custom-namespaces):
+#   pawrly --config examples/materialize/pawrly.yaml materialize region_totals \
+#     'SELECT region, SUM(amount) AS total FROM sales.rows GROUP BY 1' --namespace analytics
+#   pawrly --config examples/materialize/pawrly.yaml sql \
+#     'SELECT * FROM analytics.materialized.region_totals'
+#   pawrly --config examples/materialize/pawrly.yaml cache list --namespace analytics
+#   pawrly --config examples/materialize/pawrly.yaml materialize region_totals --drop --namespace analytics
 
 version: 1
 name: materialize-example

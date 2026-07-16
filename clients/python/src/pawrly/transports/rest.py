@@ -119,9 +119,12 @@ class RestTransport:
             "cancelled", False
         )
 
-    def materialize(self, name: str, spec: MaterializeSpec) -> MaterializeOutcome:
+    def materialize(
+        self, name: str, spec: MaterializeSpec, namespace: str | None = None
+    ) -> MaterializeOutcome:
         body = {"kind": spec.kind, "sql": spec.sql, "params": spec.params or {}}
-        r = self._send("PUT", f"/v1/materialized/{name}", body)
+        r = self._send("PUT", f"/v1/materialized/{name}{_ns_query(namespace)}", body)
+        _require_namespace_echo(namespace, r.get("namespace"))
         n = r.get("name", {})
         return MaterializeOutcome(
             name={"schema": n.get("schema", ""), "table": n.get("table", "")},
@@ -158,8 +161,9 @@ class RestTransport:
             params["compact"] = "true"
         return convert.catalog_snapshot(self._send("GET", "/v1/schema", params=params))
 
-    def cache_entries(self) -> list[CacheEntryInfo]:
-        r = self._send("GET", "/v1/cache")
+    def cache_entries(self, namespace: str | None = None) -> list[CacheEntryInfo]:
+        r = self._send("GET", f"/v1/cache{_ns_query(namespace)}")
+        _require_namespace_echo(namespace, r.get("namespace"))
         return [convert.cache_entry(e) for e in r.get("entries", [])]
 
     def list_functions(self) -> list[FunctionInfo]:
@@ -207,8 +211,10 @@ class RestTransport:
     def vacuum_cache(self) -> VacuumReport:
         return convert.vacuum_report(self._send("POST", "/v1/cache/vacuum"))
 
-    def drop_materialized(self, name: str) -> bool:
-        return self._send("DELETE", f"/v1/materialized/{name}").get("dropped", False)
+    def drop_materialized(self, name: str, namespace: str | None = None) -> bool:
+        r = self._send("DELETE", f"/v1/materialized/{name}{_ns_query(namespace)}")
+        _require_namespace_echo(namespace, r.get("namespace"))
+        return r.get("dropped", False)
 
     def health(self) -> HealthReport:
         r = self._send("GET", "/v1/health")
@@ -219,6 +225,22 @@ class RestTransport:
 
     def close(self) -> None:
         self._session.close()
+
+
+def _require_namespace_echo(requested: str | None, echoed: str | None) -> None:
+    if requested and requested != echoed:
+        raise PawrlyError(
+            "PAWRLY_PROTOCOL",
+            f"server ignored namespace `{requested}` — it predates materialize "
+            "namespaces, so the operation targeted the default namespace instead; "
+            "upgrade the server",
+        )
+
+
+def _ns_query(namespace: str | None) -> str:
+    if not namespace:
+        return ""
+    return f"?namespace={requests.utils.quote(namespace, safe='')}"
 
 
 def _ndjson_rows(resp, meta: dict) -> Iterator[dict]:

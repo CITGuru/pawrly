@@ -250,6 +250,12 @@ pub fn list_tools() -> Vec<Value> {
                         "type": "object",
                         "additionalProperties": { "type": "string" },
                         "description": "Values bound to ${param:NAME} placeholders in `sql`"
+                    },
+                    "namespace": {
+                        "type": "string",
+                        "description": "Materialize namespace to target; the table becomes \
+                                        queryable as `<namespace>.materialized.<name>`. \
+                                        Omitted = the default workspace namespace."
                     }
                 },
                 "required": ["name"]
@@ -262,7 +268,12 @@ pub fn list_tools() -> Vec<Value> {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "name": { "type": "string" }
+                    "name": { "type": "string" },
+                    "namespace": {
+                        "type": "string",
+                        "description": "Namespace to drop from; omitted = the default \
+                                        workspace namespace."
+                    }
                 },
                 "required": ["name"]
             }
@@ -699,8 +710,9 @@ pub async fn call_tool(
                     "one of `sql`, `file`, or `url` is required".into(),
                 ));
             };
+            let namespace = args.get("namespace").and_then(|v| v.as_str());
             let outcome = engine
-                .materialize(name, spec)
+                .materialize(name, spec, namespace)
                 .await
                 .map_err(|e| ToolError::Engine(e.to_string()))?;
             serde_json::to_value(&outcome).map_err(|e| ToolError::Engine(e.to_string()))
@@ -710,8 +722,9 @@ pub async fn call_tool(
                 .get("name")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| ToolError::BadArgs("`name` is required".into()))?;
+            let namespace = args.get("namespace").and_then(|v| v.as_str());
             let dropped = engine
-                .drop_materialized(name)
+                .drop_materialized(name, namespace)
                 .await
                 .map_err(|e| ToolError::Engine(e.to_string()))?;
             Ok(json!({ "dropped": dropped }))

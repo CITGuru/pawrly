@@ -152,7 +152,7 @@ pawrly source add postgres --name pg --dsn '${secret:PG_DSN}'
 Inspect and manage the per-table cache (see [Configuration → Caching](./config.md#caching)).
 
 ```
-pawrly cache list                       # entries with mode, freshness, rows, size (--json)
+pawrly cache list                       # entries with mode, freshness, rows, size (--json; --namespace NS for a materialize namespace)
 pawrly cache show <SOURCE>.<TABLE>       # detailed view of one entry
 pawrly cache refresh <SOURCE>.<TABLE>    # force a re-fetch + write-through (or pass a bare source name to refresh its catalog)
 pawrly cache invalidate <SOURCE>.<TABLE> # drop the entry and its files
@@ -181,9 +181,15 @@ pawrly sql "SELECT * FROM materialized.top_customers"
 
 # re-run a materialized table's origin (re-query / re-read the file or URL):
 pawrly cache refresh materialized.top_customers
+
+# target an isolated namespace (queryable as <ns>.materialized.<NAME>):
+pawrly materialize top_customers "<SQL>" --namespace sess_a
+pawrly sql "SELECT * FROM sess_a.materialized.top_customers"
+pawrly cache list --namespace sess_a
+pawrly materialize top_customers --drop --namespace sess_a
 ```
 
-Options: `--format parquet|csv|json` (inferred from the extension for `--file`/`--url`), `--param KEY=VALUE` (repeatable, substitutes `${param:KEY}` in the SQL), `--json`.
+Options: `--format parquet|csv|json` (inferred from the extension for `--file`/`--url`), `--param KEY=VALUE` (repeatable, substitutes `${param:KEY}` in the SQL), `--namespace NS` (an isolated [materialize namespace](./materialize.md#custom-namespaces); defaults to the workspace namespace), `--json`.
 
 ---
 
