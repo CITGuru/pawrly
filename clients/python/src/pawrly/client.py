@@ -80,8 +80,10 @@ class PawrlyClient:
     def cancel(self, query_id: str) -> bool:
         return self._t.cancel(query_id)
 
-    def materialize(self, name: str, spec: MaterializeSpec) -> MaterializeOutcome:
-        return self._t.materialize(name, spec)
+    def materialize(
+        self, name: str, spec: MaterializeSpec, namespace: str | None = None
+    ) -> MaterializeOutcome:
+        return self._t.materialize(name, spec, namespace)
 
     def list_sources(self) -> list[SourceInfo]:
         return self._t.list_sources()
@@ -99,8 +101,8 @@ class PawrlyClient:
     ) -> CatalogSnapshot:
         return self._t.schema_snapshot(sources, compact)
 
-    def cache_entries(self) -> list[CacheEntryInfo]:
-        return self._t.cache_entries()
+    def cache_entries(self, namespace: str | None = None) -> list[CacheEntryInfo]:
+        return self._t.cache_entries(namespace)
 
     def list_functions(self) -> list[FunctionInfo]:
         return self._t.list_functions()
@@ -138,8 +140,8 @@ class PawrlyClient:
     def vacuum_cache(self) -> VacuumReport:
         return self._t.vacuum_cache()
 
-    def drop_materialized(self, name: str) -> bool:
-        return self._t.drop_materialized(name)
+    def drop_materialized(self, name: str, namespace: str | None = None) -> bool:
+        return self._t.drop_materialized(name, namespace)
 
     def health(self) -> HealthReport:
         return self._t.health()

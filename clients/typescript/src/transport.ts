@@ -31,12 +31,16 @@ export interface Transport {
   semanticQuery(q: SemanticQuery): Promise<QueryHandle>;
   explain(sql: string, analyze: boolean): Promise<string>;
   cancel(queryId: string): Promise<boolean>;
-  materialize(name: string, spec: MaterializeSpec): Promise<MaterializeOutcome>;
+  materialize(
+    name: string,
+    spec: MaterializeSpec,
+    namespace?: string,
+  ): Promise<MaterializeOutcome>;
   listSources(): Promise<SourceInfo[]>;
   listTables(source?: string, nameGlob?: string): Promise<TableInfo[]>;
   describeTable(name: string): Promise<TableDescription>;
   schemaSnapshot(sources?: string[], compact?: boolean): Promise<CatalogSnapshot>;
-  cacheEntries(): Promise<CacheEntryInfo[]>;
+  cacheEntries(namespace?: string): Promise<CacheEntryInfo[]>;
   listFunctions(): Promise<FunctionInfo[]>;
   describeFunction(namespace: string, name: string): Promise<FunctionDescription>;
   listSemanticModels(): Promise<SemanticModelInfo[]>;
@@ -49,7 +53,7 @@ export interface Transport {
   refreshTable(name: string): Promise<RefreshOutcome>;
   invalidateCache(name: string): Promise<boolean>;
   vacuumCache(): Promise<VacuumReport>;
-  dropMaterialized(name: string): Promise<boolean>;
+  dropMaterialized(name: string, namespace?: string): Promise<boolean>;
   health(): Promise<HealthReport>;
   shutdown(): Promise<void>;
   close(): void;

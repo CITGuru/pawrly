@@ -49,6 +49,8 @@ enum CacheMode {
   CACHE_MODE_REFRESH = 3;
   CACHE_MODE_CRON = 4;
   CACHE_MODE_APPEND = 5;
+  // A materialized (self-backed) entry: no policy, never auto-reclaimed.
+  CACHE_MODE_PINNED = 6;
 }
 
 message ColumnSpec {

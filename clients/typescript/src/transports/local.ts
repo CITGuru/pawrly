@@ -97,8 +97,12 @@ export class LocalTransport implements Transport {
   cancel(queryId: string): Promise<boolean> {
     return this.rest.cancel(queryId);
   }
-  materialize(name: string, spec: MaterializeSpec): Promise<MaterializeOutcome> {
-    return this.rest.materialize(name, spec);
+  materialize(
+    name: string,
+    spec: MaterializeSpec,
+    namespace?: string,
+  ): Promise<MaterializeOutcome> {
+    return this.rest.materialize(name, spec, namespace);
   }
   listSources(): Promise<SourceInfo[]> {
     return this.rest.listSources();
@@ -112,8 +116,8 @@ export class LocalTransport implements Transport {
   schemaSnapshot(sources?: string[], compact?: boolean): Promise<CatalogSnapshot> {
     return this.rest.schemaSnapshot(sources, compact);
   }
-  cacheEntries(): Promise<CacheEntryInfo[]> {
-    return this.rest.cacheEntries();
+  cacheEntries(namespace?: string): Promise<CacheEntryInfo[]> {
+    return this.rest.cacheEntries(namespace);
   }
   listFunctions(): Promise<FunctionInfo[]> {
     return this.rest.listFunctions();
@@ -151,8 +155,8 @@ export class LocalTransport implements Transport {
   vacuumCache(): Promise<VacuumReport> {
     return this.rest.vacuumCache();
   }
-  dropMaterialized(name: string): Promise<boolean> {
-    return this.rest.dropMaterialized(name);
+  dropMaterialized(name: string, namespace?: string): Promise<boolean> {
+    return this.rest.dropMaterialized(name, namespace);
   }
   health(): Promise<HealthReport> {
     return this.rest.health();

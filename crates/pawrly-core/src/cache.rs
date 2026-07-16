@@ -63,6 +63,7 @@ pub enum CacheMode {
     Refresh,
     Cron,
     Append,
+    Pinned,
 }
 
 impl From<&CachePolicy> for CacheMode {

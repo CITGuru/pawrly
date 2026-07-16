@@ -140,7 +140,7 @@ sources:
             .unwrap();
         assert_eq!(arr.value(0), 5);
 
-        let entries = svc.cache_entries().await.unwrap();
+        let entries = svc.cache_entries(None).await.unwrap();
         assert_eq!(entries.len(), 1, "expected 1 cache entry after first query");
         assert_eq!(entries[0].name.to_string(), "data.orders");
         assert_eq!(entries[0].row_count, 5);
@@ -171,7 +171,7 @@ sources:
     .await
     .unwrap();
     let svc2: Arc<dyn EngineService> = Arc::new(engine2);
-    let entries2 = svc2.cache_entries().await.unwrap();
+    let entries2 = svc2.cache_entries(None).await.unwrap();
     assert_eq!(
         entries2.len(),
         1,
@@ -198,14 +198,14 @@ async fn refresh_table_writes_through() {
     let svc = build_engine(workspace.path()).await;
 
     // No query yet → cache is empty.
-    assert!(svc.cache_entries().await.unwrap().is_empty());
+    assert!(svc.cache_entries(None).await.unwrap().is_empty());
 
     let name = TableName::new("data", "orders");
     let out = svc.refresh_table(&name).await.unwrap();
     assert_eq!(out.rows_written, 5);
     assert!(out.size_bytes > 0, "expected a non-empty parquet write");
 
-    let entries = svc.cache_entries().await.unwrap();
+    let entries = svc.cache_entries(None).await.unwrap();
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].row_count, 5);
     assert!(
@@ -231,12 +231,12 @@ async fn invalidate_removes_entry_and_file() {
         .unwrap();
     let cache_file = orders_cache_file(workspace.path());
     assert!(cache_file.exists());
-    assert_eq!(svc.cache_entries().await.unwrap().len(), 1);
+    assert_eq!(svc.cache_entries(None).await.unwrap().len(), 1);
 
     let name = TableName::new("data", "orders");
     assert!(svc.invalidate_cache(&name).await.unwrap());
     assert!(!cache_file.exists(), "invalidate should delete the file");
-    assert!(svc.cache_entries().await.unwrap().is_empty());
+    assert!(svc.cache_entries(None).await.unwrap().is_empty());
 
     // Invalidating again reports nothing to remove.
     assert!(!svc.invalidate_cache(&name).await.unwrap());
@@ -274,7 +274,7 @@ async fn vacuum_removes_orphans_keeps_live_and_recent_tmp() {
     assert!(report.files_removed >= 1);
     assert!(report.bytes_reclaimed >= 10);
     assert_eq!(
-        svc.cache_entries().await.unwrap().len(),
+        svc.cache_entries(None).await.unwrap().len(),
         1,
         "live entry must remain in the manifest"
     );
@@ -325,7 +325,7 @@ async fn corrupt_cache_file_self_heals() {
         cache_file.exists(),
         "a fresh cache file should be rewritten"
     );
-    assert_eq!(svc.cache_entries().await.unwrap().len(), 1);
+    assert_eq!(svc.cache_entries(None).await.unwrap().len(), 1);
 }
 
 #[tokio::test]

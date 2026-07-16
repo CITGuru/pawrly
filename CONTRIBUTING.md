@@ -98,6 +98,24 @@ scripts/check-pr-policy.sh --self-test      # built-in test of the author check
 | `tests/grpc_smoke`       | `add-tests`           |
 | `work/spike_hot_path`    | `wip/foo`             |
 
+## Performance check
+
+`scripts/perf.py` times the materialize lifecycle (file / query / namespaced
+origins, read-back, full-row fetch) across dataset sizes and prints median
+wall-clock per operation. Use it to sanity-check a change that touches the
+engine, cache, or wire paths:
+
+```bash
+cargo build --release -p pawrly-cli
+scripts/perf.py                                  # in-process, 10k/100k/1M rows
+scripts/perf.py --remote tcp://127.0.0.1:50051   # against a running daemon
+scripts/perf.py --sizes 10000 --reps 5           # quick, more stable medians
+```
+
+It generates its own data and workspace in a temp dir with an isolated
+`PAWRLY_HOME` (your real cache is untouched) and cleans up unless `--keep`.
+There is no CI gate on the numbers — compare before/after on your machine.
+
 ## Cutting a release
 
 From a clean `main`:

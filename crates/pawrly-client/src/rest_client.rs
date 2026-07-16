@@ -108,6 +108,18 @@ fn rest_error(body: &Value) -> EngineError {
     }
 }
 
+fn require_namespace_echo(requested: Option<&str>, resp: &Value) -> Result<(), EngineError> {
+    match requested {
+        Some(ns) if !ns.is_empty() && resp.get("namespace").and_then(Value::as_str) != Some(ns) => {
+            Err(EngineError::Protocol(format!(
+                "server ignored namespace `{ns}` — it predates materialize namespaces, so the \
+                 operation targeted the default namespace instead; upgrade the server"
+            )))
+        }
+        _ => Ok(()),
+    }
+}
+
 fn field<T: DeserializeOwned>(body: &Value, key: &str) -> Result<T, EngineError> {
     serde_json::from_value(body.get(key).cloned().unwrap_or(Value::Null))
         .map_err(|e| EngineError::Protocol(format!("rest decode `{key}`: {e}")))
@@ -303,8 +315,18 @@ impl EngineService for RestEngineClient {
         )
     }
 
-    async fn cache_entries(&self) -> Result<Vec<CacheEntryInfo>, EngineError> {
-        let resp = self.get("/v1/cache").await?;
+    async fn cache_entries(
+        &self,
+        namespace: Option<&str>,
+    ) -> Result<Vec<CacheEntryInfo>, EngineError> {
+        let resp = match namespace {
+            Some(ns) => {
+                self.get_query("/v1/cache", &[("namespace", ns.to_string())])
+                    .await?
+            }
+            None => self.get("/v1/cache").await?,
+        };
+        require_namespace_echo(namespace, &resp)?;
         field(&resp, "entries")
     }
 
@@ -328,21 +350,35 @@ impl EngineService for RestEngineClient {
         &self,
         name: &str,
         spec: MaterializeSpec,
+        namespace: Option<&str>,
     ) -> Result<MaterializeOutcome, EngineError> {
         let body = serde_json::to_value(&spec)
             .map_err(|e| EngineError::Protocol(format!("encode spec: {e}")))?;
-        whole(
-            self.send(
-                self.http
-                    .put(self.url(&format!("/v1/materialized/{name}")))
-                    .json(&body),
-            )
-            .await?,
-        )
+        let mut rb = self
+            .http
+            .put(self.url(&format!("/v1/materialized/{name}")))
+            .json(&body);
+        if let Some(ns) = namespace {
+            rb = rb.query(&[("namespace", ns)]);
+        }
+        let resp = self.send(rb).await?;
+        require_namespace_echo(namespace, &resp)?;
+        whole(resp)
     }
 
-    async fn drop_materialized(&self, name: &str) -> Result<bool, EngineError> {
-        let resp = self.delete(&format!("/v1/materialized/{name}")).await?;
+    async fn drop_materialized(
+        &self,
+        name: &str,
+        namespace: Option<&str>,
+    ) -> Result<bool, EngineError> {
+        let mut rb = self
+            .http
+            .delete(self.url(&format!("/v1/materialized/{name}")));
+        if let Some(ns) = namespace {
+            rb = rb.query(&[("namespace", ns)]);
+        }
+        let resp = self.send(rb).await?;
+        require_namespace_echo(namespace, &resp)?;
         field(&resp, "dropped")
     }
 

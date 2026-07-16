@@ -295,14 +295,39 @@ async fn rest_semantic_model(
     }
 }
 
-async fn rest_cache(State(state): State<RestState>, headers: axum::http::HeaderMap) -> Response {
+/// `?namespace=`; absent/empty = the default workspace namespace.
+#[derive(Deserialize)]
+struct NamespaceParams {
+    namespace: Option<String>,
+}
+
+impl NamespaceParams {
+    fn namespace(&self) -> Option<&str> {
+        self.namespace.as_deref().filter(|ns| !ns.is_empty())
+    }
+}
+
+async fn rest_cache(
+    State(state): State<RestState>,
+    headers: axum::http::HeaderMap,
+    Query(params): Query<NamespaceParams>,
+) -> Response {
     if let Some(resp) = guard(&state, &headers) {
         return resp;
     }
-    match state.engine.cache_entries().await {
-        Ok(v) => Json(json!({ "entries": v })).into_response(),
+    match state.engine.cache_entries(params.namespace()).await {
+        Ok(v) => Json(with_namespace_echo(json!({ "entries": v }), &params)).into_response(),
         Err(e) => engine_error_response(&e),
     }
+}
+
+/// The echo is how a client detects a server that ignored its namespace;
+/// absent when none was requested, so pre-namespace response shapes hold.
+fn with_namespace_echo(mut body: serde_json::Value, params: &NamespaceParams) -> serde_json::Value {
+    if let Some(ns) = params.namespace() {
+        body["namespace"] = json!(ns);
+    }
+    body
 }
 
 async fn rest_health(State(state): State<RestState>, headers: axum::http::HeaderMap) -> Response {
@@ -322,13 +347,18 @@ async fn rest_materialize(
     State(state): State<RestState>,
     headers: axum::http::HeaderMap,
     Path(name): Path<String>,
+    Query(params): Query<NamespaceParams>,
     Json(spec): Json<MaterializeSpec>,
 ) -> Response {
     if let Some(resp) = guard(&state, &headers) {
         return resp;
     }
-    match state.engine.materialize(&name, spec).await {
-        Ok(outcome) => Json(outcome).into_response(),
+    match state
+        .engine
+        .materialize(&name, spec, params.namespace())
+        .await
+    {
+        Ok(outcome) => Json(with_namespace_echo(json!(outcome), &params)).into_response(),
         Err(e) => engine_error_response(&e),
     }
 }
@@ -337,12 +367,21 @@ async fn rest_drop_materialized(
     State(state): State<RestState>,
     headers: axum::http::HeaderMap,
     Path(name): Path<String>,
+    Query(params): Query<NamespaceParams>,
 ) -> Response {
     if let Some(resp) = guard(&state, &headers) {
         return resp;
     }
-    match state.engine.drop_materialized(&name).await {
-        Ok(true) => Json(json!({ "dropped": true, "name": name })).into_response(),
+    match state
+        .engine
+        .drop_materialized(&name, params.namespace())
+        .await
+    {
+        Ok(true) => Json(with_namespace_echo(
+            json!({ "dropped": true, "name": name }),
+            &params,
+        ))
+        .into_response(),
         Ok(false) => error_response(
             StatusCode::NOT_FOUND,
             codes::UNKNOWN_MATERIALIZED,

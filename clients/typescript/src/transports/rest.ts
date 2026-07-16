@@ -104,11 +104,16 @@ export class RestTransport implements Transport {
     return (r.cancelled as boolean) ?? false;
   }
 
-  async materialize(name: string, spec: MaterializeSpec): Promise<MaterializeOutcome> {
-    const r = await this.send(`/v1/materialized/${encodeURIComponent(name)}`, {
+  async materialize(
+    name: string,
+    spec: MaterializeSpec,
+    namespace?: string,
+  ): Promise<MaterializeOutcome> {
+    const r = await this.send(`/v1/materialized/${encodeURIComponent(name)}${nsQuery(namespace)}`, {
       method: "PUT",
       body: JSON.stringify(spec),
     });
+    requireNamespaceEcho(namespace, r.namespace as string | undefined);
     const n = (r.name ?? {}) as { schema?: string; table?: string };
     return {
       name: { schema: n.schema ?? "", table: n.table ?? "" },
@@ -142,8 +147,9 @@ export class RestTransport implements Transport {
     return convert.catalogSnapshot(await this.send(`/v1/schema${qs(q)}`));
   }
 
-  async cacheEntries(): Promise<CacheEntryInfo[]> {
-    const r = await this.send("/v1/cache");
+  async cacheEntries(namespace?: string): Promise<CacheEntryInfo[]> {
+    const r = await this.send(`/v1/cache${nsQuery(namespace)}`);
+    requireNamespaceEcho(namespace, r.namespace as string | undefined);
     return ((r.entries as Record<string, unknown>[]) ?? []).map(convert.cacheEntry);
   }
 
@@ -210,8 +216,11 @@ export class RestTransport implements Transport {
     return convert.vacuumReport(await this.send("/v1/cache/vacuum", { method: "POST" }));
   }
 
-  async dropMaterialized(name: string): Promise<boolean> {
-    const r = await this.send(`/v1/materialized/${encodeURIComponent(name)}`, { method: "DELETE" });
+  async dropMaterialized(name: string, namespace?: string): Promise<boolean> {
+    const r = await this.send(`/v1/materialized/${encodeURIComponent(name)}${nsQuery(namespace)}`, {
+      method: "DELETE",
+    });
+    requireNamespaceEcho(namespace, r.namespace as string | undefined);
     return (r.dropped as boolean) ?? false;
   }
 
@@ -230,6 +239,20 @@ export class RestTransport implements Transport {
 function qs(params: URLSearchParams): string {
   const s = params.toString();
   return s ? `?${s}` : "";
+}
+
+function nsQuery(namespace?: string): string {
+  return namespace ? `?namespace=${encodeURIComponent(namespace)}` : "";
+}
+
+function requireNamespaceEcho(requested: string | undefined, echoed: string | undefined): void {
+  if (requested && requested !== echoed) {
+    throw new PawrlyError(
+      "PAWRLY_PROTOCOL",
+      `server ignored namespace \`${requested}\` — it predates materialize namespaces, so the ` +
+        "operation targeted the default namespace instead; upgrade the server",
+    );
+  }
 }
 
 async function* ndjsonRows(

@@ -53,6 +53,11 @@ pub struct Args {
     #[arg(long)]
     pub drop: bool,
 
+    /// Materialize namespace to target (queryable as
+    /// `<ns>.materialized.<name>`). Defaults to the workspace namespace.
+    #[arg(long, value_name = "NS")]
+    pub namespace: Option<String>,
+
     /// Substitute `${param:KEY}` in the SQL. Repeatable: `--param key=value`.
     #[arg(long = "param", value_name = "KEY=VALUE")]
     pub params: Vec<String>,
@@ -71,35 +76,41 @@ pub async fn run(
 ) -> anyhow::Result<()> {
     let svc = crate::engine::build_engine(remote, no_remote, home, config).await?;
 
+    let namespace = args.namespace.as_deref();
+    let address = |name: &str| match namespace {
+        Some(ns) => format!("{ns}.materialized.{name}"),
+        None => format!("materialized.{name}"),
+    };
+
     if args.drop {
         if args.sql.is_some() {
             return Err(anyhow::anyhow!("--drop takes only a NAME, not a SQL query"));
         }
-        let removed = svc.drop_materialized(&args.name).await?;
+        let removed = svc.drop_materialized(&args.name, namespace).await?;
         if args.json {
             println!(
                 "{}",
                 serde_json::json!({ "name": args.name, "dropped": removed })
             );
         } else if removed {
-            println!("dropped materialized.{}", args.name);
+            println!("dropped {}", address(&args.name));
         } else {
-            println!("no materialized table named `{}`", args.name);
+            println!("no materialized table named `{}`", address(&args.name));
         }
         return Ok(());
     }
 
     let spec = build_spec(&args)?;
-    let outcome = svc.materialize(&args.name, spec).await?;
+    let outcome = svc.materialize(&args.name, spec, namespace).await?;
 
     if args.json {
         println!("{}", serde_json::to_string(&outcome)?);
     } else {
-        println!("materialized {}", outcome.name);
+        println!("materialized {}", address(&args.name));
         println!("  rows:  {}", outcome.row_count);
         println!("  size:  {} bytes", outcome.size_bytes);
         println!("  path:  {}", outcome.file_path.display());
-        println!("  query: SELECT … FROM {}", outcome.name);
+        println!("  query: SELECT … FROM {}", address(&args.name));
     }
     Ok(())
 }

@@ -62,6 +62,7 @@ impl From<core::CacheMode> for v1::CacheMode {
             core::CacheMode::Refresh => Self::Refresh,
             core::CacheMode::Cron => Self::Cron,
             core::CacheMode::Append => Self::Append,
+            core::CacheMode::Pinned => Self::Pinned,
         }
     }
 }
@@ -184,6 +185,7 @@ impl From<core::MaterializeOutcome> for v1::MaterializeResponse {
             file_path: o.file_path.to_string_lossy().into_owned(),
             row_count: o.row_count,
             size_bytes: o.size_bytes,
+            namespace: String::new(),
         }
     }
 }

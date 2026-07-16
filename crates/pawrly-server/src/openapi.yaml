@@ -289,6 +289,8 @@ paths:
       tags: [cache]
       summary: Cache inventory
       operationId: cacheEntries
+      parameters:
+        - $ref: '#/components/parameters/MaterializeNamespace'
       responses:
         '200':
           description: Cache entries.
@@ -300,6 +302,9 @@ paths:
                   entries:
                     type: array
                     items: { $ref: '#/components/schemas/CacheEntryInfo' }
+                  namespace:
+                    type: string
+                    description: Echo of `?namespace=`, when supplied.
   /v1/cache/vacuum:
     post:
       tags: [cache]
@@ -339,6 +344,7 @@ paths:
       operationId: materialize
       parameters:
         - { name: name, in: path, required: true, schema: { type: string } }
+        - $ref: '#/components/parameters/MaterializeNamespace'
       requestBody:
         required: true
         content:
@@ -356,6 +362,7 @@ paths:
       operationId: dropMaterialized
       parameters:
         - { name: name, in: path, required: true, schema: { type: string } }
+        - $ref: '#/components/parameters/MaterializeNamespace'
       responses:
         '200':
           description: Dropped.
@@ -366,6 +373,9 @@ paths:
                 properties:
                   dropped: { type: boolean }
                   name: { type: string }
+                  namespace:
+                    type: string
+                    description: Echo of `?namespace=`, when supplied.
         '404': { $ref: '#/components/responses/Error' }
   /v1/config/reload:
     post:
@@ -472,6 +482,16 @@ components:
     bearerAuth:
       type: http
       scheme: bearer
+  parameters:
+    MaterializeNamespace:
+      name: namespace
+      in: query
+      required: false
+      description: >-
+        Materialize namespace to target; the table is queryable as
+        `<namespace>.materialized.<name>`. Omitted or empty = the default
+        workspace namespace.
+      schema: { type: string }
   responses:
     Error:
       description: Error envelope carrying a stable Pawrly error code.
@@ -583,6 +603,11 @@ components:
         file_path: { type: string }
         row_count: { type: integer, format: int64 }
         size_bytes: { type: integer, format: int64 }
+        namespace:
+          type: string
+          description: >-
+            Echo of `?namespace=`, when supplied; absence under a supplied
+            namespace means the server predates namespaces and ignored it.
     TableName:
       type: object
       properties:

@@ -552,10 +552,14 @@ impl CacheManager {
             .iter()
             .map(|e| {
                 let name = TableName::new(e.source.clone(), e.table.clone());
-                let mode = inner
-                    .get(&name)
-                    .map(|r| CacheMode::from(&r.policy))
-                    .unwrap_or(CacheMode::Ttl);
+                let mode = if e.origin.is_materialized() {
+                    CacheMode::Pinned
+                } else {
+                    inner
+                        .get(&name)
+                        .map(|r| CacheMode::from(&r.policy))
+                        .unwrap_or(CacheMode::Ttl)
+                };
                 CacheEntryInfo {
                     name,
                     mode,

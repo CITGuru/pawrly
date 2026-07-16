@@ -72,8 +72,12 @@ export class PawrlyClient {
     return this.t.cancel(queryId);
   }
 
-  materialize(name: string, spec: MaterializeSpec): Promise<MaterializeOutcome> {
-    return this.t.materialize(name, spec);
+  materialize(
+    name: string,
+    spec: MaterializeSpec,
+    namespace?: string,
+  ): Promise<MaterializeOutcome> {
+    return this.t.materialize(name, spec, namespace);
   }
 
   listSources(): Promise<SourceInfo[]> {
@@ -92,8 +96,8 @@ export class PawrlyClient {
     return this.t.schemaSnapshot(sources, compact);
   }
 
-  cacheEntries(): Promise<CacheEntryInfo[]> {
-    return this.t.cacheEntries();
+  cacheEntries(namespace?: string): Promise<CacheEntryInfo[]> {
+    return this.t.cacheEntries(namespace);
   }
 
   listFunctions(): Promise<FunctionInfo[]> {
@@ -144,8 +148,8 @@ export class PawrlyClient {
     return this.t.vacuumCache();
   }
 
-  dropMaterialized(name: string): Promise<boolean> {
-    return this.t.dropMaterialized(name);
+  dropMaterialized(name: string, namespace?: string): Promise<boolean> {
+    return this.t.dropMaterialized(name, namespace);
   }
 
   health(): Promise<HealthReport> {

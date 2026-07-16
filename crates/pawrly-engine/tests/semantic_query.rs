@@ -449,7 +449,7 @@ async fn preagg_rollup_serves_query_and_reaggregates() {
     assert_eq!(orders_n.value(1), 1);
 
     // The rollup was materialized — proving the query read it, not the base.
-    let entries = svc.cache_entries().await.expect("cache entries");
+    let entries = svc.cache_entries(None).await.expect("cache entries");
     assert!(
         entries
             .iter()

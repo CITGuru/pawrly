@@ -8,6 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- **Custom materialize namespaces** — pass a namespace when creating a materialized table to target an isolated store (own storage subdir, manifest, and SQL address), so the same name never collides across callers: `pawrly materialize <name> "<sql>" --namespace <ns>`, queryable as `<ns>.materialized.<name>`.
+  - Threaded through every surface: a `namespace` field on the `Materialize` / `DropMaterialized` / `ListEntries` RPCs, `?namespace=` on the REST endpoints, `--namespace` on `pawrly materialize` and `pawrly cache list`, a `namespace` argument on the MCP tools, and optional parameters in the TypeScript / Python SDKs. Empty or omitted = the default workspace namespace (fully backward compatible).
+  - Namespaces are created on first write and resolve in SQL on demand — including after a daemon restart and when written by another process sharing the storage root. Reserved names (`pawrly`, `materialized`, `system`, `information_schema`) and unsafe segments are rejected.
 - **Variables** — declared, typed, scoped inputs a source references with `${var:NAME}`.
   - Non-secret config values typed as string, integer, number, boolean, or enum, with defaults, required/optional, and per-machine overrides.
   - Static secrets resolved from the env / keyring / file chain.
@@ -22,6 +25,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - `pawrly schema snapshot` — a compact full-catalog overview for grounding and tooling.
 - `pawrly config reload` — re-read the workspace config into a running engine.
 - `--json` as a shorthand for `--format json` on the output-rendering commands.
+
+### Fixed
+
+- `cache list` now reports materialized tables as mode `pinned` instead of the misleading `ttl` fallback (they were never TTL-governed; only the label was wrong). Version-skew note: a pre-`pinned` client listing against a newer daemon omits materialized rows from `cache list` (its decoder drops entries with an unknown mode); all other operations are unaffected. New clients keep such rows and approximate the mode from expiry instead.
+- Version-skew guard: the `Materialize` / `DropMaterialized` / `ListEntries` responses now echo the request's namespace, and clients (Rust, TypeScript, Python; gRPC and REST) fail loudly when a namespace-oblivious older server ignores a requested namespace — previously the operation would silently target the default namespace (a namespaced `--drop` could delete the wrong table).
 
 ### Changed
 
