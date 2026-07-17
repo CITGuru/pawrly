@@ -183,8 +183,9 @@ safety:
 
 ### `raw_table` / `raw_table_safety`
 
-For `kind: http` only, `raw_table: true` registers an escape-hatch table named after the source for endpoints with no typed spec. You provide the request as filters; Pawrly returns the raw response as rows. Columns:
+Typed HTTP tables fix the endpoint and output columns in config. Use `raw_table: true` when the request path must be chosen at query time and no typed table has been declared for it.
 
+The raw table accepts the HTTP method, path, and query string through SQL filters. Each path supplied with `=` or `IN (...)` sends one request and returns one row containing the response status and body. Its columns are:
 
 | Column            | Type    | Notes                                 |
 | ----------------- | ------- | ------------------------------------- |
@@ -209,14 +210,14 @@ WHERE request_path = '/rate_limit'
 
 ## Variables
 
-A source can declare typed inputs in a `variables:` block and reference them anywhere in its `config` or tables with `${var:NAME}`. You can define non-secret, static `secret`, and OAuth-minted secrets. They are scoped and isolated per source.
+A source can declare inputs in a `variables:` block and reference them from its `config` or table declarations with `${var:NAME}`. Variables declared inside a source are visible only to that source.
 
 ```yaml
 sources:
   - name: gh
     kind: http
     variables:
-      GH_TOKEN: 
+      GH_TOKEN:
         kind: secret
         methods:
           - type: oauth
@@ -237,7 +238,7 @@ sources:
       token: ${var:GH_TOKEN}
 ```
 
-See [Variables](./variables.md) to read more about how to use variables 
+See [Variables](./variables.md) for value types, resolution order, scopes, stored values, and OAuth.
 
 ---
 
@@ -373,9 +374,18 @@ In addition to `s3`/`gcs`/`azure`, `storage.type: http` covers authenticated HTT
 
 > Remote files are read by DuckDB's `read_parquet`/`read_csv`/`read_json`, so the local-file `csv`/`json`/`partition_cols`/`schema` options do **not** apply to object-store tables; DuckDB infers the schema and reader from the URL and `format`. Remote `http(s)://` paths also **cannot be globbed**; point each table at a single concrete URL (bucket globs like `s3://…/*.parquet` are fine).
 
-### Http Backend (`http`) — REST & GraphQL APIs
+### HTTP Backend (`http`) — REST & GraphQL APIs
 
-Turns an HTTP API into SQL tables: you declare each table's request and how to shape its JSON response into rows. Source-level `config` carries `base_url` (**required**), auth, static request `headers`, retries, and rate limiting; each `tables:` entry maps one request shape to rows.
+An HTTP source describes how to turn a SQL table scan into API requests and shape its JSON responses into rows.
+
+Each query follows this sequence:
+
+1. Values from SQL filters are inserted into the endpoint path, query string, or request body.
+2. Pawrly sends the request and follows the table's pagination rules.
+3. `response.path` selects the JSON array that contains the rows.
+4. `response.schema` extracts columns from each item in that array.
+
+Source-level `config` block carries the required `base_url`, authentication, shared request headers, retries, and rate limiting. Each `tables:` entry defines one SQL table and its request.
 
 ```yaml
 sources:
@@ -405,6 +415,14 @@ sources:
 SELECT number, title FROM gh.pulls
 WHERE owner = 'CITGuru' AND repo = 'pawrly' AND state = 'open' LIMIT 20
 ```
+
+For this query, Pawrly requests:
+
+```text
+GET https://api.github.com/repos/CITGuru/pawrly/pulls?state=open
+```
+
+Each pull request object in the response array becomes one row. Pawrly follows GitHub's `Link` pagination header until the query has enough rows or there are no more pages.
 
 #### From an OpenAPI spec (`config.type: openapi`)
 
@@ -769,7 +787,16 @@ A runnable cache-over-API walkthrough lives at [examples/cache-http/](../example
 
 ### MCP Backend (`mcp`) — an MCP server's tools as tables
 
-Connects to an external [Model Context Protocol](https://modelcontextprotocol.io) server and exposes its tools as SQL tables: a `SELECT` runs `tools/call`, pushed-down `WHERE` filters become tool arguments, and the result rows are projected into columns. Connect over **stdio** (a local subprocess) or **streamable HTTP** (a remote server).
+An MCP source exposes tools from an external [Model Context Protocol](https://modelcontextprotocol.io) server as SQL tables.
+
+When the source loads, Pawrly calls `tools/list` to discover the available tools and their input and output schemas. A query then follows this sequence:
+
+1. The table name selects an MCP tool.
+2. Supported `WHERE` filters and `LIMIT` values become tool arguments.
+3. Pawrly invokes the tool with `tools/call`.
+4. Items in the tool result become rows and their fields become columns.
+
+You can connect over **stdio**, which runs a local subprocess, or **streamable HTTP**, which connects to a remote server.
 
 ```yaml
 sources:
@@ -796,6 +823,8 @@ sources:
 ```sql
 SELECT id, title, status FROM linear.list_issues WHERE assignee = 'me@example.com' LIMIT 20
 ```
+
+Here, `linear.list_issues` selects the `list_issues` tool and the `assignee` filter is passed as an argument. The limit is also passed when the tool exposes a compatible limit input; either way, the query returns at most 20 rows.
 
 **Two ways to get tables, one dial.** A source produces tables from introspection (`tools/list`) and from declaration (`tables:`). `config.expose` sets how much introspection auto-exposes:
 

@@ -1,6 +1,8 @@
 # Materialized tables
 
-`materialize` persists data as a **named, self-backed table** you can query later like any other table. Run a query (or point at a file or URL), get back a Parquet artifact addressable as `materialized.<name>`. Unlike the per-table [cache](./config.md#caching) — which transparently mirrors a live source and expires — a materialized table has no upstream: it is **pinned** (never auto-evicted) and changes only when you re-materialize, refresh, or drop it.
+Materializing data saves the result of a query, local file, or remote file as a named SQL table. Pawrly writes the rows to Parquet and makes them available as `materialized.<name>`.
+
+Reads come from the saved Parquet file, not from the original query, file, or URL. Its data changes only when you replace, refresh, or drop it.
 
 Use it from the [`pawrly materialize`](./cli.md#pawrly-materialize) CLI, the [`materialize` MCP tool](./mcp.md), or the library/gRPC API.
 
@@ -24,13 +26,15 @@ For `--file` and `--url` the format is inferred from the extension; pass `--form
 
 ## Querying it
 
-A materialized table lives under the reserved `materialized` schema and is addressable through the workspace namespace:
+A materialized table lives under the reserved `materialized` schema:
 
 ```bash
 pawrly sql "SELECT * FROM materialized.top_customers ORDER BY total DESC"
 ```
 
-The unqualified `materialized.<name>` form resolves within the workspace. The fully-qualified `<namespace>.materialized.<name>` form is also available — see [Direct cache reads](#direct-cache-reads) below. Materialized tables show up in `pawrly cache list` alongside cached entries, with mode `pinned`.
+`materialized.<name>` reads from the current workspace's storage namespace. Use `<namespace>.materialized.<name>` to read from another namespace; [Custom namespaces](#custom-namespaces) explains when that is useful.
+
+List stored tables with `pawrly cache list`. Materialized entries appear with mode `pinned`.
 
 ## Create-or-replace, refresh, and drop
 
@@ -55,7 +59,9 @@ pawrly materialize sales --drop
 
 ## Custom namespaces
 
-By default a materialized table lands in the workspace namespace. Pass `--namespace` to target a different one — each namespace is a fully isolated store (its own storage directory, manifest, and SQL address), so the same table name never collides across namespaces:
+Pawrly separates on-disk data into storage namespaces. Every workspace has a default namespace for materialized tables. A materialize command without `--namespace` writes there.
+
+Pass `--namespace` to write in a custom namespace. Each namespace has its own tables and SQL pointer, so the same table name can exist in more than one namespace:
 
 ```bash
 pawrly materialize top_customers "SELECT …" --namespace sess_a
@@ -68,9 +74,11 @@ pawrly materialize top_customers --drop --namespace sess_a
 pawrly cache drop-namespace sess_a       # or tear down the whole namespace at once
 ```
 
-A namespace is created on first write and resolves in SQL from then on — including after a daemon restart, and when written by another process sharing the storage root. Namespace names use alphanumerics, `_`, `-`, and `.`; `pawrly`, `materialized`, `system`, and `information_schema` are reserved.
+A namespace is created on its first write and remains available after a daemon restart. Namespace names may contain letters, numbers, `_`, `-`, and `.`; `pawrly`, `materialized`, `system`, and `information_schema` are reserved.
 
-The same knob rides on every surface: `--namespace` on the CLI, a `namespace` field on the `Materialize` `DropMaterialized`/`ListEntries` RPCs, a `?namespace=` query parameter on the REST endpoints, and a `namespace` argument on the MCP tools. Omitted or empty always means the default workspace namespace. This is one shared engine's organizational boundary, not a security boundary — any caller holding the server's bearer token can address any namespace.
+The same option is available as `--namespace` on the CLI, a `namespace` field on the `Materialize`, `DropMaterialized`, and `ListEntries` RPCs, a `?namespace=` REST query parameter, and a `namespace` argument on the MCP tools. An omitted or empty value means the current workspace's default namespace.
+
+Namespaces organize stored data; they are not a security boundary. A caller with the server's bearer token can address any namespace.
 
 ## Inline directive
 
@@ -97,23 +105,11 @@ defaults:
 From the CLI, pipe the statement via stdin so the leading `--` isn't read as a
 flag: `… | pawrly sql -`.
 
-## Pinning
+## Persistence
 
-A materialized table is never reclaimed by TTL expiry or `pawrly cache vacuum` — it has no source to refetch from, so it stays until you drop it. This is the key difference from a cached source table, which is a disposable copy of live data.
+A materialized table remains available until you drop it. Refreshing or materializing the same name replaces its contents but keeps the table.
 
 The schema name `materialized` is reserved: a data source may not be named `materialized` (the config validator rejects it).
-
-## Direct cache reads
-
-Materialization is one half of a read-only **namespace catalog** that makes on-disk data SQL-addressable. The other half exposes your cached source snapshots directly, bypassing the live read-through wrapper:
-
-```sql
-SELECT * FROM github.issues;            -- live: cached-or-fetched via the source
-SELECT * FROM <namespace>.github.issues; -- the cached snapshot on disk, read directly
-SELECT * FROM <namespace>.materialized.sales;
-```
-
-Direct reads are **expiry-agnostic**: they return exactly what is on disk, ignoring freshness (only live reads honor TTL). The `<namespace>` segment defaults to a per-workspace id; set `defaults.cache.namespace` in [`pawrly.yaml`](./config.md#caching) for a clean, stable name like `untwine.materialized.sales`.
 
 ## With agents (MCP)
 

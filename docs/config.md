@@ -108,7 +108,9 @@ For a *declared, typed, scoped* layer on top of these — including OAuth-minted
 
 ## Caching
 
-Caching is **opt-in per table** (or per source). Add a `cache:` block; with no block, reads always go live.
+Caching saves rows returned by a source scan as a Parquet snapshot. On a cache miss, Pawrly reads the source, returns the rows, and writes the snapshot. Later queries read the snapshot until its cache policy requires another source read.
+
+The table name and query syntax do not change when caching is enabled. Caching is opt-in per table or source; without a `cache:` block, every query reads the source.
 
 ```yaml
 cache:
@@ -116,14 +118,14 @@ cache:
   ttl: 1h          # for mode: ttl
 ```
 
-Modes:
+Choose when Pawrly replaces the snapshot:
 
 | Mode | Behaviour |
 |---|---|
 | `none` | No caching (the default when `cache:` is absent). |
-| `ttl` | Cache the result; serve it until `ttl` elapses, then re-fetch on the next read. |
-| `refresh` | Keep the cache warm with a background loop on a fixed interval (`every: 1h`). |
-| `cron` | Like `refresh`, but the schedule is a cron expression (`cron: "0 * * * *"`). |
+| `ttl` | Use the snapshot until `ttl` elapses, then read the source again on the next query. |
+| `refresh` | Create the snapshot on first use, then replace it in the background every `every` interval. |
+| `cron` | Create the snapshot on first use, then replace it in the background on a cron schedule. |
 
 ### Storage location
 
@@ -147,6 +149,20 @@ Because `storage` is shared across every workspace on the machine, Pawrly insert
 
 The cache is restart-safe and concurrency-safe. Inspect and manage it with the [`pawrly cache`](./cli.md#pawrly-cache) commands.
 
+### Direct snapshot reads
+
+There are two ways to read a cached source table:
+
+- `source.table` uses the source normally. Pawrly checks its cache policy, reads a valid snapshot when available, and fetches the source when required.
+- `<namespace>.source.table` reads the Parquet snapshot stored in that namespace. It does not contact the source or check whether the snapshot has expired.
+
+```sql
+SELECT * FROM github.issues;              -- use the source and its cache policy
+SELECT * FROM my-project.github.issues;   -- read the stored snapshot directly
+```
+
+A direct read returns exactly what is on disk, even when the snapshot is past its TTL. It fails if the namespace does not contain a snapshot for that table.
+
 ## Safety
 
 A `safety:` block sets guard rails that are enforced before a scan runs:
@@ -166,19 +182,25 @@ safety:
 
 ## Multi-file configs
 
-As a workspace grows, split `pawrly.yaml` so sources can live in their own files. Both primitives resolve paths relative to the **declaring file** and are assembled before validation, so the rest of the pipeline sees one merged tree.
+As a workspace grows, configuration can move out of the main `pawrly.yaml`. Choose the mechanism based on what the other file contains:
 
-- **`include:`** (top-level) — splices other files into this one. Globs are allowed and sorted lexicographically. Each included file may be either form:
-  - a **fragment** — a mapping carrying a `sources:` (and optional `secrets:`) list; or
-  - a **bare single source** — the SourceDef itself, with `name`/`kind`/`config` at the top level and **no `sources:` wrapper** (recognised by the top-level `kind:`). Handy for one-source-per-file layouts behind a glob.
+- Use top-level `include:` for files that add sources, secrets, or a source together with its semantic models.
+- Use `from:` when the main file declares a source's name and kind but stores the rest of that source elsewhere.
+- Use `semantic.include:` for files that contain only semantic models.
+
+All paths are relative to the file that declares them. Pawrly loads every referenced file, merges them into one config, and then validates the result.
+
+- **include:** adds one or more files to the top-level config. Globs are allowed and sorted lexicographically. An included file can have either shape:
+  - A **fragment** looks like part of `pawrly.yaml`, with a `sources:` list and an optional `secrets:` list.
+  - A **single-source file** places `name`, `kind`, and `config` at the top level without a `sources:` wrapper. This works well with one-source-per-file globs.
 
   ```yaml
   include:
-    - ./sources/*.yaml       # may hold fragments and/or bare single sources
+    - ./sources/*.yaml       # may hold fragments or single-source files
     - ./team-sources.yaml
   ```
 
-  Either form may **also carry a top-level `models:` list** (the semantic models defined over its sources), which is spliced into `semantic.models`. This lets one file fully describe an integration (its source *and* its models). Models still merge into the one global semantic layer, so a co-located model may relate to a model declared in another file, and duplicate model names across files are rejected with both filenames.
+  Either form may also carry a top-level `models:` list (the semantic models defined over its sources), which is spliced into `semantic.models`. This lets one file fully describe an integration (its source *and* its models). Models still merge into the one global semantic layer, so a co-located model may relate to a model declared in another file, and duplicate model names across files are rejected with both filenames.
 
   ```yaml
   # sources/github.yaml — a bare single source plus the models over it
@@ -197,15 +219,16 @@ As a workspace grows, split `pawrly.yaml` so sources can live in their own files
 
   (`include:`d `models:` is the file-level co-location convenience; for model-only files that aren't tied to one source, use `semantic.include:` below.)
 
-- **`from:`** (on a source) — loads one source's body from a sibling file:
+- **from:** loads part of one source from another file. The main config owns `name` and `kind`; the referenced file contains fields such as `config`, `cache`, and `safety`. Fields beside `from:` in the main config override fields from the referenced file:
 
   ```yaml
   sources:
     - name: warehouse
+      kind: snowflake
       from: ./sources/warehouse.yaml
   ```
 
-- **`semantic.include:`** — splices the *models* of other files into `semantic.models`. Each referenced file contains **only** models — either a top-level `models:` list or a bare sequence of model mappings — never sources, secrets, or other config. Globs are allowed and sorted lexicographically; inline `models:` come first, then the included files. Duplicate model names (within or across files) are rejected with both filenames.
+- **semantic.include:** — splices the *models* of other files into `semantic.models`. Each referenced file contains **only** models — either a top-level `models:` list or a bare sequence of model mappings — never sources, secrets, or other config. Globs are allowed and sorted lexicographically; inline `models:` come first, then the included files. Duplicate model names (within or across files) are rejected with both filenames.
 
   ```yaml
   semantic:
@@ -277,4 +300,30 @@ observability:
 
 ## Defaults
 
-`defaults:` sets workspace-wide values inherited by sources that don't override them, for example HTTP client settings and baseline safety caps. See the worked configurations in `examples/pawrly.yaml` for the full set of options in context.
+`defaults:` contains workspace settings and fallback values. It has six sections:
+
+- `cache`: storage location, namespace, and the cache policy used when a source or table does not declare one.
+- `http`: default request timeout and user agent.
+- `safety`: the default maximum row count for an unfiltered source scan.
+- `engine`: query timeout, memory limit, concurrency, and DuckDB pool size.
+- `optimizer`: query optimizer switches.
+- `materialize`: whether inline materialization directives are allowed.
+
+Source and table settings override the corresponding `cache`, `http`, or `safety` defaults. The `engine`, `optimizer`, and `materialize` sections apply to the workspace.
+
+```yaml
+defaults:
+  cache:
+    mode: { mode: ttl, ttl: 1h }
+  http:
+    timeout: 30s
+    user_agent: pawrly/0.1.0
+  safety:
+    max_unfiltered_rows: 1000000
+  engine:
+    query_timeout: 5m
+    max_concurrent_queries: 16
+    duckdb_pool_size: 8
+```
+
+See `examples/pawrly.yaml` for the full set of options in context.

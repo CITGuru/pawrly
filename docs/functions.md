@@ -8,7 +8,15 @@ FROM github.search_issues('is:open label:bug', 50) AS i
 WHERE i.state = 'open';
 ```
 
-Functions are either **builtin** (shipped with Pawrly) or **declared** in `pawrly.yaml`. A declared function is either *attached* to a source (inheriting its connection and auth) or *standalone* (with its own `namespace`, `kind`, and `config`).
+## When to use a function
+
+Use a **table** when the remote resource is a collection that SQL can scan and filter, such as issues, orders, or events. SQL `WHERE` and `LIMIT` clauses can then be pushed into the source when supported.
+
+Use a **function** when each call needs explicit inputs before it can run, such as a search query, one-record lookup, geocode request, or file glob. Inputs go inside the function call; a `WHERE` clause filters the rows returned by that call.
+
+Function arguments must be literal values known when the query is planned. Function calls also run live and are not stored in the table cache. If an operation should behave like a reusable, cacheable collection, declare a table instead.
+
+Functions are either **builtin** (shipped with Pawrly) or **declared** in `pawrly.yaml`. Attach a declared function to a source when it should reuse that source's connection, authentication, rate limiter, and MCP session. Use a standalone function when the operation has its own connection and should not belong to an existing source.
 
 ---
 
@@ -52,6 +60,8 @@ Rules:
 ---
 
 ## Declaring functions
+
+Both declaration styles produce the same SQL call shape, `namespace.function(args...)`. They differ only in where the connection settings come from.
 
 ### Source-attached (inherits the source's config)
 

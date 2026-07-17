@@ -1,6 +1,6 @@
 # CLI
 
-A single binary, `pawrly`. Every command runs against the same engine: in-process by default, or against a `pawrly serve` daemon when one is discovered.
+The `pawrly` command-line interface runs queries and manages a workspace. Commands use an engine in the current process unless a `pawrly serve` daemon is selected or discovered.
 
 ```
 pawrly [OPTIONS] <COMMAND>
@@ -23,7 +23,10 @@ pawrly [OPTIONS] <COMMAND>
 | Command | What it does |
 |---|---|
 | [sql](#pawrly-sql) | Run a SQL query. |
+| [explain](#pawrly-explain) | Show a SQL query plan, optionally with runtime metrics. |
 | [semantic](#pawrly-semantic) | Browse and query the semantic layer. |
+| [function](./functions.md#cli) | Discover and call table-valued functions. |
+| [variables](./variables.md#commands) | Inspect and set declared variables. |
 | [schema](#pawrly-schema) | List the catalog or describe a table. |
 | [source](#pawrly-source) | Manage workspace sources. |
 | [cache](#pawrly-cache) | Inspect and manage the cache. |
@@ -35,6 +38,7 @@ pawrly [OPTIONS] <COMMAND>
 | [console](#pawrly-console) | Serve the web [Console](./console.md) (gRPC-Web + embedded UI). |
 | [mcp-stdio](#pawrly-mcp-stdio) | Run the MCP server over stdio. |
 | [mcp-http](#pawrly-mcp-http) | Run the MCP server over HTTP. |
+| [update](./overview.md#update-and-uninstall) / [uninstall](./overview.md#update-and-uninstall) | Update or remove the installed binary. |
 | `version` | Print the engine version and health. |
 
 ---

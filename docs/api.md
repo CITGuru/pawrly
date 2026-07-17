@@ -1,12 +1,12 @@
 # REST API
 
-Pawrly exposes a JSON-over-HTTP API so any client — curl, a JavaScript app, a webhook, a no-code tool — can query your workspace without a gRPC or MCP client. Like the [CLI](./cli.md) and [MCP server](./mcp.md), it's a **frontend**: it runs the same engine, so it sees exactly the data, caching, and [semantic models](./semantic.md) you do.
+Pawrly's REST API exposes Pawrly engine operations over JSON and HTTP. Requests operate on the workspace loaded by `pawrly console`, or on the daemon selected with `--remote`.
 
-The two primary endpoints are `POST /v1/sql` (raw SQL) and `POST /v1/query` (a governed [semantic](./semantic.md) query); the rest read the catalog or manage [materialized tables](./materialize.md).
+Use `POST /v1/sql` for SQL and `POST /v1/query` for a structured [semantic](./semantic.md) query. Other endpoints inspect the catalog, manage sources and cached tables, or manage [materialized tables](./materialize.md).
 
 ## Running it
 
-The REST API rides the same address as the [Console](./console.md):
+The REST API is served on the same address as the [Console](./console.md):
 
 ```bash
 pawrly console --addr 127.0.0.1:8787
@@ -46,7 +46,7 @@ curl -s localhost:8787/v1/sql \
 | Method + path | Purpose |
 |---|---|
 | `POST /v1/sql` | Run raw SQL |
-| `POST /v1/query` | Run a governed semantic query |
+| `POST /v1/query` | Run a structured semantic query |
 | `POST /v1/explain` | Optimized / analyzed plan for a SQL string |
 | `POST /v1/queries/{id}/cancel` | Cancel an in-flight query |
 | `GET /v1/sources` | List sources |
@@ -98,7 +98,7 @@ curl -s localhost:8787/v1/sql -H 'content-type: application/json' \
 
 ### `POST /v1/query`
 
-Run a structured query against the [semantic layer](./semantic.md) — the curated business vocabulary (`orders.revenue` by `orders.status`) rather than raw columns. The body is the semantic query; the result is the same `{ columns, rows, row_count, truncated }` shape.
+Run a structured query against the [semantic layer](./semantic.md), using members such as `orders.revenue` and `orders.status` rather than SQL expressions. The body is the semantic query; the result uses the same `{ columns, rows, row_count, truncated }` shape as `/v1/sql`.
 
 ```bash
 curl -s localhost:8787/v1/query -H 'content-type: application/json' -d '{
@@ -207,7 +207,7 @@ Every error is a JSON envelope with a stable `PAWRLY_*` code and an HTTP status:
 | `500` | internal error |
 | `503` | engine out of memory |
 
-The same source-level [safety](./config.md) policies (`require_filters_on`, `max_unfiltered_rows`, query timeouts) apply over REST, and the API is **read-only** for data — `INSERT`/`UPDATE`/`DELETE`/DDL are refused.
+The same source-level [safety](./config.md) policies (`require_filters_on`, `require_at_least_one_filter`, `max_rows`, and `timeout`) apply over REST. SQL execution is read-only for source data: `INSERT`, `UPDATE`, `DELETE`, and DDL are refused.
 
 ## OpenAPI spec
 
@@ -218,4 +218,4 @@ curl -s localhost:8787/v1/openapi.json    # JSON
 curl -s localhost:8787/v1/openapi.yaml    # YAML
 ```
 
-Point Swagger UI, Postman, or a client generator at it to explore the API. For application code, prefer the first-party [client SDKs](./clients.md) — TypeScript and Python — which speak this REST API and gRPC behind one typed surface.
+The document can be loaded into Swagger UI, Postman, or an OpenAPI client generator. The TypeScript and Python [client SDKs](./clients.md) wrap this REST API and the gRPC API.

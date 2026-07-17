@@ -1,17 +1,19 @@
 # Architecture
 
-Pawrly is one binary split between a query engine and frontends (CLI, MCP server, REST/HTTP + Console, Flight SQL). They talk through a single trait, so the same engine runs in-process or behind a daemon with no behavioural difference.
+Pawrly has one query engine and several **interfaces**: the CLI, MCP server, REST API, Console, and Flight SQL. An interface is how a person or client uses Pawrly.
+
+Every interface calls the same engine API, `EngineService`. The engine can run inside the interface's process or in a separate daemon without changing the available operations.
 
 ## The big picture
 
 ```
-   CLI    MCP server        browser / BI / scripts        ← surfaces
+   CLI    MCP server        browser / BI / scripts        ← interfaces
     │         │                      │
-    │         │        ┌─────────────┼──────────────┐
-    │         │     REST · gRPC-Web · Console   Flight SQL
+   in-process or       ┌─────────────┼──────────────┐
+    │  gRPC   │     REST · gRPC-Web · Console   Flight SQL
     │         │       (pawrly-server, HTTP)   (pawrly-flight)   ← transports
     └────┬────┴──────────────┬───────────────────┬──┘
-         ▼                    ▼                   ▼
+         ▼                   ▼                   ▼
                      EngineService                       ← one trait, two impls
                  ┌────────┴────────┐
                  ▼                 ▼
@@ -35,12 +37,14 @@ DataFusion plans and executes every query. Sources are exposed to it as tables, 
 
 ### `EngineService`
 
-Every frontend programs against `EngineService`. It's satisfied by either:
+`EngineService` is the common API for running queries, browsing the catalog, managing sources and stored data, and using semantic models. In Rust, it is a **trait**: a contract that lists the operations an engine must provide without prescribing where they run.
+
+Pawrly has two implementations:
 
 - **`LocalEngine`** — runs everything in-process. This is the default; a bare `pawrly sql` spins one up, queries, and exits.
 - **`RemoteEngineClient`** — forwards each call to a `pawrly serve` daemon over gRPC.
 
-Because both implement the same trait, **local mode and daemon mode produce byte-for-byte identical output**. A frontend never needs to know which one it's holding. This is also why a new frontend (today the CLI and the MCP server) is a thin translation layer, not a re-implementation.
+Both implementations use the same request and result types, so interfaces do not need separate local and remote behavior. A new interface translates its own protocol into `EngineService` calls rather than reimplementing the engine.
 
 ### Sources
 
@@ -48,7 +52,7 @@ A source is a named set of tables backed by some external system or local files.
 
 ### Cache
 
-Caching is **opt-in per table**. When enabled, a table's results are materialized to Parquet on disk with a JSON manifest, so:
+Caching is **opt-in per table**. When enabled, a table's results are written to Parquet on disk with a JSON manifest, so:
 
 - the cache survives process restarts,
 - it's engine-neutral (plain Parquet),
@@ -58,25 +62,27 @@ A corrupt cache file is quarantined and the query transparently re-fetches, so a
 
 ### Materialized tables
 
-Distinct from the cache, a **materialized table** is a named, self-backed table with no upstream. You produce one from a query result, a local file, or a remote URL; it lands as a Parquet artifact addressable as `materialized.<name>` (the reserved `materialized` schema). Unlike a cache entry — which mirrors a live source and expires — a materialized table is **pinned** and changes only when you re-materialize, refresh, or drop it. See **[Materialized tables](./materialize.md)**.
+A **materialized table** saves the result of a query, local file, or remote URL as a named SQL table. Reads use the saved Parquet file, and the table remains available until you replace, refresh, or drop it. Materialized tables use the reserved `materialized` schema and are addressed as `materialized.<name>`. See **[Materialized tables](./materialize.md)**.
 
 ### The semantic layer
 
-On top of raw tables, you can define **business models** — named dimensions, measures, relationships, and reusable **segments** (named filter sets) — and query them structurally instead of writing SQL. The semantic compiler turns a structured query into SQL the engine already knows how to run, including cross-model joins and row-level security. Models can also declare **pre-aggregations** (rollups) that the compiler matches a query against to serve it from a smaller materialized table. See **[Semantic layer](./semantic.md)**.
+On top of raw tables, you can define **business models** — named dimensions, measures, relationships, and reusable **segments** (named filter sets) — and query them structurally instead of writing SQL. The semantic compiler turns a structured query into SQL the engine already knows how to run, including cross-model joins and row-level security. Models can also declare **pre-aggregations** whose stored rollups answer matching queries without scanning the source table again. See **[Semantic layer](./semantic.md)**.
 
 ## Transports
 
-Transports are pluggable: each one wraps an `EngineService` and exposes it over a wire protocol, so the same engine can serve multiple surfaces at once.
+A **transport** carries an interface's requests to an engine running in another process. Choosing a transport changes how requests travel, not what the engine can do. An in-process interface needs no transport; a daemon can expose several at once.
 
-- **gRPC (`pawrly-server`)** — the default daemon transport, reachable over a Unix domain socket (the default for local use) or TCP. The CLI auto-discovers a running daemon over its socket and falls back to in-process execution if none is found.
-- **HTTP (`pawrly-server`)** — one TCP port fronting three browser-friendly surfaces off the same engine: the **[REST/JSON API](./api.md)** (`/v1/sql`, `/v1/query`, catalog reads, materialized-table management), **gRPC-Web** for the browser client, and the embedded **[Console](./console.md)** SPA. Started with `pawrly console` or `pawrly serve --console`; gRPC-Web and REST share the six service definitions with the machine wire so the two can't drift.
+- **gRPC (`pawrly-server`)** — the default daemon transport. Local clients normally connect through a Unix domain socket, a filesystem endpoint available only on the same machine. Remote clients connect over TCP. The CLI uses a running local daemon when it finds the socket and otherwise starts an in-process engine.
+- **HTTP (`pawrly-server`)** — one TCP port serves the **[REST/JSON API](./api.md)**, gRPC-Web for browser clients, and the embedded **[Console](./console.md)** application. Start it with `pawrly console` or `pawrly serve --console`. All three call the same engine services.
 - **Arrow Flight SQL (`pawrly-flight`)** — exposes the engine over the Flight SQL protocol so BI and analytics clients (`pyarrow.flight`, ADBC drivers, Dremio, Tableau, Power BI) can talk to Pawrly like any Flight SQL database.
 
 An operator can run several at once — Flight SQL for BI tools, gRPC for the CLI/MCP, HTTP for the browser — all backed by one `EngineService`.
 
-A UDS leans on file permissions (mode 0600) as its trust boundary. A TCP listener refuses to bind a non-loopback address without **bearer-token auth**. The gRPC transport can also terminate **TLS** directly (PEM cert + key); the HTTP transport runs through axum and carries no built-in TLS, so a public deployment terminates TLS in front (e.g. a reverse proxy) to keep the token off the wire in cleartext.
+A Unix domain socket uses file permissions (mode 0600) to restrict local access. A TCP listener refuses to bind a non-loopback address without **bearer-token authentication**.
 
-The [MCP server](./mcp.md) is itself a frontend, so it can run the engine in-process or proxy to a daemon — letting several agents share one engine and one cache.
+The gRPC transport can terminate **TLS** directly using a PEM certificate and key. The HTTP transport has no built-in TLS, so public deployments must put it behind a TLS-terminating reverse proxy.
+
+The [MCP server](./mcp.md) is an interface, so it can run the engine in-process or proxy to a daemon — letting several agents share one engine and one cache.
 
 ## Design principles
 
