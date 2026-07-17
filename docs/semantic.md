@@ -1,10 +1,16 @@
 # Semantic layer
 
-The semantic layer lets you define the business models and concepts in your raw tables: dimensions, measures, and relationships then query them structurally. You can define a calculation such as `orders.revenue` once, then query it by dimensions such as `orders.status` without rewriting the SQL. This gives humans a clean vocabulary and agents a curated, governed surface.
+The semantic layer lets you define business models and concepts in your raw tables: dimensions, measures, and relationships, then query them structurally. You can define a calculation such as `orders.revenue` once, then query it by dimensions such as `orders.status` without rewriting the SQL. This gives humans a clean vocabulary and agents a curated, governed surface.
 
-Models live under `semantic:` in [`pawrly.yaml`](./config.md). Query them with [`pawrly semantic`](./cli.md#pawrly-semantic) or the [`semantic_query` MCP tool](./mcp.md). Runnable examples live in `examples/semantic/` (single file) and `examples/semantic-multi-file/` (models split across files, with a pre-aggregation).
+## Model
 
-## Defining a model
+A model is a named business view of one source table. It describes what each row represents, which values can be grouped or filtered (dimensions), and which calculations can be requested (measures). It can also define relationships to other models, reusable segments, and query safety rules.
+
+A model does not copy the source data. Pawrly uses it to validate semantic queries and compile them into SQL against the source table. For example, an `orders` model might represent one row per order, expose `status` and `order_date` as dimensions, and expose `revenue` and `order_count` as measures.
+
+### Defining a model
+
+Models are defined under `semantic:` block in [`pawrly.yaml`](./config.md). Query them with [`pawrly semantic`](./cli.md#pawrly-semantic) or the [`semantic_query` MCP tool](./mcp.md). Runnable examples are in `examples/semantic/`.
 
 A model starts with one table and declares the dimensions and measures available to query:
 
@@ -26,7 +32,7 @@ semantic:
         - { name: paid_revenue, agg: sum, expr: total_amount, filters: ["status = 'paid'"] }
 ```
 
-### Dimensions
+#### Dimensions
 
 A dimension is something you group or filter by. `expr` is a SQL expression over the model's table (usually just a column).
 
@@ -47,9 +53,9 @@ A measure is an aggregation. `agg` is one of `sum`, `count`, `count_distinct`, `
 - `format` is a display hint passed through to clients.
 - Use a [metric](#metrics), rather than a `custom` aggregate, for ratios or arithmetic between measures. This keeps the underlying measures available to filters, fan-out checks, and pre-aggregations.
 
-## Querying
+### Querying
 
-A **member** is `model.dimension` (optionally with a grain) or `model.measure`:
+A semantic query asks for one or more measures and can group them by dimensions. Measures and dimensions are called **members** and use the form `model.name`. A time dimension can add a grain, as in `orders.order_date.month`.
 
 ```bash
 pawrly semantic query orders.revenue orders.order_count \
@@ -60,7 +66,15 @@ pawrly semantic query orders.revenue orders.order_count \
   --limit 100
 ```
 
-This compiles to a grouped aggregate over `data.orders` and runs on the same engine as any SQL query. The equivalent over MCP is the [`semantic_query` tool](./mcp.md).
+This query:
+
+- calculates `revenue` and `order_count`,
+- groups the results by status and calendar month,
+- includes only paid orders,
+- sorts by revenue from highest to lowest, and
+- returns at most 100 rows.
+
+Each result row represents one status and month combination. Pawrly compiles the request to a grouped SQL query over `data.orders` and runs it on the same engine as any other SQL query. The equivalent over MCP is the [`semantic_query` tool](./mcp.md).
 
 Filters support `=`, `!=`, `>`, `>=`, `<`, `<=`, `in`, `not_in`, `in_range`, `contains`, `starts_with`, `ends_with`, `is_null`, `is_not_null`.
 
@@ -70,7 +84,7 @@ A filter on a **dimension** is a row-level `WHERE`; a filter on a **measure** (e
 pawrly semantic query orders.revenue --by orders.status --where 'orders.revenue > 1000'
 ```
 
-### Time zones
+#### Time zones
 
 When a query truncates a time dimension to a grain, pass `--time-zone` to bucket on local time rather than UTC:
 
@@ -78,9 +92,15 @@ When a query truncates a time dimension to a grain, pass `--time-zone` to bucket
 pawrly semantic query orders.revenue --by orders.order_date.day --time-zone America/New_York
 ```
 
-## Relationships and cross-model queries
+## Relationships
 
-Declare relationships to join models. `this` refers to the declaring model; the target is referenced by its model name:
+A relationship describes how rows in one model connect to rows in another:
+
+- `many_to_one`: many rows in this model can match one row in the target model, such as many orders belonging to one customer.
+- `one_to_one`: one row in this model matches at most one row in the target model.
+- `one_to_many`: one row in this model can match many rows in the target model, such as one order containing many line items.
+
+In the join expression, `this` refers to the model declaring the relationship. The target model is referenced by its name:
 
 ```yaml
 - name: orders
@@ -97,13 +117,13 @@ Declare relationships to join models. `this` refers to the declaring model; the 
     - { name: customer_count, agg: count_distinct, expr: id }
 ```
 
-Now a single query can span both models — measures from one, dimensions from a related one:
+The relationship allows a query to calculate a measure from `orders` and group it by a dimension from `customers`:
 
 ```bash
 pawrly semantic query orders.revenue --by customers.region
 ```
 
-Pawrly finds a join path from the model that owns the measures, emits joins ( `many_to_one` and `one_to_one` relationships use inner joins; `one_to_many` relationships use outer joins) and groups appropriatelt. It rejects unreachable models (`PAWRLY_SEMANTIC_DISCONNECTED`) and two equal-length join paths as ambiguous (`PAWRLY_SEMANTIC_AMBIGUOUS_PATH`) instead of choosing a path.
+Pawrly starts at the model containing the requested measure and follows the declared relationships to the requested dimensions. `many_to_one` and `one_to_one` relationships use inner joins; `one_to_many` relationships use outer joins. Pawrly rejects unreachable models (`PAWRLY_SEMANTIC_DISCONNECTED`) and two equally short join paths (`PAWRLY_SEMANTIC_AMBIGUOUS_PATH`) instead of choosing one.
 
 ### Fan-out checks
 
@@ -115,13 +135,17 @@ Grouping a measure by a dimension across a `one_to_many` relationship can multip
 pawrly semantic query orders.revenue --by order_items.sku
 ```
 
-### Measures from more than one fact
+### Measures from multiple fact models
 
-When a query's measures span **two or more fact models** (e.g. `orders.revenue` and `order_items.qty`), a single join would inflate one side. The compiler instead uses **aggregate-locality** compilation: each fact is pre-aggregated at the shared-dimension grain in its own CTE, and the CTEs are `FULL OUTER JOIN`-ed on the shared keys. Each measure is computed at its own grain, so neither is over-counted:
+A fact model records events or transactions at a specific level, such as one row per order or one row per line item. A query can request measures from more than one fact model:
 
 ```bash
 pawrly semantic query orders.revenue order_items.qty --by orders.status
 ```
+
+Joining the raw tables first would repeat each order once for every line item and inflate its revenue. Pawrly instead aggregates each fact model separately by the shared dimensions, then combines the results. This keeps `orders.revenue` at the order level and `order_items.qty` at the line-item level.
+
+Internally, this is called **aggregate-locality** compilation. Each fact is pre-aggregated in its own CTE, and the CTEs are `FULL OUTER JOIN`-ed on their shared keys.
 
 ## Row-level security
 
@@ -237,9 +261,11 @@ For `cumulative` and `offset`, Pawrly joins the aggregate to a dense date axis a
 
 These metrics require exactly one time dimension with a grain. `share.over` must be a subset of the query's dimensions.
 
-## Pre-aggregations
+## Pre-aggregations and rollups
 
-A model can declare rollups for common queries:
+A **pre-aggregation** tells Pawrly to calculate and cache a summary that is queried often. The cached result is called a **rollup**. Queries do not refer to the rollup directly; Pawrly chooses it automatically when it can answer the query.
+
+Declare a pre-aggregation on a model:
 
 ```yaml
 pre_aggregations:
@@ -247,10 +273,13 @@ pre_aggregations:
     dimensions: [order_date.day, status]
     measures:   [revenue, order_count]
     refresh:    1h
-    partition_by: order_date.month
 ```
 
-Pawrly stores each pre-aggregation as a cached rollup table named `"semantic"."<model>__<preagg>"`. A covered query reads that table instead of scanning the base table. With `refresh:`, a background task rebuilds the rollup on the given cadence. Without it, Pawrly builds the rollup on first use and keeps it until invalidated. List materialized rollups with [`pawrly cache list`](./cli.md#pawrly-cache).
+`dimensions` sets the level of detail stored in the rollup, and `measures` lists the values calculated at that level. The example saves daily `revenue` and `order_count` totals for each status. Pawrly stores the result as `semantic.orders__daily_by_status`.
+
+When that saved result contains everything a query needs, Pawrly reads it instead of scanning and grouping the original `orders` table again. This is what it means for a rollup to **cover** a query.
+
+The table is created when the first matching query runs. With `refresh: 1h`, Pawrly rebuilds it every hour to include changes in the source data. Without `refresh`, it is built once and remains unchanged until it is manually refreshed or invalidated. Use [`pawrly cache list`](./cli.md#pawrly-cache) to view cached rollups.
 
 A rollup **covers** a query when it includes the query's measures, filtered dimensions, and dimensions at a compatible or finer grain. The compiler can then read the rollup, combine stored partials (`sum` and `count` add up; `min` and `max` extend), and truncate time grains as needed. For example, a `day` rollup can serve a `month` query.
 
