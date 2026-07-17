@@ -25,11 +25,28 @@
 #   pawrly --config examples/semantic/pawrly.yaml semantic query \
 #     orders.revenue --by orders.status
 #
-#   # Pre-aggregation (S6): `customers` has no RLS and `customer_total` is
+#   # Pre-aggregation: `customers` has no RLS and `customer_total` is
 #   # additive, so this query reads the materialized rollup, not the base table.
 #   pawrly --config examples/semantic/pawrly.yaml semantic query \
 #     customers.customer_total --by customers.region
 #   pawrly --config examples/semantic/pawrly.yaml cache list   # shows the rollup
+#
+#   # Metrics — composed business numbers queried by their dot-free name.
+#   # A ratio (avg order value) and a cross-model ratio (revenue per customer):
+#   pawrly --config examples/semantic/pawrly.yaml semantic query \
+#     aov --by orders.status --param tenant_id=acme
+#   pawrly --config examples/semantic/pawrly.yaml semantic query \
+#     arpu --by customers.region --param tenant_id=acme
+#
+#   # Window metrics run on a dense month axis, so a month with no orders
+#   # still counts (running total carries, month-over-month never skips):
+#   pawrly --config examples/semantic/pawrly.yaml semantic query \
+#     revenue_running revenue_mom --by orders.order_date.month \
+#     --param tenant_id=acme --order-by orders.order_date.month
+#
+#   # Share of the whole, partitioned by country:
+#   pawrly --config examples/semantic/pawrly.yaml semantic query \
+#     country_share orders.revenue --by orders.country --param tenant_id=acme
 
 version: 1
 name: semantic-example
@@ -60,8 +77,9 @@ semantic:
         # Measure-scoped filter → compiles to SUM(...) FILTER (WHERE status = 'paid').
         - { name: paid_revenue,    agg: sum,            expr: total_amount, filters: ["status = 'paid'"], format: "$#,##0.00" }
         - { name: avg_order_value, agg: avg,            expr: total_amount, format: "$#,##0.00" }
-        # `Custom` aggregates are also supported, e.g.:
-        # - { name: aov, agg: { custom: { sql: "SUM(total_amount) / NULLIF(COUNT(DISTINCT id), 0)" } }, expr: total_amount }
+        # For ratios/arithmetic between measures, prefer a metric (below) over
+        # a `custom` SQL aggregate — the leaves stay visible to filters,
+        # fan-out checks, and rollups.
 
       relationships:
         - { name: customer, kind: many_to_one, target: customers, on: "this.customer_id = customers.id" }
@@ -112,3 +130,37 @@ semantic:
         - name: by_region
           dimensions: [region]
           measures:   [customer_total]
+
+  # ----- metrics: composed business numbers over the measures above ---------
+  # Queried by their dot-free name in the same position as a `model.measure`.
+  # Every leaf inherits the model's RLS, so orders-based metrics still require
+  # the tenant param.
+  metrics:
+    # revenue ÷ distinct orders
+    - name: aov
+      description: Average order value.
+      kind: { ratio: { numerator: orders.revenue, denominator: orders.order_count } }
+      format: "$#,##0.00"
+
+    # cross-model — revenue (orders) ÷ customer count (customers)
+    - name: arpu
+      description: Average revenue per customer.
+      kind: { ratio: { numerator: orders.revenue, denominator: customers.customer_count } }
+      format: "$#,##0.00"
+
+    # running total over a dense month axis (a month with no orders still counts)
+    - name: revenue_running
+      description: Cumulative revenue over time.
+      kind: { cumulative: { measure: orders.revenue, window: running_total } }
+
+    # month-over-month growth, aligned to the calendar
+    - name: revenue_mom
+      description: Month-over-month revenue growth.
+      kind: { offset: { measure: orders.revenue, periods: 1, output: growth } }
+      format: "0.0%"
+
+    # each country's share of total revenue (over: [] = grand total)
+    - name: country_share
+      description: Share of revenue by shipping country.
+      kind: { share: { measure: orders.revenue, over: [] } }
+      format: "0.0%"

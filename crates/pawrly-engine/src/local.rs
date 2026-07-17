@@ -301,13 +301,16 @@ impl LocalEngine {
 
         // Build the semantic catalog before the config is consumed into
         // engine-side sources below.
-        let semantic_models = cfg
+        let (semantic_models, semantic_metrics, time_spine) = cfg
             .config
             .semantic
             .as_ref()
-            .map(|s| s.models.clone())
+            .map(|s| (s.models.clone(), s.metrics.clone(), s.time_spine.clone()))
             .unwrap_or_default();
-        let semantic = Arc::new(SemanticCatalog::new(semantic_models));
+        let semantic = Arc::new(
+            SemanticCatalog::new_with_metrics(semantic_models, semantic_metrics)
+                .with_time_spine(time_spine),
+        );
 
         // Build the dynamic-variable store + per-source binding maps while the
         // config is still intact (before `into_engine_sources` consumes it).

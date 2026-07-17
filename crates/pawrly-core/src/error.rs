@@ -124,6 +124,40 @@ impl EngineError {
             Self::Unsupported(_) => "PAWRLY_UNSUPPORTED",
         }
     }
+
+    /// Rebuild an error a server sent over the wire as `(code, message)`,
+    /// where `message` is the `Display` rendering. Strips the variant's own
+    /// prefix so re-rendering doesn't duplicate it (the prefixes must match
+    /// the `#[error]` templates above — pinned by the round-trip test).
+    #[must_use]
+    pub fn from_wire(code: &str, message: &str) -> Self {
+        fn tail(message: &str, prefix: &str) -> String {
+            message.strip_prefix(prefix).unwrap_or(message).to_string()
+        }
+        fn backticked(message: &str, prefix: &str) -> String {
+            let tail = message.strip_prefix(prefix).unwrap_or(message);
+            tail.strip_prefix('`')
+                .and_then(|t| t.strip_suffix('`'))
+                .unwrap_or(tail)
+                .to_string()
+        }
+        match code {
+            "PAWRLY_CANCELLED" => Self::Cancelled,
+            "PAWRLY_TIMEOUT" => Self::Timeout(Duration::ZERO),
+            "PAWRLY_OOM" => Self::OutOfMemory(0),
+            "PAWRLY_UNKNOWN_KIND" => Self::UnknownKind(tail(message, "unknown source kind: ")),
+            "PAWRLY_UNKNOWN_TABLE" => Self::UnknownTable(backticked(message, "unknown table ")),
+            "PAWRLY_UNKNOWN_FUNCTION" => {
+                Self::UnknownFunction(backticked(message, "unknown function "))
+            }
+            codes::INVALID_SQL => Self::InvalidSql(tail(message, "invalid SQL: ")),
+            "PAWRLY_SEMANTIC_PLAN" => Self::SemanticPlan(tail(message, "semantic plan error: ")),
+            "PAWRLY_PROTOCOL" => Self::Protocol(tail(message, "protocol error: ")),
+            "PAWRLY_UNSUPPORTED" => Self::Unsupported(message.to_string()),
+            codes::INTERNAL => Self::Internal(tail(message, "internal error: ")),
+            _ => Self::Internal(format!("{code}: {message}")),
+        }
+    }
 }
 
 /// Errors that come from a source while fetching or describing data.
@@ -375,5 +409,36 @@ mod tests {
         let s = format!("{errs}");
         assert!(s.contains("not supported"));
         assert!(s.contains("flubber"));
+    }
+
+    #[test]
+    fn from_wire_round_trips_display_and_code() {
+        // Pins `from_wire`'s prefix stripping to the `#[error]` templates: a
+        // wire round trip must not re-prefix or lose the code.
+        let errors = [
+            EngineError::UnknownKind("flat".into()),
+            EngineError::UnknownTable("shop.orders".into()),
+            EngineError::UnknownFunction("file.glob".into()),
+            EngineError::InvalidSql("bad token".into()),
+            EngineError::SemanticPlan("unknown metric `ghost`".into()),
+            EngineError::Protocol("daemon ignored namespace `x`".into()),
+            EngineError::Internal("cache init: denied".into()),
+            EngineError::Unsupported("`shutdown` over rest".into()),
+            EngineError::Cancelled,
+        ];
+        for e in errors {
+            let round = EngineError::from_wire(e.code(), &e.to_string());
+            assert_eq!(round.to_string(), e.to_string());
+            assert_eq!(round.code(), e.code());
+        }
+    }
+
+    #[test]
+    fn from_wire_unknown_code_keeps_code_visible() {
+        let e = EngineError::from_wire("PAWRLY_FUTURE_THING", "something new");
+        assert_eq!(
+            e.to_string(),
+            "internal error: PAWRLY_FUTURE_THING: something new"
+        );
     }
 }

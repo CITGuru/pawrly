@@ -91,21 +91,11 @@ impl RestEngineClient {
     }
 }
 
-/// Turn a `{ "error": { code, message } }` envelope into an `EngineError`,
-/// preserving the code where a matching variant exists.
+/// Turn a `{ "error": { code, message } }` envelope into an `EngineError`.
 fn rest_error(body: &Value) -> EngineError {
     let code = body["error"]["code"].as_str().unwrap_or("PAWRLY_INTERNAL");
-    let msg = body["error"]["message"].as_str().unwrap_or("").to_string();
-    match code {
-        "PAWRLY_UNKNOWN_TABLE" => EngineError::UnknownTable(msg),
-        "PAWRLY_UNKNOWN_FUNCTION" => EngineError::UnknownFunction(msg),
-        "PAWRLY_INVALID_SQL" => EngineError::InvalidSql(msg),
-        "PAWRLY_SEMANTIC_PLAN" => EngineError::SemanticPlan(msg),
-        "PAWRLY_TIMEOUT" => EngineError::Timeout(Duration::ZERO),
-        "PAWRLY_CANCELLED" => EngineError::Cancelled,
-        "PAWRLY_UNSUPPORTED" => EngineError::Unsupported(msg),
-        _ => EngineError::Internal(format!("{code}: {msg}")),
-    }
+    let msg = body["error"]["message"].as_str().unwrap_or("");
+    EngineError::from_wire(code, msg)
 }
 
 fn require_namespace_echo(requested: Option<&str>, resp: &Value) -> Result<(), EngineError> {

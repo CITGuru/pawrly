@@ -294,6 +294,409 @@ impl MeasureAgg {
     }
 }
 
+/// A queryable business metric defined over one or more measures. Lives at the
+/// workspace level (not nested in a model) so it can compose measures across
+/// models. Evaluated *after* aggregation, as a projection over measure columns.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Metric {
+    /// Bare name; the member used to request it, e.g. `aov`. Must contain no
+    /// `.` (reserved for `model.member`) and must not collide with a model name.
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    pub kind: MetricKind,
+    /// Governed predicate AND-ed into every leaf measure of this metric (pushed
+    /// to each leaf's `FILTER (WHERE …)`). Part of the metric's identity, unlike
+    /// a caller's per-query `SemanticQuery.filters`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filter: Option<String>,
+    /// Display format hint, e.g. `"$#,##0.00"`, `"0.0%"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format: Option<String>,
+}
+
+/// Externally tagged: `kind: { ratio: { … } }`. Deserialized via
+/// [`MetricKindRepr`] because `serde_yaml` only reads externally-tagged struct
+/// variants from `!tag` syntax, and the map form is the documented surface.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case", try_from = "MetricKindRepr")]
+pub enum MetricKind {
+    /// `numerator / NULLIF(denominator, 0)`. Each operand is a measure
+    /// (`orders.revenue`) or metric, with an optional per-side filter.
+    Ratio {
+        numerator: Operand,
+        denominator: Operand,
+    },
+
+    /// Scalar arithmetic over `{member}` references resolved from the aggregated
+    /// output, e.g. `"({orders.revenue} - {orders.cost}) / NULLIF({orders.revenue}, 0)"`.
+    /// A `{member | predicate}` token applies a per-token leaf filter.
+    Derived { expr: String },
+
+    /// Window aggregate over `measure` along the query's time grain, computed
+    /// over the dense time spine. `agg` selects the window function.
+    Cumulative {
+        measure: String,
+        #[serde(default)]
+        window: CumulativeWindow,
+        #[serde(default)]
+        agg: WindowAgg,
+    },
+
+    /// Period-over-period: compare `measure` to itself `periods` grains back,
+    /// aligned on the time spine so gaps don't misalign. `output` selects the
+    /// prior value, the difference, or the growth ratio.
+    Offset {
+        measure: String,
+        #[serde(default = "one")]
+        periods: u32,
+        #[serde(default)]
+        output: OffsetOutput,
+    },
+
+    /// Part-of-whole: `measure` divided by a window aggregate of the same
+    /// measure over `over` (a subset of the query's dimensions; empty = grand
+    /// total). `agg` selects the denominator's window function.
+    Share {
+        measure: String,
+        #[serde(default)]
+        over: Vec<String>,
+        #[serde(default)]
+        agg: WindowAgg,
+    },
+}
+
+fn one() -> u32 {
+    1
+}
+
+impl Metric {
+    /// Every member this metric references — measures (`model.measure`) or
+    /// other metrics (dot-free) — with any per-operand / per-token filter.
+    /// `Err` carries a `Derived` expression parse failure.
+    pub fn references(&self) -> Result<Vec<(String, Option<String>)>, String> {
+        match &self.kind {
+            MetricKind::Ratio {
+                numerator,
+                denominator,
+            } => Ok(vec![
+                (numerator.member.clone(), numerator.filter.clone()),
+                (denominator.member.clone(), denominator.filter.clone()),
+            ]),
+            MetricKind::Derived { expr } => Ok(derived_tokens(expr)?
+                .into_iter()
+                .map(|t| (t.member, t.filter))
+                .collect()),
+            MetricKind::Cumulative { measure, .. }
+            | MetricKind::Offset { measure, .. }
+            | MetricKind::Share { measure, .. } => Ok(vec![(measure.clone(), None)]),
+        }
+    }
+}
+
+/// One `{member}` / `{member | filter}` reference inside a `Derived` expression.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DerivedToken {
+    pub member: String,
+    pub filter: Option<String>,
+}
+
+/// Extract the `{…}` tokens from a `Derived` expression, splitting each on the
+/// first `|` into member and optional per-token filter. Rejects unbalanced
+/// braces, empty tokens, and an expression with no token at all.
+pub fn derived_tokens(expr: &str) -> Result<Vec<DerivedToken>, String> {
+    let mut tokens = Vec::new();
+    let mut rest = expr;
+    while let Some(start) = rest.find('{') {
+        let after = &rest[start + 1..];
+        let end = after
+            .find('}')
+            .ok_or_else(|| format!("unbalanced `{{` in derived expr `{expr}`"))?;
+        let body = &after[..end];
+        let (member, filter) = match body.split_once('|') {
+            Some((m, f)) => (
+                m.trim(),
+                Some(f.trim().to_string()).filter(|s| !s.is_empty()),
+            ),
+            None => (body.trim(), None),
+        };
+        if member.is_empty() {
+            return Err(format!("empty `{{}}` reference in derived expr `{expr}`"));
+        }
+        tokens.push(DerivedToken {
+            member: member.to_string(),
+            filter,
+        });
+        rest = &after[end + 1..];
+    }
+    if rest.contains('}') {
+        return Err(format!("unbalanced `}}` in derived expr `{expr}`"));
+    }
+    if tokens.is_empty() {
+        return Err(format!(
+            "derived expr `{expr}` references no `{{member}}` token"
+        ));
+    }
+    Ok(tokens)
+}
+
+/// The `kind:` map form, one key per metric kind.
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct MetricKindRepr {
+    #[serde(default)]
+    ratio: Option<RatioRepr>,
+    #[serde(default)]
+    derived: Option<DerivedRepr>,
+    #[serde(default)]
+    cumulative: Option<CumulativeRepr>,
+    #[serde(default)]
+    offset: Option<OffsetRepr>,
+    #[serde(default)]
+    share: Option<ShareRepr>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct RatioRepr {
+    numerator: Operand,
+    denominator: Operand,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct DerivedRepr {
+    expr: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct CumulativeRepr {
+    measure: String,
+    #[serde(default)]
+    window: CumulativeWindow,
+    #[serde(default)]
+    agg: WindowAgg,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct OffsetRepr {
+    measure: String,
+    #[serde(default = "one")]
+    periods: u32,
+    #[serde(default)]
+    output: OffsetOutput,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct ShareRepr {
+    measure: String,
+    #[serde(default)]
+    over: Vec<String>,
+    #[serde(default)]
+    agg: WindowAgg,
+}
+
+impl TryFrom<MetricKindRepr> for MetricKind {
+    type Error = String;
+
+    fn try_from(r: MetricKindRepr) -> Result<Self, String> {
+        let mut kinds: Vec<MetricKind> = Vec::new();
+        if let Some(k) = r.ratio {
+            kinds.push(Self::Ratio {
+                numerator: k.numerator,
+                denominator: k.denominator,
+            });
+        }
+        if let Some(k) = r.derived {
+            kinds.push(Self::Derived { expr: k.expr });
+        }
+        if let Some(k) = r.cumulative {
+            kinds.push(Self::Cumulative {
+                measure: k.measure,
+                window: k.window,
+                agg: k.agg,
+            });
+        }
+        if let Some(k) = r.offset {
+            kinds.push(Self::Offset {
+                measure: k.measure,
+                periods: k.periods,
+                output: k.output,
+            });
+        }
+        if let Some(k) = r.share {
+            kinds.push(Self::Share {
+                measure: k.measure,
+                over: k.over,
+                agg: k.agg,
+            });
+        }
+        let mut kinds = kinds.into_iter();
+        match (kinds.next(), kinds.next()) {
+            (Some(kind), None) => Ok(kind),
+            _ => Err(
+                "`kind:` must set exactly one of `ratio`, `derived`, `cumulative`, `offset`, \
+                 or `share`"
+                    .to_string(),
+            ),
+        }
+    }
+}
+
+/// A `Ratio` operand: a measure/metric member with an optional governed filter.
+/// Deserializes from a bare string (`orders.revenue`, no filter) or a map
+/// (`{ member: orders.revenue, filter: "is_food" }`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(from = "OperandRepr")]
+pub struct Operand {
+    pub member: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filter: Option<String>,
+}
+
+/// The two YAML spellings of an [`Operand`].
+#[derive(Deserialize, JsonSchema)]
+#[serde(untagged)]
+enum OperandRepr {
+    Member(String),
+    Full {
+        member: String,
+        #[serde(default)]
+        filter: Option<String>,
+    },
+}
+
+impl From<OperandRepr> for Operand {
+    fn from(r: OperandRepr) -> Self {
+        match r {
+            OperandRepr::Member(member) => Self {
+                member,
+                filter: None,
+            },
+            OperandRepr::Full { member, filter } => Self { member, filter },
+        }
+    }
+}
+
+impl JsonSchema for Operand {
+    fn schema_name() -> String {
+        "Operand".to_string()
+    }
+
+    fn json_schema(generator: &mut schemars::r#gen::SchemaGenerator) -> schemars::schema::Schema {
+        OperandRepr::json_schema(generator)
+    }
+}
+
+/// The window function used by `Cumulative` and `Share`. (`Count`/distinct are
+/// deliberately excluded — re-aggregating per-period counts double-counts; use
+/// a measure-tier additive count instead.)
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum WindowAgg {
+    #[default]
+    Sum,
+    Avg,
+    Min,
+    Max,
+}
+
+/// `RunningTotal` = unbounded from the series start (never resets).
+/// `GrainToDate { grain }` = resets at each calendar boundary (MTD/QTD/YTD).
+/// `Trailing { periods }` = rolling window of `periods` spine rows.
+///
+/// Deliberately NOT named `ToDate` — MetricFlow/Cube `to_date` means
+/// *period-to-date (resets)*, which is our `GrainToDate`, the opposite of a
+/// running total; the name is avoided to prevent a silent semantic inversion.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case", try_from = "CumulativeWindowRepr")]
+pub enum CumulativeWindow {
+    #[default]
+    RunningTotal,
+    GrainToDate {
+        grain: TimeGrain,
+    },
+    Trailing {
+        periods: u32,
+    },
+}
+
+/// The two YAML spellings of a window: bare `running_total`, or a single-key
+/// map (`{ grain_to_date: { grain: year } }` / `{ trailing: { periods: 7 } }`).
+#[derive(Deserialize, JsonSchema)]
+#[serde(untagged)]
+enum CumulativeWindowRepr {
+    Name(String),
+    Map {
+        #[serde(default)]
+        grain_to_date: Option<GrainToDateRepr>,
+        #[serde(default)]
+        trailing: Option<TrailingRepr>,
+    },
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct GrainToDateRepr {
+    grain: TimeGrain,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct TrailingRepr {
+    periods: u32,
+}
+
+impl TryFrom<CumulativeWindowRepr> for CumulativeWindow {
+    type Error = String;
+
+    fn try_from(r: CumulativeWindowRepr) -> Result<Self, String> {
+        match r {
+            CumulativeWindowRepr::Name(s) if s == "running_total" => Ok(Self::RunningTotal),
+            CumulativeWindowRepr::Name(s) => Err(format!(
+                "unknown window `{s}` (expected `running_total`, `grain_to_date`, or `trailing`)"
+            )),
+            CumulativeWindowRepr::Map {
+                grain_to_date: Some(g),
+                trailing: None,
+            } => Ok(Self::GrainToDate { grain: g.grain }),
+            CumulativeWindowRepr::Map {
+                grain_to_date: None,
+                trailing: Some(t),
+            } => Ok(Self::Trailing { periods: t.periods }),
+            CumulativeWindowRepr::Map { .. } => {
+                Err("`window:` must set exactly one of `grain_to_date` or `trailing`".to_string())
+            }
+        }
+    }
+}
+
+/// What an `Offset` metric projects: the prior value, the difference from it,
+/// or the growth ratio.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum OffsetOutput {
+    #[default]
+    Value,
+    Delta,
+    Growth,
+}
+
+/// A declared calendar table for window metrics (`semantic.time_spine:`).
+/// Absent, the compiler generates a dense date axis at the query grain.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TimeSpine {
+    /// `<source>.<table>` of the calendar table.
+    pub source: String,
+    /// Its date/timestamp column.
+    pub column: String,
+}
+
 /// A structured question against the semantic layer.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct SemanticQuery {
@@ -444,5 +847,68 @@ mod tests {
         .unwrap();
         assert_eq!(d.data_type, DimensionType::Time);
         assert_eq!(d.time_grains, vec![TimeGrain::Day, TimeGrain::Month]);
+    }
+
+    #[test]
+    fn metric_ratio_from_yaml_with_bare_string_operands() {
+        let m: Metric = serde_yaml::from_str(
+            "name: aov\nkind: { ratio: { numerator: orders.revenue, denominator: orders.order_count } }\n",
+        )
+        .unwrap();
+        let MetricKind::Ratio {
+            numerator,
+            denominator,
+        } = &m.kind
+        else {
+            panic!("expected ratio");
+        };
+        assert_eq!(numerator.member, "orders.revenue");
+        assert!(numerator.filter.is_none());
+        assert_eq!(denominator.member, "orders.order_count");
+    }
+
+    #[test]
+    fn metric_operand_map_form_carries_filter() {
+        let m: Metric = serde_yaml::from_str(
+            "name: r\nkind:\n  ratio:\n    numerator: { member: s.cancels, filter: \"plan = 'x'\" }\n    denominator: s.count\n",
+        )
+        .unwrap();
+        let MetricKind::Ratio { numerator, .. } = &m.kind else {
+            panic!("expected ratio");
+        };
+        assert_eq!(numerator.filter.as_deref(), Some("plan = 'x'"));
+    }
+
+    #[test]
+    fn metric_offset_defaults_periods_and_output() {
+        let m: Metric =
+            serde_yaml::from_str("name: mom\nkind: { offset: { measure: orders.revenue } }\n")
+                .unwrap();
+        let MetricKind::Offset {
+            periods, output, ..
+        } = m.kind
+        else {
+            panic!("expected offset");
+        };
+        assert_eq!(periods, 1);
+        assert_eq!(output, OffsetOutput::Value);
+    }
+
+    #[test]
+    fn metric_cumulative_window_forms() {
+        let m: Metric = serde_yaml::from_str(
+            "name: ytd\nkind: { cumulative: { measure: orders.revenue, window: { grain_to_date: { grain: year } }, agg: avg } }\n",
+        )
+        .unwrap();
+        let MetricKind::Cumulative { window, agg, .. } = m.kind else {
+            panic!("expected cumulative");
+        };
+        assert!(matches!(
+            window,
+            CumulativeWindow::GrainToDate {
+                grain: TimeGrain::Year
+            }
+        ));
+        assert_eq!(agg, WindowAgg::Avg);
     }
 }

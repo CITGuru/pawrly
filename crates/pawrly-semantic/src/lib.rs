@@ -14,12 +14,13 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+mod metric;
 pub mod rollup;
 
 use pawrly_core::semantic::{
-    Dimension, DimensionType, FilterOp, Measure, MeasureAgg, OrderDir, RelationshipKind,
+    Dimension, DimensionType, FilterOp, Measure, MeasureAgg, Metric, OrderDir, RelationshipKind,
     SemanticFilter, SemanticModel, SemanticModelDescription, SemanticModelInfo, SemanticOrder,
-    SemanticQuery, TimeGrain,
+    SemanticQuery, TimeGrain, TimeSpine,
 };
 use pawrly_core::{EngineError, SafetyError, TableName};
 
@@ -91,6 +92,30 @@ pub enum SemanticError {
     #[error(transparent)]
     Safety(#[from] SafetyError),
 
+    /// `PAWRLY_SEMANTIC_UNKNOWN_METRIC` — a dot-free member matches no metric.
+    #[error("unknown metric `{0}` (a dot-free member must name a configured metric)")]
+    UnknownMetric(String),
+
+    /// `PAWRLY_SEMANTIC_METRIC_CYCLE`
+    #[error("metric reference cycle through `{0}`")]
+    MetricCycle(String),
+
+    /// `PAWRLY_SEMANTIC_METRIC_NEEDS_TIME` — a window metric was queried
+    /// without exactly one time-grained dimension to order the window by.
+    #[error(
+        "metric `{metric}` is a window metric; group by exactly one time dimension \
+         with a grain (e.g. `orders.order_date.month`)"
+    )]
+    MetricNeedsTimeGrain { metric: String },
+
+    /// `PAWRLY_SEMANTIC_SHARE_DIM` — a `Share.over` dimension is not among the
+    /// query's grouped dimensions, so its partition is undefined.
+    #[error(
+        "share metric `{metric}` partitions over `{dim}`, which is not among the \
+         query's dimensions"
+    )]
+    ShareDimNotGrouped { metric: String, dim: String },
+
     #[error("compile failure: {0}")]
     Compile(String),
 }
@@ -104,21 +129,45 @@ impl From<SemanticError> for EngineError {
     }
 }
 
-/// The set of semantic models defined in a workspace.
+/// The set of semantic models (and workspace metrics) defined in a workspace.
 #[derive(Debug, Default, Clone)]
 pub struct SemanticCatalog {
-    models: HashMap<String, Arc<SemanticModel>>,
+    pub(crate) models: HashMap<String, Arc<SemanticModel>>,
+    pub(crate) metrics: HashMap<String, Arc<Metric>>,
+    /// Declared calendar table for window metrics; absent = generated axis.
+    pub(crate) time_spine: Option<TimeSpine>,
 }
 
 impl SemanticCatalog {
     /// Build a catalog from the configured models.
     #[must_use]
     pub fn new(models: Vec<SemanticModel>) -> Self {
+        Self::new_with_metrics(models, Vec::new())
+    }
+
+    /// Build a catalog from the configured models and workspace metrics.
+    #[must_use]
+    pub fn new_with_metrics(models: Vec<SemanticModel>, metrics: Vec<Metric>) -> Self {
         let models = models
             .into_iter()
             .map(|m| (m.name.clone(), Arc::new(m)))
             .collect();
-        Self { models }
+        let metrics = metrics
+            .into_iter()
+            .map(|m| (m.name.clone(), Arc::new(m)))
+            .collect();
+        Self {
+            models,
+            metrics,
+            time_spine: None,
+        }
+    }
+
+    /// Set the declared calendar table window metrics run over.
+    #[must_use]
+    pub fn with_time_spine(mut self, spine: Option<TimeSpine>) -> Self {
+        self.time_spine = spine;
+        self
     }
 
     /// True when no models are defined (the layer is effectively off).
@@ -171,7 +220,7 @@ impl SemanticCatalog {
     /// Queries with zero or one measure root compile to the original
     /// `FROM … JOIN … GROUP BY` form (unqualified and unaliased for a single
     /// model; aliased once joins are in play). Queries whose measures span two
-    /// or more fact roots compile to **aggregate-locality** form (§16): each
+    /// or more fact roots compile to **aggregate-locality** form: each
     /// fact is pre-aggregated at the shared-dimension grain in its own CTE and
     /// the CTEs are `FULL OUTER JOIN`-ed on the shared keys, so a `one_to_many`
     /// join can never inflate another fact's aggregate.
@@ -186,6 +235,10 @@ impl SemanticCatalog {
 
         if q.measures.is_empty() && q.dimensions.is_empty() {
             return Err(SemanticError::EmptyQuery);
+        }
+
+        if q.measures.iter().any(|m| !m.contains('.')) {
+            return metric::compile_with_metrics(self, q);
         }
 
         let measure_roots = self.measure_roots(q)?;
@@ -359,7 +412,7 @@ impl SemanticCatalog {
 
     /// Compile a multi-fact query in aggregate-locality form: one CTE per
     /// measure root, each pre-aggregated at the shared-dimension grain, joined
-    /// `FULL OUTER` on the shared keys so no fact inflates another (§16.2).
+    /// `FULL OUTER` on the shared keys so no fact inflates another.
     fn compile_aggregate_locality(
         &self,
         q: &SemanticQuery,
@@ -854,7 +907,7 @@ impl SemanticCatalog {
             .and_then(|s| s.max_rows)
     }
 
-    // ---- S6: pre-aggregation materialization & rollup rewrite ----
+    // ---- pre-aggregation materialization & rollup rewrite ----
 
     /// The materialization SQL for one pre-aggregation: the base table grouped
     /// at the pre-agg's own grain, each dimension stored under its bare name and
@@ -1969,7 +2022,7 @@ mod tests {
         assert!(cat.compile_sql(&q2).unwrap().contains("LIMIT 100"));
     }
 
-    // ---- §16: fan-out & aggregate-locality ----
+    // ---- fan-out & aggregate-locality ----
 
     /// An `order_items` fact (many per order) with a `qty` measure, plus the
     /// `orders → order_items` (`one_to_many`) relationship declared on orders.
@@ -2011,7 +2064,7 @@ mod tests {
 
     #[test]
     fn two_facts_compile_to_aggregate_locality() {
-        // The canonical §16.2 case: revenue (one-per-order) and qty
+        // The canonical aggregate-locality case: revenue (one-per-order) and qty
         // (many-per-order) grouped by a shared dimension must each aggregate at
         // their own grain in a CTE, then FULL OUTER JOIN on the shared key.
         let q = SemanticQuery {
@@ -2213,7 +2266,7 @@ mod tests {
         );
     }
 
-    // ---- §16.4: WHERE vs HAVING classification ----
+    // ---- WHERE vs HAVING classification ----
 
     #[test]
     fn measure_filter_becomes_having() {
@@ -2274,7 +2327,7 @@ mod tests {
         );
     }
 
-    // ---- §16.5: segments ----
+    // ---- segments ----
 
     fn segment_catalog() -> SemanticCatalog {
         let mut orders = orders_model();
@@ -2315,7 +2368,7 @@ mod tests {
         ));
     }
 
-    // ---- S6: pre-aggregation materialization & rollup rewrite ----
+    // ---- pre-aggregation materialization & rollup rewrite ----
 
     fn preagg(name: &str, dims: &[&str], measures: &[&str]) -> PreAggregation {
         PreAggregation {
