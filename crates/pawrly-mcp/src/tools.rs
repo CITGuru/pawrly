@@ -147,13 +147,20 @@ pub fn list_tools() -> Vec<Value> {
         json!({
             "name": "refresh_table",
             "description": "Force a refresh of a cached table now. `table` is fully qualified \
-                            `<schema>.<table>`. Only valid for tables with caching enabled.",
+                            `<schema>.<table>`. Only valid for tables with caching enabled, \
+                            or `materialized.<name>` (re-runs the stored origin).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "table": {
                         "type": "string",
                         "description": "Fully qualified `<schema>.<table>`"
+                    },
+                    "namespace": {
+                        "type": "string",
+                        "description": "Materialize namespace of the table; only for \
+                                        `materialized.<name>` targets. Omitted = the default \
+                                        workspace namespace."
                     }
                 },
                 "required": ["table"]
@@ -563,8 +570,9 @@ pub async fn call_tool(
         }
         "refresh_table" => {
             let table = table_name_arg(args)?;
+            let namespace = args.get("namespace").and_then(|v| v.as_str());
             let outcome = engine
-                .refresh_table(&table)
+                .refresh_table(&table, namespace)
                 .await
                 .map_err(|e| ToolError::Engine(e.to_string()))?;
             serde_json::to_value(&outcome).map_err(|e| ToolError::Engine(e.to_string()))

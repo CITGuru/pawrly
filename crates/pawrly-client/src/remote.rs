@@ -406,15 +406,21 @@ impl EngineService for RemoteEngineClient {
         Ok(entries)
     }
 
-    async fn refresh_table(&self, name: &TableName) -> Result<RefreshOutcome, EngineError> {
+    async fn refresh_table(
+        &self,
+        name: &TableName,
+        namespace: Option<&str>,
+    ) -> Result<RefreshOutcome, EngineError> {
         let mut client = self.cache.clone();
         let resp = client
             .refresh(RefreshRequest {
                 name: Some(name.into()),
+                namespace: namespace.unwrap_or_default().to_string(),
             })
             .await
             .map_err(status_to_engine_error)?
             .into_inner();
+        require_namespace_echo(namespace, &resp.namespace)?;
         Ok(RefreshOutcome {
             table: name.clone(),
             rows_written: resp.rows_written,

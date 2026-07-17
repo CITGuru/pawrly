@@ -63,6 +63,7 @@ pawrly materialize top_customers "SELECT …" --namespace sess_b   # no clobber
 
 pawrly sql "SELECT * FROM sess_a.materialized.top_customers"
 pawrly cache list --namespace sess_a
+pawrly cache refresh materialized.top_customers --namespace sess_a
 pawrly materialize top_customers --drop --namespace sess_a
 ```
 

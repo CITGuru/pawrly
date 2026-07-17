@@ -1257,21 +1257,26 @@ impl EngineService for LocalEngine {
             .unwrap_or_default())
     }
 
-    async fn refresh_table(&self, name: &TableName) -> Result<RefreshOutcome, EngineError> {
+    async fn refresh_table(
+        &self,
+        name: &TableName,
+        namespace: Option<&str>,
+    ) -> Result<RefreshOutcome, EngineError> {
         // A materialized table has no live inner provider to re-scan — re-run its
         // stored origin spec (re-execute the query / re-read the file or URL) and
         // overwrite the pinned Parquet.
         if name.schema == pawrly_core::MATERIALIZED_SCHEMA {
-            let spec = self
+            let cache = self
                 .inner
-                .cache
+                .namespaces
+                .for_read(namespace)?
+                .ok_or_else(|| EngineError::UnknownTable(name.to_string()))?;
+            let spec = cache
                 .materialized_spec(&name.table)
                 .ok_or_else(|| EngineError::UnknownTable(name.to_string()))?;
             let started = std::time::Instant::now();
             let (schema, batches, _tmp) = self.produce_materialize(&spec).await?;
-            let entry = self
-                .inner
-                .cache
+            let entry = cache
                 .materialize(&name.table, schema, &batches, spec)
                 .map_err(|e| EngineError::Internal(format!("materialize refresh: {e}")))?;
             return Ok(RefreshOutcome {
@@ -1281,6 +1286,12 @@ impl EngineService for LocalEngine {
                 elapsed: started.elapsed(),
                 expires_at: None,
             });
+        }
+        if namespace.is_some() {
+            return Err(EngineError::Internal(format!(
+                "`{name}` is not a materialized table; only `materialized.<name>` \
+                 can be refreshed in a namespace"
+            )));
         }
         self.inner.cache.refresh(name, &self.inner.ctx).await
     }

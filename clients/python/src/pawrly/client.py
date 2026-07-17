@@ -131,8 +131,10 @@ class PawrlyClient:
     def refresh_catalog(self, source: str | None = None) -> RefreshCatalogOutcome:
         return self._t.refresh_catalog(source)
 
-    def refresh_table(self, name: str) -> RefreshOutcome:
-        return self._t.refresh_table(name)
+    def refresh_table(
+        self, name: str, namespace: str | None = None
+    ) -> RefreshOutcome:
+        return self._t.refresh_table(name, namespace)
 
     def invalidate_cache(self, name: str) -> bool:
         return self._t.invalidate_cache(name)

@@ -228,6 +228,7 @@ paths:
           required: true
           description: "`schema.table`"
           schema: { type: string }
+        - $ref: '#/components/parameters/MaterializeNamespace'
       responses:
         '200':
           description: Refresh outcome.

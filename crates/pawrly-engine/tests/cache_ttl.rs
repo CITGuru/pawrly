@@ -201,7 +201,7 @@ async fn refresh_table_writes_through() {
     assert!(svc.cache_entries(None).await.unwrap().is_empty());
 
     let name = TableName::new("data", "orders");
-    let out = svc.refresh_table(&name).await.unwrap();
+    let out = svc.refresh_table(&name, None).await.unwrap();
     assert_eq!(out.rows_written, 5);
     assert!(out.size_bytes > 0, "expected a non-empty parquet write");
 
@@ -215,7 +215,7 @@ async fn refresh_table_writes_through() {
 
     // Refreshing an unknown table is an error.
     assert!(
-        svc.refresh_table(&TableName::new("data", "ghost"))
+        svc.refresh_table(&TableName::new("data", "ghost"), None)
             .await
             .is_err()
     );

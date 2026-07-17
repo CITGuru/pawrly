@@ -291,7 +291,14 @@ pub trait EngineService: Send + Sync + 'static {
         namespace: Option<&str>,
     ) -> Result<Vec<CacheEntryInfo>, EngineError>;
 
-    async fn refresh_table(&self, name: &TableName) -> Result<RefreshOutcome, EngineError>;
+    /// Re-fetch a cached table, or re-run a materialized table's stored
+    /// origin. `namespace` targets a materialize namespace's tables; it is an
+    /// error for non-materialized names.
+    async fn refresh_table(
+        &self,
+        name: &TableName,
+        namespace: Option<&str>,
+    ) -> Result<RefreshOutcome, EngineError>;
 
     async fn invalidate_cache(&self, name: &TableName) -> Result<bool, EngineError>;
 

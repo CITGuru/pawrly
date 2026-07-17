@@ -332,13 +332,18 @@ class GrpcTransport:
             tables_discovered=resp.tables_discovered,
         )
 
-    def refresh_table(self, name: str) -> RefreshOutcome:
+    def refresh_table(
+        self, name: str, namespace: str | None = None
+    ) -> RefreshOutcome:
         resp = self._unary(
             lambda: self._cache.Refresh(
-                cache_pb2.RefreshRequest(name=_table_name_pb(name)),
+                cache_pb2.RefreshRequest(
+                    name=_table_name_pb(name), namespace=namespace or ""
+                ),
                 metadata=self._metadata,
             )
         )
+        _require_namespace_echo(namespace, resp.namespace)
         schema, _, table = name.partition(".")
         return RefreshOutcome(
             table=TableName(schema=schema, table=table),

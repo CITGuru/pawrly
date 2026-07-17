@@ -320,11 +320,20 @@ impl EngineService for RestEngineClient {
         field(&resp, "entries")
     }
 
-    async fn refresh_table(&self, name: &TableName) -> Result<RefreshOutcome, EngineError> {
-        whole(
-            self.post_empty(&format!("/v1/tables/{name}/refresh"))
-                .await?,
-        )
+    async fn refresh_table(
+        &self,
+        name: &TableName,
+        namespace: Option<&str>,
+    ) -> Result<RefreshOutcome, EngineError> {
+        let mut rb = self
+            .http
+            .post(self.url(&format!("/v1/tables/{name}/refresh")));
+        if let Some(ns) = namespace {
+            rb = rb.query(&[("namespace", ns)]);
+        }
+        let resp = self.send(rb).await?;
+        require_namespace_echo(namespace, &resp)?;
+        whole(resp)
     }
 
     async fn invalidate_cache(&self, name: &TableName) -> Result<bool, EngineError> {

@@ -53,6 +53,10 @@ pub struct RefreshArgs {
     /// `<source>.<table>` to refresh one table, or a source name to refresh its catalog.
     #[arg(value_name = "NAME")]
     pub name: String,
+
+    /// Materialize namespace of the table (only for `materialized.<name>`).
+    #[arg(long, value_name = "NS")]
+    pub namespace: Option<String>,
 }
 
 #[derive(ClapArgs, Debug)]
@@ -161,12 +165,15 @@ async fn refresh(
     // `<source>.<table>` refreshes one cached table; a bare name refreshes the
     // source's catalog.
     if let Some(name) = TableName::parse(&args.name) {
-        let out = svc.refresh_table(&name).await?;
+        let out = svc.refresh_table(&name, args.namespace.as_deref()).await?;
         println!(
             "refreshed {}: {} rows, {} bytes in {:?}",
             name, out.rows_written, out.size_bytes, out.elapsed
         );
         return Ok(());
+    }
+    if args.namespace.is_some() {
+        anyhow::bail!("--namespace applies to `materialized.<name>` targets, not a source name");
     }
 
     let outcome = svc.refresh_catalog(Some(&args.name)).await?;

@@ -616,6 +616,7 @@ async fn rest_refresh_table(
     State(state): State<RestState>,
     headers: axum::http::HeaderMap,
     Path(name): Path<String>,
+    Query(params): Query<NamespaceParams>,
 ) -> Response {
     if let Some(resp) = guard(&state, &headers) {
         return resp;
@@ -627,8 +628,8 @@ async fn rest_refresh_table(
             &format!("expected `schema.table`, got `{name}`"),
         );
     };
-    match state.engine.refresh_table(&table).await {
-        Ok(outcome) => Json(outcome).into_response(),
+    match state.engine.refresh_table(&table, params.namespace()).await {
+        Ok(outcome) => Json(with_namespace_echo(json!(outcome), &params)).into_response(),
         Err(e) => engine_error_response(&e),
     }
 }
