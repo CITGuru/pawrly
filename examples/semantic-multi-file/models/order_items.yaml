@@ -2,7 +2,7 @@
 #
 # A second fact, at a finer grain than orders (many items per order). Querying
 # order_items.qty alongside orders.revenue triggers aggregate-locality
-# compilation so the one-to-many join never over-counts revenue (§16).
+# compilation so the one-to-many join never over-counts revenue.
 models:
   - name: order_items
     description: One row per line item on an order.

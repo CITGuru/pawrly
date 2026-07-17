@@ -19,7 +19,7 @@
 #     orders.revenue orders.order_count --by orders.status --param tenant_id=acme
 #
 #   # Multi-fact (revenue is one-per-order, qty is many-per-order): the compiler
-#   # pre-aggregates each fact at its own grain (aggregate-locality, §16) so the
+#   # pre-aggregates each fact at its own grain (aggregate-locality) so the
 #   # one-to-many join never inflates revenue. orders' RLS applies in both CTEs.
 #   pawrly --config examples/semantic-multi-file/pawrly.yaml semantic query \
 #     orders.revenue order_items.qty --by orders.status --param tenant_id=acme

@@ -198,7 +198,7 @@ impl VariableDef {
     }
 }
 
-/// A declaration plus its declaring scope; `scope_id` makes each `VarId` scope-unique (§7.1).
+/// A declaration plus its declaring scope; `scope_id` makes each `VarId` scope-unique.
 #[derive(Debug, Clone)]
 pub struct ScopedVar {
     pub def: VariableDef,
@@ -499,7 +499,7 @@ fn stored_literal(
         .map(|v| v.expose_secret().to_string()))
 }
 
-/// Resolve a single static variable to its concrete value (§4.3 precedence).
+/// Resolve a single static variable to its concrete value.
 fn resolve_value(
     name: &str,
     def: &VariableDef,

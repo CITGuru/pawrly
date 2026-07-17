@@ -8,6 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- **Semantic metrics** — a workspace-level `semantic.metrics:` block composing measures into named, governed business numbers, queryable by their dot-free name through the existing `semantic query` surface (CLI, MCP, gRPC — no wire change): `pawrly semantic query aov --by orders.status`.
+  - `ratio` (numerator/denominator with `NULLIF` guard and `DOUBLE` cast) and `derived` (arithmetic over `{member}` references) kinds, including cross-model ratios via the aggregate-locality compiler.
+  - `cumulative` (running total / grain-to-date / trailing window), `offset` (period-over-period value/delta/growth), and `share` (percent-of-partition) kinds. Window metrics join onto a dense time axis — generated automatically or pinned to a declared `semantic.time_spine:` table — so running totals and period-over-period stay calendar-correct across gaps in the data.
+  - Governed filters at three levels — metric-level, per-ratio-operand, and per-derived-token — all pushed down to leaf `FILTER (WHERE …)` clauses; metrics may reference other metrics.
+  - Config validation: reference resolution, cycle detection, name collisions, window-metric time-dimension and period checks.
+
 - **Custom materialize namespaces** — pass a namespace when creating a materialized table to target an isolated store (own storage subdir, manifest, and SQL address), so the same name never collides across callers: `pawrly materialize <name> "<sql>" --namespace <ns>`, queryable as `<ns>.materialized.<name>`.
   - Threaded through every surface: a `namespace` field on the `Materialize` / `DropMaterialized` / `ListEntries` RPCs, `?namespace=` on the REST endpoints, `--namespace` on `pawrly materialize` and `pawrly cache list`, a `namespace` argument on the MCP tools, and optional parameters in the TypeScript / Python SDKs. Empty or omitted = the default workspace namespace (fully backward compatible).
   - Namespaces are created on first write and resolve in SQL on demand — including after a daemon restart and when written by another process sharing the storage root. Reserved names (`pawrly`, `materialized`, `system`, `information_schema`) and unsafe segments are rejected.

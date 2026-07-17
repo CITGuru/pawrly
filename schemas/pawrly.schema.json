@@ -386,6 +386,59 @@
         }
       ]
     },
+    "CumulativeWindow": {
+      "description": "`RunningTotal` = unbounded from the series start (never resets). `GrainToDate { grain }` = resets at each calendar boundary (MTD/QTD/YTD). `Trailing { periods }` = rolling window of `periods` spine rows.\n\nDeliberately NOT named `ToDate` — MetricFlow/Cube `to_date` means *period-to-date (resets)*, which is our `GrainToDate`, the opposite of a running total; the name is avoided to prevent a silent semantic inversion.",
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "running_total"
+          ]
+        },
+        {
+          "type": "object",
+          "required": [
+            "grain_to_date"
+          ],
+          "properties": {
+            "grain_to_date": {
+              "type": "object",
+              "required": [
+                "grain"
+              ],
+              "properties": {
+                "grain": {
+                  "$ref": "#/definitions/TimeGrain"
+                }
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "trailing"
+          ],
+          "properties": {
+            "trailing": {
+              "type": "object",
+              "required": [
+                "periods"
+              ],
+              "properties": {
+                "periods": {
+                  "type": "integer",
+                  "format": "uint32",
+                  "minimum": 0.0
+                }
+              }
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
     "Defaults": {
       "description": "Workspace-level defaults that apply unless overridden per source / table.",
       "type": "object",
@@ -871,6 +924,203 @@
         }
       ]
     },
+    "Metric": {
+      "description": "A queryable business metric defined over one or more measures. Lives at the workspace level (not nested in a model) so it can compose measures across models. Evaluated *after* aggregation, as a projection over measure columns.",
+      "type": "object",
+      "required": [
+        "kind",
+        "name"
+      ],
+      "properties": {
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "filter": {
+          "description": "Governed predicate AND-ed into every leaf measure of this metric (pushed to each leaf's `FILTER (WHERE …)`). Part of the metric's identity, unlike a caller's per-query `SemanticQuery.filters`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "format": {
+          "description": "Display format hint, e.g. `\"$#,##0.00\"`, `\"0.0%\"`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kind": {
+          "$ref": "#/definitions/MetricKind"
+        },
+        "name": {
+          "description": "Bare name; the member used to request it, e.g. `aov`. Must contain no `.` (reserved for `model.member`) and must not collide with a model name.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "MetricKind": {
+      "description": "Externally tagged: `kind: { ratio: { … } }`. Deserialized via [`MetricKindRepr`] because `serde_yaml` only reads externally-tagged struct variants from `!tag` syntax, and the map form is the documented surface.",
+      "oneOf": [
+        {
+          "description": "`numerator / NULLIF(denominator, 0)`. Each operand is a measure (`orders.revenue`) or metric, with an optional per-side filter.",
+          "type": "object",
+          "required": [
+            "ratio"
+          ],
+          "properties": {
+            "ratio": {
+              "type": "object",
+              "required": [
+                "denominator",
+                "numerator"
+              ],
+              "properties": {
+                "denominator": {
+                  "$ref": "#/definitions/Operand"
+                },
+                "numerator": {
+                  "$ref": "#/definitions/Operand"
+                }
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "description": "Scalar arithmetic over `{member}` references resolved from the aggregated output, e.g. `\"({orders.revenue} - {orders.cost}) / NULLIF({orders.revenue}, 0)\"`. A `{member | predicate}` token applies a per-token leaf filter.",
+          "type": "object",
+          "required": [
+            "derived"
+          ],
+          "properties": {
+            "derived": {
+              "type": "object",
+              "required": [
+                "expr"
+              ],
+              "properties": {
+                "expr": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "description": "Window aggregate over `measure` along the query's time grain, computed over the dense time spine. `agg` selects the window function.",
+          "type": "object",
+          "required": [
+            "cumulative"
+          ],
+          "properties": {
+            "cumulative": {
+              "type": "object",
+              "required": [
+                "measure"
+              ],
+              "properties": {
+                "agg": {
+                  "default": "sum",
+                  "allOf": [
+                    {
+                      "$ref": "#/definitions/WindowAgg"
+                    }
+                  ]
+                },
+                "measure": {
+                  "type": "string"
+                },
+                "window": {
+                  "default": "running_total",
+                  "allOf": [
+                    {
+                      "$ref": "#/definitions/CumulativeWindow"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "description": "Period-over-period: compare `measure` to itself `periods` grains back, aligned on the time spine so gaps don't misalign. `output` selects the prior value, the difference, or the growth ratio.",
+          "type": "object",
+          "required": [
+            "offset"
+          ],
+          "properties": {
+            "offset": {
+              "type": "object",
+              "required": [
+                "measure"
+              ],
+              "properties": {
+                "measure": {
+                  "type": "string"
+                },
+                "output": {
+                  "default": "value",
+                  "allOf": [
+                    {
+                      "$ref": "#/definitions/OffsetOutput"
+                    }
+                  ]
+                },
+                "periods": {
+                  "default": 1,
+                  "type": "integer",
+                  "format": "uint32",
+                  "minimum": 0.0
+                }
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "description": "Part-of-whole: `measure` divided by a window aggregate of the same measure over `over` (a subset of the query's dimensions; empty = grand total). `agg` selects the denominator's window function.",
+          "type": "object",
+          "required": [
+            "share"
+          ],
+          "properties": {
+            "share": {
+              "type": "object",
+              "required": [
+                "measure"
+              ],
+              "properties": {
+                "agg": {
+                  "default": "sum",
+                  "allOf": [
+                    {
+                      "$ref": "#/definitions/WindowAgg"
+                    }
+                  ]
+                },
+                "measure": {
+                  "type": "string"
+                },
+                "over": {
+                  "default": [],
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
     "ObservabilityConfig": {
       "description": "The `observability:` block.",
       "type": "object",
@@ -931,6 +1181,41 @@
         }
       },
       "additionalProperties": false
+    },
+    "OffsetOutput": {
+      "description": "What an `Offset` metric projects: the prior value, the difference from it, or the growth ratio.",
+      "type": "string",
+      "enum": [
+        "value",
+        "delta",
+        "growth"
+      ]
+    },
+    "Operand": {
+      "description": "The two YAML spellings of an [`Operand`].",
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "object",
+          "required": [
+            "member"
+          ],
+          "properties": {
+            "filter": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "member": {
+              "type": "string"
+            }
+          }
+        }
+      ]
     },
     "OptimizerDefaults": {
       "description": "Optimizer section under `defaults:`.",
@@ -1339,12 +1624,30 @@
             "type": "string"
           }
         },
+        "metrics": {
+          "description": "Workspace-level metrics composed over model measures (ratios, derived expressions, windows). Dot-free names, queryable via the same `measures` field as `model.measure` members.",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Metric"
+          }
+        },
         "models": {
           "default": [],
           "type": "array",
           "items": {
             "$ref": "#/definitions/SemanticModel"
           }
+        },
+        "time_spine": {
+          "description": "Optional calendar table pinning the dense date axis window metrics run over. Absent, the compiler generates one at the query grain.",
+          "anyOf": [
+            {
+              "$ref": "#/definitions/TimeSpine"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "additionalProperties": false
@@ -1628,6 +1931,25 @@
         "year"
       ]
     },
+    "TimeSpine": {
+      "description": "A declared calendar table for window metrics (`semantic.time_spine:`). Absent, the compiler generates a dense date axis at the query grain.",
+      "type": "object",
+      "required": [
+        "column",
+        "source"
+      ],
+      "properties": {
+        "column": {
+          "description": "Its date/timestamp column.",
+          "type": "string"
+        },
+        "source": {
+          "description": "`<source>.<table>` of the calendar table.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
     "TracingConfig": {
       "description": "The `observability.tracing:` block.",
       "type": "object",
@@ -1716,6 +2038,16 @@
         }
       },
       "additionalProperties": false
+    },
+    "WindowAgg": {
+      "description": "The window function used by `Cumulative` and `Share`. (`Count`/distinct are deliberately excluded — re-aggregating per-period counts double-counts; use a measure-tier additive count instead.)",
+      "type": "string",
+      "enum": [
+        "sum",
+        "avg",
+        "min",
+        "max"
+      ]
     }
   }
 }

@@ -45,11 +45,260 @@ pub fn validate(cfg: &Config) -> ConfigErrors {
 
     if let Some(semantic) = &cfg.semantic {
         validate_semantic(&semantic.models, &seen, &mut errors);
+        validate_metrics(semantic, &seen, &mut errors);
     }
 
     validate_functions(cfg, &seen, &mut errors);
 
     errors
+}
+
+/// Validate the workspace `metrics:` and `time_spine:` blocks
+fn validate_metrics(
+    semantic: &crate::types::SemanticConfig,
+    source_names: &std::collections::HashSet<String>,
+    errors: &mut ConfigErrors,
+) {
+    use pawrly_core::semantic::MetricKind;
+
+    let models: std::collections::HashMap<&str, &SemanticModel> = semantic
+        .models
+        .iter()
+        .map(|m| (m.name.as_str(), m))
+        .collect();
+    let metric_names: std::collections::HashSet<&str> =
+        semantic.metrics.iter().map(|m| m.name.as_str()).collect();
+
+    if let Some(spine) = &semantic.time_spine {
+        let invalid = |msg: String| ConfigError::SemanticInvalid {
+            model: "time_spine".to_string(),
+            msg,
+        };
+        match TableName::parse(&spine.source) {
+            None => errors.push(invalid(format!(
+                "`source: {}` must be in `source.table` form",
+                spine.source
+            ))),
+            Some(table) if !source_names.contains(&table.schema) => {
+                errors.push(invalid(format!(
+                    "`source: {}` references unknown source `{}`",
+                    spine.source, table.schema
+                )));
+            }
+            Some(_) => {}
+        }
+        if spine.column.is_empty() || !is_valid_identifier(&spine.column) {
+            errors.push(invalid(
+                "`column:` must be a valid SQL identifier".to_string(),
+            ));
+        }
+    }
+
+    let check_member = |metric: &str, member: &str, errors: &mut ConfigErrors| {
+        let invalid = |msg: String| ConfigError::SemanticInvalid {
+            model: metric.to_string(),
+            msg,
+        };
+        match member.split_once('.') {
+            Some((model_name, measure)) => match models.get(model_name) {
+                None => errors.push(invalid(format!(
+                    "references unknown model `{model_name}` (in `{member}`)"
+                ))),
+                Some(model) if !model.measures.iter().any(|m| m.name == measure) => {
+                    errors.push(invalid(format!(
+                        "references unknown measure `{member}` on model `{model_name}`"
+                    )));
+                }
+                Some(_) => {}
+            },
+            None => {
+                if !metric_names.contains(member) {
+                    errors.push(invalid(format!("references unknown metric `{member}`")));
+                }
+            }
+        }
+    };
+
+    let mut metric_seen = std::collections::HashSet::new();
+    for metric in &semantic.metrics {
+        let invalid = |msg: String| ConfigError::SemanticInvalid {
+            model: metric.name.clone(),
+            msg,
+        };
+
+        // Dot-free-ness is what distinguishes a metric from a model member
+        // in a query.
+        if metric.name.is_empty() || !is_valid_identifier(&metric.name) {
+            errors.push(invalid(
+                "metric `name:` must be a valid, dot-free SQL identifier".to_string(),
+            ));
+        }
+        if models.contains_key(metric.name.as_str()) {
+            errors.push(invalid(
+                "metric name collides with a model name".to_string(),
+            ));
+        }
+        if !metric_seen.insert(metric.name.clone()) {
+            errors.push(invalid("duplicate metric name".to_string()));
+        }
+
+        match metric.references() {
+            Err(msg) => errors.push(invalid(msg)),
+            Ok(refs) => {
+                for (member, _filter) in &refs {
+                    check_member(&metric.name, member, errors);
+                }
+            }
+        }
+        if metric
+            .filter
+            .as_deref()
+            .is_some_and(|f| f.trim().is_empty())
+        {
+            errors.push(invalid("`filter:` must not be empty".to_string()));
+        }
+
+        match &metric.kind {
+            MetricKind::Cumulative {
+                measure, window, ..
+            } => {
+                if let pawrly_core::semantic::CumulativeWindow::Trailing { periods: 0 } = window {
+                    errors.push(invalid("`trailing.periods` must be at least 1".to_string()));
+                }
+                check_window_base(&metric.name, measure, &models, errors);
+            }
+            MetricKind::Offset {
+                measure, periods, ..
+            } => {
+                if *periods == 0 {
+                    errors.push(invalid("`offset.periods` must be at least 1".to_string()));
+                }
+                check_window_base(&metric.name, measure, &models, errors);
+            }
+            // The ⊆-query-dims half of the `over` check happens at plan time.
+            MetricKind::Share { measure, over, .. } => {
+                if !measure.contains('.') {
+                    errors.push(invalid(format!(
+                        "share metric must reference a `model.measure`, got `{measure}`"
+                    )));
+                }
+                for dim in over {
+                    match dim.split_once('.') {
+                        None => errors.push(invalid(format!(
+                            "`over` entry `{dim}` must be `model.dimension`"
+                        ))),
+                        Some((model_name, dim_name)) => match models.get(model_name) {
+                            None => errors.push(invalid(format!(
+                                "`over` entry `{dim}` references unknown model `{model_name}`"
+                            ))),
+                            Some(model) if !model.dimensions.iter().any(|d| d.name == dim_name) => {
+                                errors.push(invalid(format!(
+                                    "`over` entry `{dim}` references unknown dimension"
+                                )));
+                            }
+                            Some(_) => {}
+                        },
+                    }
+                }
+            }
+            MetricKind::Ratio { .. } | MetricKind::Derived { .. } => {}
+        }
+    }
+
+    for name in find_metric_cycles(&semantic.metrics) {
+        errors.push(ConfigError::SemanticInvalid {
+            model: name.clone(),
+            msg: format!("metric reference cycle through `{name}`"),
+        });
+    }
+}
+
+/// A window metric's base is a `model.measure` whose model declares a
+/// time dimension with grains (the window needs an ordering key).
+fn check_window_base(
+    metric: &str,
+    measure: &str,
+    models: &std::collections::HashMap<&str, &SemanticModel>,
+    errors: &mut ConfigErrors,
+) {
+    let invalid = |msg: String| ConfigError::SemanticInvalid {
+        model: metric.to_string(),
+        msg,
+    };
+    match measure.split_once('.') {
+        None => errors.push(invalid(format!(
+            "window metric must reference a `model.measure`, got `{measure}`"
+        ))),
+        Some((model_name, _)) => {
+            if let Some(model) = models.get(model_name) {
+                let has_time = model
+                    .dimensions
+                    .iter()
+                    .any(|d| d.data_type == DimensionType::Time && !d.time_grains.is_empty());
+                if !has_time {
+                    errors.push(invalid(format!(
+                        "model `{model_name}` declares no `type: time` dimension \
+                         with grains (a window metric needs an ordering key)"
+                    )));
+                }
+            }
+        }
+    }
+}
+
+/// Names of metrics on a metric→metric reference cycle, sorted for
+/// deterministic reporting.
+fn find_metric_cycles(metrics: &[pawrly_core::semantic::Metric]) -> Vec<String> {
+    use std::collections::{HashMap, HashSet};
+
+    let adjacency: HashMap<&str, Vec<String>> = metrics
+        .iter()
+        .map(|m| {
+            let refs = m
+                .references()
+                .unwrap_or_default()
+                .into_iter()
+                .map(|(member, _)| member)
+                .filter(|member| !member.contains('.'))
+                .collect();
+            (m.name.as_str(), refs)
+        })
+        .collect();
+
+    fn visit<'a>(
+        node: &'a str,
+        adjacency: &'a std::collections::HashMap<&str, Vec<String>>,
+        visiting: &mut Vec<&'a str>,
+        done: &mut HashSet<&'a str>,
+        cyclic: &mut HashSet<String>,
+    ) {
+        if done.contains(node) {
+            return;
+        }
+        if visiting.contains(&node) {
+            cyclic.insert(node.to_string());
+            return;
+        }
+        visiting.push(node);
+        if let Some(next) = adjacency.get(node) {
+            for n in next {
+                if let Some((key, _)) = adjacency.get_key_value(n.as_str()) {
+                    visit(key, adjacency, visiting, done, cyclic);
+                }
+            }
+        }
+        visiting.pop();
+        done.insert(node);
+    }
+
+    let mut done = HashSet::new();
+    let mut cyclic = HashSet::new();
+    for name in adjacency.keys() {
+        visit(name, &adjacency, &mut Vec::new(), &mut done, &mut cyclic);
+    }
+    let mut out: Vec<String> = cyclic.into_iter().collect();
+    out.sort();
+    out
 }
 
 /// Validate the `semantic:` block. `source_names` is the set of configured
@@ -84,7 +333,7 @@ fn validate_semantic(
             errors.push(invalid("duplicate model name".into()));
         }
 
-        // Rule 1: `source:` parses as `schema.table` and the schema resolves
+        // `source:` parses as `schema.table` and the schema resolves
         // to a configured source.
         match TableName::parse(&model.source) {
             None => errors.push(invalid(format!(
@@ -100,8 +349,8 @@ fn validate_semantic(
             Some(_) => {}
         }
 
-        // Rule 3 + identifier hygiene for dimensions. Track the finest declared
-        // grain per dimension for the pre-agg coarseness check (rule 5).
+        // Track the finest declared grain per dimension for the pre-agg
+        // coarseness check.
         let mut dim_seen = std::collections::HashSet::new();
         let mut finest_grain: std::collections::HashMap<&str, TimeGrain> =
             std::collections::HashMap::new();
@@ -115,7 +364,7 @@ fn validate_semantic(
             if !dim_seen.insert(dim.name.clone()) {
                 errors.push(invalid(format!("duplicate dimension `{}`", dim.name)));
             }
-            // Rule 4: `grains:` is meaningful only on `type: time`.
+            // `grains:` is meaningful only on `type: time`.
             if !dim.time_grains.is_empty() && dim.data_type != DimensionType::Time {
                 errors.push(invalid(format!(
                     "dimension `{}` declares `grains:` but is not `type: time`",
@@ -127,8 +376,7 @@ fn validate_semantic(
             }
         }
 
-        // Rule 3 + identifier hygiene for measures. Measure and dimension
-        // names share the member namespace, so a name used by both is
+        // Measure and dimension names share the member namespace, so a name used by both is
         // ambiguous in a query member like `orders.foo`.
         let mut measure_seen = std::collections::HashSet::new();
         for measure in &model.measures {
@@ -147,7 +395,6 @@ fn validate_semantic(
                     measure.name
                 )));
             }
-            // Rule 7: a `Custom` aggregate must carry non-empty SQL.
             if let MeasureAgg::Custom { sql } = &measure.agg {
                 if sql.trim().is_empty() {
                     errors.push(invalid(format!(
@@ -158,8 +405,6 @@ fn validate_semantic(
             }
         }
 
-        // Rule 2: every relationship targets a known model; names are unique
-        // and the join predicate is non-empty.
         let mut rel_seen = std::collections::HashSet::new();
         for rel in &model.relationships {
             if !rel_seen.insert(rel.name.clone()) {
@@ -179,8 +424,7 @@ fn validate_semantic(
             }
         }
 
-        // Rule 5: pre-agg dim/measure refs exist on this model; a pre-agg grain
-        // must be no finer than the dimension's finest declared grain.
+        // A pre-agg grain must be no finer than the dimension's finest declared grain.
         let mut preagg_seen = std::collections::HashSet::new();
         for pre in &model.pre_aggregations {
             if !preagg_seen.insert(pre.name.clone()) {
@@ -237,7 +481,6 @@ fn validate_semantic(
             }
         }
 
-        // Rule 6: safety guard rails.
         if let Some(safety) = &model.safety {
             for col in &safety.require_filters_on {
                 if !dim_seen.contains(col) {
@@ -255,8 +498,6 @@ fn validate_semantic(
             }
         }
 
-        // Rule 8: segment names are unique identifiers, carry at least one
-        // filter, and any filter that targets this model names a known member.
         let mut segment_seen = std::collections::HashSet::new();
         for seg in &model.segments {
             if seg.name.is_empty() || !is_valid_identifier(&seg.name) {
@@ -1340,16 +1581,28 @@ mod tests {
 
         /// A config with one `warehouse` source and the given semantic models.
         fn cfg_with(models: Vec<SemanticModel>) -> Config {
+            cfg_with_metrics(models, Vec::new())
+        }
+
+        fn cfg_with_metrics(
+            models: Vec<SemanticModel>,
+            metrics: Vec<pawrly_core::semantic::Metric>,
+        ) -> Config {
             let mut c = cfg(vec![src(
                 "warehouse",
                 SourceKind::Http,
                 serde_json::json!({"base_url": "https://x"}),
             )]);
             c.semantic = Some(SemanticConfig {
-                include: Vec::new(),
                 models,
+                metrics,
+                ..SemanticConfig::default()
             });
             c
+        }
+
+        fn metric(name: &str, yaml_kind: &str) -> pawrly_core::semantic::Metric {
+            serde_yaml::from_str(&format!("name: {name}\nkind: {yaml_kind}\n")).unwrap()
         }
 
         fn has_semantic_err(c: &Config, needle: &str) -> bool {
@@ -1369,6 +1622,150 @@ mod tests {
                 "{:?}",
                 validate(&c).0
             );
+        }
+
+        #[test]
+        fn valid_metrics_pass() {
+            let mut m = model("orders", "warehouse.orders");
+            m.measures.push(measure("order_count"));
+            let c = cfg_with_metrics(
+                vec![m],
+                vec![
+                    metric(
+                        "aov",
+                        "{ ratio: { numerator: orders.revenue, denominator: orders.order_count } }",
+                    ),
+                    metric(
+                        "margin",
+                        "{ derived: { expr: \"{orders.revenue} - {aov}\" } }",
+                    ),
+                ],
+            );
+            assert!(
+                !validate(&c)
+                    .0
+                    .iter()
+                    .any(|e| matches!(e, ConfigError::SemanticInvalid { .. })),
+                "{:?}",
+                validate(&c).0
+            );
+        }
+
+        #[test]
+        fn metric_name_collision_and_dup_rejected() {
+            let c = cfg_with_metrics(
+                vec![model("orders", "warehouse.orders")],
+                vec![
+                    metric(
+                        "orders",
+                        "{ ratio: { numerator: orders.revenue, denominator: orders.revenue } }",
+                    ),
+                    metric(
+                        "x",
+                        "{ ratio: { numerator: orders.revenue, denominator: orders.revenue } }",
+                    ),
+                    metric(
+                        "x",
+                        "{ ratio: { numerator: orders.revenue, denominator: orders.revenue } }",
+                    ),
+                ],
+            );
+            assert!(has_semantic_err(&c, "collides with a model name"));
+            assert!(has_semantic_err(&c, "duplicate metric name"));
+        }
+
+        #[test]
+        fn metric_unknown_references_rejected() {
+            let c = cfg_with_metrics(
+                vec![model("orders", "warehouse.orders")],
+                vec![
+                    metric(
+                        "bad_measure",
+                        "{ ratio: { numerator: orders.nope, denominator: orders.revenue } }",
+                    ),
+                    metric(
+                        "bad_model",
+                        "{ ratio: { numerator: ghosts.revenue, denominator: orders.revenue } }",
+                    ),
+                    metric("bad_metric", "{ derived: { expr: \"{phantom} * 2\" } }"),
+                ],
+            );
+            assert!(has_semantic_err(&c, "unknown measure `orders.nope`"));
+            assert!(has_semantic_err(&c, "unknown model `ghosts`"));
+            assert!(has_semantic_err(&c, "unknown metric `phantom`"));
+        }
+
+        #[test]
+        fn metric_cycle_rejected() {
+            let c = cfg_with_metrics(
+                vec![model("orders", "warehouse.orders")],
+                vec![
+                    metric("a", "{ derived: { expr: \"{b} + 1\" } }"),
+                    metric("b", "{ derived: { expr: \"{a} + 1\" } }"),
+                ],
+            );
+            assert!(has_semantic_err(&c, "metric reference cycle"));
+        }
+
+        #[test]
+        fn derived_expr_shape_rejected() {
+            let c = cfg_with_metrics(
+                vec![model("orders", "warehouse.orders")],
+                vec![
+                    metric("unbalanced", "{ derived: { expr: \"{orders.revenue\" } }"),
+                    metric("tokenless", "{ derived: { expr: \"1 + 1\" } }"),
+                ],
+            );
+            assert!(has_semantic_err(&c, "unbalanced"));
+            assert!(has_semantic_err(&c, "references no"));
+        }
+
+        #[test]
+        fn window_metric_requires_time_dimension() {
+            let no_time = model("orders", "warehouse.orders");
+            let c = cfg_with_metrics(
+                vec![no_time],
+                vec![metric(
+                    "running",
+                    "{ cumulative: { measure: orders.revenue } }",
+                )],
+            );
+            assert!(has_semantic_err(&c, "no `type: time` dimension"));
+
+            let mut with_time = model("orders", "warehouse.orders");
+            with_time
+                .dimensions
+                .push(dim("order_date", DimensionType::Time, vec![TimeGrain::Day]));
+            let c = cfg_with_metrics(
+                vec![with_time],
+                vec![metric(
+                    "running",
+                    "{ cumulative: { measure: orders.revenue } }",
+                )],
+            );
+            assert!(!has_semantic_err(&c, "no `type: time` dimension"));
+        }
+
+        #[test]
+        fn share_over_must_resolve() {
+            let c = cfg_with_metrics(
+                vec![model("orders", "warehouse.orders")],
+                vec![metric(
+                    "pct",
+                    "{ share: { measure: orders.revenue, over: [orders.ghost] } }",
+                )],
+            );
+            assert!(has_semantic_err(&c, "unknown dimension"));
+        }
+
+        #[test]
+        fn time_spine_source_must_resolve() {
+            let mut c = cfg_with(vec![model("orders", "warehouse.orders")]);
+            c.semantic.as_mut().unwrap().time_spine = Some(pawrly_core::semantic::TimeSpine {
+                source: "nowhere.calendar".into(),
+                column: "date".into(),
+            });
+            assert!(has_semantic_err(&c, "unknown source `nowhere`"));
         }
 
         #[test]
@@ -1444,7 +1841,7 @@ mod tests {
             assert!(has_semantic_err(&c, "valid SQL identifier"));
         }
 
-        // ---- rule 2: relationships ----
+        // ---- relationships ----
 
         use pawrly_core::safety::SafetyPolicy;
         use pawrly_core::semantic::{PreAggregation, Relationship, RelationshipKind};
@@ -1485,7 +1882,7 @@ mod tests {
             assert!(has_semantic_err(&c, "empty `on`"));
         }
 
-        // ---- rule 5: pre-aggregations ----
+        // ---- pre-aggregations ----
 
         fn preagg(name: &str, dims: &[&str], measures: &[&str]) -> PreAggregation {
             PreAggregation {
@@ -1551,7 +1948,7 @@ mod tests {
             );
         }
 
-        // ---- rule 6: safety ----
+        // ---- safety ----
 
         #[test]
         fn safety_require_filter_unknown_dim_rejected() {
@@ -1594,9 +1991,9 @@ mod tests {
             );
         }
 
-        // ---- rule 7: custom-SQL measures ----
+        // ---- custom-SQL measures ----
 
-        // ---- rule 8: segments ----
+        // ---- segments ----
 
         use pawrly_core::semantic::{FilterOp, Segment, SemanticFilter};
 

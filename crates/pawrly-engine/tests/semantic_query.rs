@@ -10,7 +10,7 @@
 
 use std::sync::Arc;
 
-use arrow_array::{Int64Array, StringArray};
+use arrow_array::{Array as _, Int64Array, StringArray};
 use futures::StreamExt as _;
 use pawrly_core::semantic::{FilterOp, SemanticFilter, SemanticOrder, SemanticQuery};
 use pawrly_core::{EngineService, QueryHandle};
@@ -49,6 +49,14 @@ semantic:
         - {{ name: revenue,      agg: sum,            expr: total_amount }}
         - {{ name: paid_revenue, agg: sum,            expr: total_amount, filters: ["status = 'paid'"] }}
         - {{ name: order_count,  agg: count_distinct, expr: id }}
+  metrics:
+    - name: aov
+      kind: {{ ratio: {{ numerator: orders.revenue, denominator: orders.order_count }} }}
+    - name: paid_aov
+      filter: "status = 'paid'"
+      kind: {{ ratio: {{ numerator: orders.revenue, denominator: orders.order_count }} }}
+    - name: paid_share
+      kind: {{ derived: {{ expr: "CAST({{orders.revenue | status = 'paid'}} AS DOUBLE) / {{orders.revenue}}" }} }}
 "#,
         path = dir.join("orders.csv").display(),
     );
@@ -688,5 +696,279 @@ async fn rls_unbound_param_refused() {
     match svc.semantic_query(q).await {
         Err(e) => assert_eq!(e.code(), "PAWRLY_SAFETY_UNBOUND_PARAM"),
         Ok(_) => panic!("expected an unbound-param safety error"),
+    }
+}
+
+// ---- metrics (M2: ratio + derived) ----
+
+fn metric_f64(batch: &arrow_array::RecordBatch, col: &str) -> f64 {
+    batch
+        .column_by_name(col)
+        .unwrap_or_else(|| panic!("column `{col}` in {:?}", batch.schema()))
+        .as_any()
+        .downcast_ref::<arrow_array::Float64Array>()
+        .expect("float col")
+        .value(0)
+}
+
+#[tokio::test]
+async fn metric_ratio_end_to_end() {
+    let svc = build_engine().await;
+    let q = SemanticQuery {
+        measures: vec!["aov".into()],
+        ..Default::default()
+    };
+    let batches = collect(svc.semantic_query(q).await.expect("compile+run")).await;
+    let batch = one_batch(&batches);
+    // 650 revenue / 4 orders — CAST keeps the fraction.
+    assert_eq!(metric_f64(&batch, "aov"), 162.5);
+    // Property check: only the requested member comes back, never a leaf.
+    assert_eq!(batch.schema().fields().len(), 1);
+}
+
+#[tokio::test]
+async fn metric_grouped_and_ordered() {
+    let svc = build_engine().await;
+    let q = SemanticQuery {
+        measures: vec!["aov".into()],
+        dimensions: vec!["orders.status".into()],
+        order_by: vec![SemanticOrder {
+            member: "aov".into(),
+            direction: pawrly_core::semantic::OrderDir::Desc,
+        }],
+        ..Default::default()
+    };
+    let batches = collect(svc.semantic_query(q).await.expect("compile+run")).await;
+    let batch = one_batch(&batches);
+    let status = batch
+        .column_by_name("orders.status")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .unwrap();
+    let aov = batch
+        .column_by_name("aov")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<arrow_array::Float64Array>()
+        .unwrap();
+    // paid: 600/3 = 200 first (DESC), refunded: 50/1 = 50 second.
+    assert_eq!(status.value(0), "paid");
+    assert_eq!(aov.value(0), 200.0);
+    assert_eq!(status.value(1), "refunded");
+    assert_eq!(aov.value(1), 50.0);
+}
+
+#[tokio::test]
+async fn metric_governed_filter_end_to_end() {
+    let svc = build_engine().await;
+    let q = SemanticQuery {
+        measures: vec!["paid_aov".into()],
+        ..Default::default()
+    };
+    let batches = collect(svc.semantic_query(q).await.expect("compile+run")).await;
+    // Both leaves filtered to paid rows: 600 / 3.
+    assert_eq!(metric_f64(&one_batch(&batches), "paid_aov"), 200.0);
+}
+
+#[tokio::test]
+async fn metric_derived_with_token_filter_end_to_end() {
+    let svc = build_engine().await;
+    let q = SemanticQuery {
+        measures: vec!["paid_share".into(), "orders.revenue".into()],
+        ..Default::default()
+    };
+    let batches = collect(svc.semantic_query(q).await.expect("compile+run")).await;
+    let batch = one_batch(&batches);
+    // 600 paid / 650 total, alongside the explicitly requested raw measure.
+    let share = metric_f64(&batch, "paid_share");
+    assert!((share - 600.0 / 650.0).abs() < 1e-9, "{share}");
+    let revenue = batch
+        .column_by_name("orders.revenue")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<Int64Array>()
+        .unwrap();
+    assert_eq!(revenue.value(0), 650);
+    assert_eq!(batch.schema().fields().len(), 2);
+}
+
+#[tokio::test]
+async fn unknown_metric_is_a_plan_error() {
+    let svc = build_engine().await;
+    let q = SemanticQuery {
+        measures: vec!["ghost".into()],
+        ..Default::default()
+    };
+    match svc.semantic_query(q).await {
+        Err(e) => assert!(e.to_string().contains("unknown metric `ghost`"), "{e}"),
+        Ok(_) => panic!("expected an unknown-metric error"),
+    }
+}
+
+// ---- window metrics over a gapped time axis ----
+
+/// Monthly revenue with a hole: Jan 100, Feb 200, — (no March) —, Apr 400.
+/// Windows must align to the calendar, not to row position.
+async fn build_gapped_engine() -> Arc<dyn EngineService> {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let dir = tmp.path().to_path_buf();
+    std::fs::write(
+        dir.join("orders.csv"),
+        "id,status,total_amount,ordered_at\n\
+         1,paid,100,2026-01-15\n\
+         2,paid,200,2026-02-20\n\
+         3,paid,400,2026-04-05\n",
+    )
+    .unwrap();
+
+    let yaml = format!(
+        r#"version: 1
+sources:
+  - name: data
+    kind: file
+    config:
+      path: "{path}"
+semantic:
+  models:
+    - name: orders
+      source: data.orders
+      primary_key: [id]
+      dimensions:
+        - {{ name: status,     expr: status,     type: string }}
+        - {{ name: order_date, expr: ordered_at, type: time, grains: [day, month] }}
+      measures:
+        - {{ name: revenue, agg: sum, expr: total_amount }}
+  metrics:
+    - name: revenue_running
+      kind: {{ cumulative: {{ measure: orders.revenue, window: running_total }} }}
+    - name: revenue_delta
+      kind: {{ offset: {{ measure: orders.revenue, periods: 1, output: delta }} }}
+    - name: revenue_growth
+      kind: {{ offset: {{ measure: orders.revenue, periods: 1, output: growth }} }}
+    - name: pct_of_total
+      kind: {{ share: {{ measure: orders.revenue, over: [] }} }}
+"#,
+        path = dir.join("orders.csv").display(),
+    );
+
+    let secrets = pawrly_secrets::StaticStore::new();
+    let cfg = pawrly_config::load_str(&yaml, &secrets).expect("config parse");
+    std::mem::forget(tmp);
+    let engine = LocalEngine::new(LocalEngineConfig {
+        config: cfg,
+        workspace_dir: dir,
+        duckdb_pool_size: None,
+        home: None,
+    })
+    .await
+    .expect("engine");
+    Arc::new(engine)
+}
+
+#[tokio::test]
+async fn cumulative_fills_the_gap_month() {
+    let svc = build_gapped_engine().await;
+    let q = SemanticQuery {
+        measures: vec!["revenue_running".into()],
+        dimensions: vec!["orders.order_date.month".into()],
+        order_by: vec![SemanticOrder {
+            member: "orders.order_date.month".into(),
+            direction: pawrly_core::semantic::OrderDir::Asc,
+        }],
+        ..Default::default()
+    };
+    let batches = collect(svc.semantic_query(q).await.expect("compile+run")).await;
+    let batch = one_batch(&batches);
+    // March exists on the axis even though no source row does.
+    assert_eq!(batch.num_rows(), 4);
+    let running = batch
+        .column_by_name("revenue_running")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<Int64Array>()
+        .unwrap();
+    assert_eq!(
+        (0..4).map(|i| running.value(i)).collect::<Vec<_>>(),
+        vec![100, 300, 300, 700]
+    );
+}
+
+#[tokio::test]
+async fn offset_aligns_to_the_calendar_not_row_position() {
+    let svc = build_gapped_engine().await;
+    let q = SemanticQuery {
+        measures: vec!["revenue_delta".into(), "revenue_growth".into()],
+        dimensions: vec!["orders.order_date.month".into()],
+        order_by: vec![SemanticOrder {
+            member: "orders.order_date.month".into(),
+            direction: pawrly_core::semantic::OrderDir::Asc,
+        }],
+        ..Default::default()
+    };
+    let batches = collect(svc.semantic_query(q).await.expect("compile+run")).await;
+    let batch = one_batch(&batches);
+    let delta = batch
+        .column_by_name("revenue_delta")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<Int64Array>()
+        .unwrap();
+    // Feb vs Jan = +100; the gap month vs Feb = -200; Apr vs the GAP = +400
+    // (a row-position LAG would wrongly compare Apr to Feb: +200).
+    assert!(delta.is_null(0));
+    assert_eq!(delta.value(1), 100);
+    assert_eq!(delta.value(2), -200);
+    assert_eq!(delta.value(3), 400);
+
+    let growth = batch
+        .column_by_name("revenue_growth")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<arrow_array::Float64Array>()
+        .unwrap();
+    assert_eq!(growth.value(1), 1.0);
+    assert!(growth.is_null(3), "growth from a zero month is NULL");
+}
+
+#[tokio::test]
+async fn share_of_grand_total() {
+    let svc = build_gapped_engine().await;
+    let q = SemanticQuery {
+        measures: vec!["pct_of_total".into(), "orders.revenue".into()],
+        dimensions: vec!["orders.order_date.month".into()],
+        order_by: vec![SemanticOrder {
+            member: "orders.order_date.month".into(),
+            direction: pawrly_core::semantic::OrderDir::Asc,
+        }],
+        ..Default::default()
+    };
+    let batches = collect(svc.semantic_query(q).await.expect("compile+run")).await;
+    let batch = one_batch(&batches);
+    let pct = batch
+        .column_by_name("pct_of_total")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<arrow_array::Float64Array>()
+        .unwrap();
+    let total: f64 = (0..batch.num_rows())
+        .filter(|i| !pct.is_null(*i))
+        .map(|i| pct.value(i))
+        .sum();
+    assert!((total - 1.0).abs() < 1e-9, "shares sum to 1, got {total}");
+    assert!((pct.value(0) - 100.0 / 700.0).abs() < 1e-9);
+}
+
+#[tokio::test]
+async fn window_metric_without_time_dimension_errors() {
+    let svc = build_gapped_engine().await;
+    let q = SemanticQuery {
+        measures: vec!["revenue_running".into()],
+        dimensions: vec!["orders.status".into()],
+        ..Default::default()
+    };
+    match svc.semantic_query(q).await {
+        Err(e) => assert!(e.to_string().contains("window metric"), "{e}"),
+        Ok(_) => panic!("expected MetricNeedsTimeGrain"),
     }
 }

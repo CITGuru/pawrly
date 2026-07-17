@@ -84,6 +84,17 @@ pub struct SemanticConfig {
 
     #[serde(default)]
     pub models: Vec<SemanticModel>,
+
+    /// Workspace-level metrics composed over model measures (ratios, derived
+    /// expressions, windows). Dot-free names, queryable via the same
+    /// `measures` field as `model.measure` members.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub metrics: Vec<pawrly_core::semantic::Metric>,
+
+    /// Optional calendar table pinning the dense date axis window metrics run
+    /// over.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub time_spine: Option<pawrly_core::semantic::TimeSpine>,
 }
 
 /// One secret backend in the resolution chain.

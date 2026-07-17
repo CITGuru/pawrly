@@ -413,19 +413,7 @@ pub fn status_to_engine_error(status: tonic::Status) -> core::EngineError {
         .get("pawrly-error-code")
         .and_then(|v| v.to_str().ok())
         .unwrap_or("PAWRLY_INTERNAL");
-    let msg = status.message().to_string();
-    match code {
-        "PAWRLY_CANCELLED" => core::EngineError::Cancelled,
-        "PAWRLY_TIMEOUT" => core::EngineError::Timeout(std::time::Duration::ZERO),
-        "PAWRLY_OOM" => core::EngineError::OutOfMemory(0),
-        "PAWRLY_UNKNOWN_TABLE" => core::EngineError::UnknownTable(msg),
-        "PAWRLY_UNKNOWN_KIND" => core::EngineError::UnknownKind(msg),
-        "PAWRLY_INVALID_SQL" => core::EngineError::InvalidSql(msg),
-        "PAWRLY_SEMANTIC_PLAN" => core::EngineError::SemanticPlan(msg),
-        "PAWRLY_PROTOCOL" => core::EngineError::Protocol(msg),
-        "PAWRLY_UNSUPPORTED" => core::EngineError::Unsupported(msg),
-        _ => core::EngineError::Internal(format!("{code}: {msg}")),
-    }
+    core::EngineError::from_wire(code, status.message())
 }
 
 fn grpc_code(err: &core::EngineError) -> tonic::Code {
