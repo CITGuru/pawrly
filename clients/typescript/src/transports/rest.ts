@@ -233,6 +233,14 @@ export class RestTransport implements Transport {
     return (r.dropped as boolean) ?? false;
   }
 
+  async dropNamespace(namespace: string): Promise<boolean> {
+    const r = await this.send(`/v1/namespaces/${encodeURIComponent(namespace)}`, {
+      method: "DELETE",
+    });
+    requireNamespaceEcho(namespace, r.namespace as string | undefined);
+    return (r.dropped as boolean) ?? false;
+  }
+
   async health(): Promise<HealthReport> {
     const r = await this.send("/v1/health");
     return { ok: (r.ok as boolean) ?? false, version: (r.version as string) ?? "" };

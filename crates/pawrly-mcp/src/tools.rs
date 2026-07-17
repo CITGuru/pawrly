@@ -305,6 +305,19 @@ pub fn list_tools() -> Vec<Value> {
             }
         }),
         json!({
+            "name": "drop_namespace",
+            "description": "Drop an entire materialize namespace — every table, its manifest, \
+                            and its storage — in one call. The default workspace namespace is \
+                            refused. Returns { dropped }.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "namespace": { "type": "string" }
+                },
+                "required": ["namespace"]
+            }
+        }),
+        json!({
             "name": "list_functions",
             "description": "List the table-valued functions available (builtins + declared). \
                             Call them in SQL as `FROM namespace.name(args...)`. Returns \
@@ -771,6 +784,17 @@ pub async fn call_tool(
             let namespace = args.get("namespace").and_then(|v| v.as_str());
             let dropped = engine
                 .drop_materialized(name, namespace)
+                .await
+                .map_err(|e| ToolError::Engine(e.to_string()))?;
+            Ok(json!({ "dropped": dropped }))
+        }
+        "drop_namespace" => {
+            let namespace = args
+                .get("namespace")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| ToolError::BadArgs("`namespace` is required".into()))?;
+            let dropped = engine
+                .drop_namespace(namespace)
                 .await
                 .map_err(|e| ToolError::Engine(e.to_string()))?;
             Ok(json!({ "dropped": dropped }))

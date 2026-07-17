@@ -627,3 +627,41 @@ async fn refresh_reruns_namespaced_origin() {
             .is_err()
     );
 }
+
+#[tokio::test]
+async fn drop_namespace_tears_down_the_store() {
+    let workspace = TempDir::new().unwrap();
+    let svc = build_engine(workspace.path()).await;
+
+    svc.materialize("a", query("SELECT 1 AS x"), Some("sess_gone"))
+        .await
+        .unwrap();
+    svc.materialize("b", query("SELECT 2 AS y"), Some("sess_gone"))
+        .await
+        .unwrap();
+    let dir = storage_root(workspace.path()).join("sess_gone");
+    assert!(dir.exists());
+
+    assert!(svc.drop_namespace("sess_gone").await.unwrap());
+    assert!(!dir.exists(), "storage dir removed");
+    assert!(
+        svc.query_collect("SELECT * FROM sess_gone.materialized.a")
+            .await
+            .is_err(),
+        "dropped namespace must not resolve"
+    );
+    assert!(
+        svc.cache_entries(Some("sess_gone"))
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
+    // Idempotent-ish: a second drop reports false; unknown likewise.
+    assert!(!svc.drop_namespace("sess_gone").await.unwrap());
+    assert!(!svc.drop_namespace("never_was").await.unwrap());
+
+    // The default workspace namespace and reserved names are refused.
+    assert!(svc.drop_namespace("test").await.is_err());
+    assert!(svc.drop_namespace("pawrly").await.is_err());
+}

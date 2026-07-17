@@ -147,6 +147,22 @@ impl CacheService for CacheSvc {
             namespace: req.namespace,
         }))
     }
+
+    async fn drop_namespace(
+        &self,
+        req: Request<v1::DropNamespaceRequest>,
+    ) -> Result<Response<v1::DropNamespaceResponse>, Status> {
+        let req = req.into_inner();
+        let dropped = self
+            .engine
+            .drop_namespace(&req.namespace)
+            .await
+            .map_err(|e| engine_error_to_status(&e))?;
+        Ok(Response::new(v1::DropNamespaceResponse {
+            dropped,
+            namespace: req.namespace,
+        }))
+    }
 }
 
 fn none_if_empty(s: &str) -> Option<&str> {

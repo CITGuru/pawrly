@@ -158,6 +158,7 @@ pawrly cache show <SOURCE>.<TABLE>       # detailed view of one entry
 pawrly cache refresh <SOURCE>.<TABLE>    # force a re-fetch + write-through (or pass a bare source name to refresh its catalog)
 pawrly cache invalidate <SOURCE>.<TABLE> # drop the entry and its files
 pawrly cache vacuum                      # reclaim expired entries, orphaned files, stale temp (--json)
+pawrly cache drop-namespace <NS>         # drop an entire materialize namespace (session teardown)
 ```
 
 ---

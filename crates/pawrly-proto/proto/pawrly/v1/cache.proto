@@ -13,6 +13,15 @@ service CacheService {
   // Persist a query result as a named, self-backed materialized table.
   rpc Materialize(MaterializeRequest) returns (MaterializeResponse);
   rpc DropMaterialized(DropMaterializedRequest) returns (DropMaterializedResponse);
+  // Drop an entire materialize namespace (session teardown).
+  rpc DropNamespace(DropNamespaceRequest) returns (DropNamespaceResponse);
+}
+
+message DropNamespaceRequest { string namespace = 1; }
+message DropNamespaceResponse {
+  bool dropped = 1;
+  // Echo of the request's namespace (see MaterializeResponse.namespace).
+  string namespace = 2;
 }
 
 message CacheEntryInfo {

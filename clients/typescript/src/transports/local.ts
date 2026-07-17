@@ -164,6 +164,9 @@ export class LocalTransport implements Transport {
   dropMaterialized(name: string, namespace?: string): Promise<boolean> {
     return this.rest.dropMaterialized(name, namespace);
   }
+  dropNamespace(namespace: string): Promise<boolean> {
+    return this.rest.dropNamespace(namespace);
+  }
   health(): Promise<HealthReport> {
     return this.rest.health();
   }

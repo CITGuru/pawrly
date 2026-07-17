@@ -1349,6 +1349,10 @@ impl EngineService for LocalEngine {
         }
     }
 
+    async fn drop_namespace(&self, namespace: &str) -> Result<bool, EngineError> {
+        self.inner.namespaces.remove(namespace)
+    }
+
     async fn add_source(&self, def: SourceDef) -> Result<SourceInfo, EngineError> {
         // Runtime-added sources get the same validation a config file gets
         // (plus the no-stdio rule); config-file sources were validated at load.

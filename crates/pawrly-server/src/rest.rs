@@ -69,6 +69,7 @@ pub(crate) fn rest_router(engine: Arc<dyn EngineService>, bearer: Option<Arc<str
             "/v1/materialized/:name",
             put(rest_materialize).delete(rest_drop_materialized),
         )
+        .route("/v1/namespaces/:namespace", delete(rest_drop_namespace))
         .route("/v1/config/reload", post(rest_reload_config))
         .route("/v1/functions", get(rest_functions))
         .route(
@@ -416,6 +417,20 @@ async fn rest_drop_materialized(
             codes::UNKNOWN_MATERIALIZED,
             &format!("no materialized table named `{name}`"),
         ),
+        Err(e) => engine_error_response(&e),
+    }
+}
+
+async fn rest_drop_namespace(
+    State(state): State<RestState>,
+    headers: axum::http::HeaderMap,
+    Path(namespace): Path<String>,
+) -> Response {
+    if let Some(resp) = guard(&state, &headers) {
+        return resp;
+    }
+    match state.engine.drop_namespace(&namespace).await {
+        Ok(dropped) => Json(json!({ "dropped": dropped, "namespace": namespace })).into_response(),
         Err(e) => engine_error_response(&e),
     }
 }

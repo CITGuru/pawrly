@@ -407,6 +407,24 @@ paths:
                     type: string
                     description: Echo of `?namespace=`, when supplied.
         '404': { $ref: '#/components/responses/Error' }
+  /v1/namespaces/{namespace}:
+    delete:
+      tags: [materialized]
+      summary: Drop an entire materialize namespace
+      operationId: dropNamespace
+      parameters:
+        - { name: namespace, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Whether the namespace existed. The default workspace namespace is refused.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  dropped: { type: boolean }
+                  namespace: { type: string }
+        '400': { $ref: '#/components/responses/Error' }
   /v1/config/reload:
     post:
       tags: [system]

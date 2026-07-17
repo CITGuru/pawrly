@@ -316,6 +316,12 @@ pub trait EngineService: Send + Sync + 'static {
         namespace: Option<&str>,
     ) -> Result<MaterializeOutcome, EngineError>;
 
+    /// Drop an entire materialize namespace — every table, its manifest, and
+    /// its storage directory — in one call (session teardown). Returns `false`
+    /// if the namespace never existed; the default workspace namespace is
+    /// refused.
+    async fn drop_namespace(&self, namespace: &str) -> Result<bool, EngineError>;
+
     /// Drop a materialized table, returns `false` if no such table existed.
     async fn drop_materialized(
         &self,

@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- `DropNamespace`: tear down an entire materialize namespace (tables, manifest, storage) in one call — `pawrly cache drop-namespace <ns>`, `DELETE /v1/namespaces/{ns}`, a `DropNamespace` RPC, a `drop_namespace` MCP tool, and SDK methods. The default workspace namespace is refused.
 - Metrics discovery: `pawrly semantic metrics`, `list_metrics`/`describe_metric` MCP tools, `ListMetrics`/`DescribeMetric` RPCs, and `/v1/semantic/metrics` REST routes (TS/Python SDK methods included).
 - **Semantic metrics** — a workspace-level `semantic.metrics:` block composing measures into named, governed business numbers, queryable by their dot-free name through the existing `semantic query` surface (CLI, MCP, gRPC — no wire change): `pawrly semantic query aov --by orders.status`.
   - `ratio` (numerator/denominator with `NULLIF` guard and `DOUBLE` cast) and `derived` (arithmetic over `{member}` references) kinds, including cross-model ratios via the aggregate-locality compiler.

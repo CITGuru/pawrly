@@ -494,6 +494,19 @@ impl EngineService for RemoteEngineClient {
         Ok(resp.dropped)
     }
 
+    async fn drop_namespace(&self, namespace: &str) -> Result<bool, EngineError> {
+        let mut client = self.cache.clone();
+        let resp = client
+            .drop_namespace(pawrly_proto::v1::DropNamespaceRequest {
+                namespace: namespace.to_string(),
+            })
+            .await
+            .map_err(status_to_engine_error)?
+            .into_inner();
+        require_namespace_echo(Some(namespace), &resp.namespace)?;
+        Ok(resp.dropped)
+    }
+
     async fn add_source(&self, def: SourceDef) -> Result<SourceInfo, EngineError> {
         let yaml = serde_yaml::to_string(&def)
             .map_err(|e| EngineError::Protocol(format!("serialize source: {e}")))?;

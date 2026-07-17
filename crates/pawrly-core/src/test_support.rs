@@ -317,6 +317,10 @@ impl EngineService for MockEngine {
         Ok(false)
     }
 
+    async fn drop_namespace(&self, _namespace: &str) -> Result<bool, EngineError> {
+        Ok(false)
+    }
+
     async fn add_source(&self, def: SourceDef) -> Result<SourceInfo, EngineError> {
         let info = SourceInfo {
             name: def.name.clone(),

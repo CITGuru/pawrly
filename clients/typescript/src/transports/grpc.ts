@@ -269,6 +269,12 @@ export class GrpcTransport implements Transport {
     return resp.dropped;
   }
 
+  async dropNamespace(namespace: string): Promise<boolean> {
+    const resp = await unary(this.cache_.dropNamespace({ namespace }));
+    requireNamespaceEcho(namespace, resp.namespace);
+    return resp.dropped;
+  }
+
   async health(): Promise<HealthReport> {
     const resp = await unary(this.admin_.health({}));
     return { ok: resp.ok, version: resp.version };

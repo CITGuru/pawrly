@@ -56,6 +56,7 @@ export interface Transport {
   invalidateCache(name: string): Promise<boolean>;
   vacuumCache(): Promise<VacuumReport>;
   dropMaterialized(name: string, namespace?: string): Promise<boolean>;
+  dropNamespace(namespace: string): Promise<boolean>;
   health(): Promise<HealthReport>;
   shutdown(): Promise<void>;
   close(): void;

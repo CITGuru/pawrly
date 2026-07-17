@@ -151,6 +151,9 @@ class PawrlyClient:
     def drop_materialized(self, name: str, namespace: str | None = None) -> bool:
         return self._t.drop_materialized(name, namespace)
 
+    def drop_namespace(self, namespace: str) -> bool:
+        return self._t.drop_namespace(namespace)
+
     def health(self) -> HealthReport:
         return self._t.health()
 

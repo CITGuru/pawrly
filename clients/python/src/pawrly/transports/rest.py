@@ -226,6 +226,11 @@ class RestTransport:
         _require_namespace_echo(namespace, r.get("namespace"))
         return r.get("dropped", False)
 
+    def drop_namespace(self, namespace: str) -> bool:
+        r = self._send("DELETE", f"/v1/namespaces/{namespace}")
+        _require_namespace_echo(namespace, r.get("namespace"))
+        return r.get("dropped", False)
+
     def health(self) -> HealthReport:
         r = self._send("GET", "/v1/health")
         return HealthReport(ok=r.get("ok", False), version=r.get("version", ""))

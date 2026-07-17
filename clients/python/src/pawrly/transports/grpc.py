@@ -403,6 +403,16 @@ class GrpcTransport:
         _require_namespace_echo(namespace, resp.namespace)
         return resp.dropped
 
+    def drop_namespace(self, namespace: str) -> bool:
+        resp = self._unary(
+            lambda: self._cache.DropNamespace(
+                cache_pb2.DropNamespaceRequest(namespace=namespace),
+                metadata=self._metadata,
+            )
+        )
+        _require_namespace_echo(namespace, resp.namespace)
+        return resp.dropped
+
     def health(self) -> HealthReport:
         resp = self._unary(
             lambda: self._admin.Health(

@@ -65,6 +65,7 @@ pawrly sql "SELECT * FROM sess_a.materialized.top_customers"
 pawrly cache list --namespace sess_a
 pawrly cache refresh materialized.top_customers --namespace sess_a
 pawrly materialize top_customers --drop --namespace sess_a
+pawrly cache drop-namespace sess_a       # or tear down the whole namespace at once
 ```
 
 A namespace is created on first write and resolves in SQL from then on — including after a daemon restart, and when written by another process sharing the storage root. Namespace names use alphanumerics, `_`, `-`, and `.`; `pawrly`, `materialized`, `system`, and `information_schema` are reserved.

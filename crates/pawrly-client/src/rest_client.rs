@@ -381,6 +381,12 @@ impl EngineService for RestEngineClient {
         field(&resp, "dropped")
     }
 
+    async fn drop_namespace(&self, namespace: &str) -> Result<bool, EngineError> {
+        let resp = self.delete(&format!("/v1/namespaces/{namespace}")).await?;
+        require_namespace_echo(Some(namespace), &resp)?;
+        field(&resp, "dropped")
+    }
+
     async fn add_source(&self, def: SourceDef) -> Result<SourceInfo, EngineError> {
         let body = serde_json::to_value(&def)
             .map_err(|e| EngineError::Protocol(format!("encode source: {e}")))?;

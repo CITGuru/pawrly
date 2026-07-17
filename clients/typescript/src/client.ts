@@ -160,6 +160,10 @@ export class PawrlyClient {
     return this.t.dropMaterialized(name, namespace);
   }
 
+  dropNamespace(namespace: string): Promise<boolean> {
+    return this.t.dropNamespace(namespace);
+  }
+
   health(): Promise<HealthReport> {
     return this.t.health();
   }

@@ -27,6 +27,15 @@ pub enum CacheCommand {
     Invalidate(InvalidateArgs),
     /// Reclaim space from expired entries, orphaned files, and stale temp writes.
     Vacuum(VacuumArgs),
+    /// Drop an entire materialize namespace: every table, manifest, and file.
+    DropNamespace(DropNamespaceArgs),
+}
+
+#[derive(ClapArgs, Debug)]
+pub struct DropNamespaceArgs {
+    /// The namespace to drop. The default workspace namespace is refused.
+    #[arg(value_name = "NS")]
+    pub namespace: String,
 }
 
 #[derive(ClapArgs, Debug)]
@@ -86,7 +95,24 @@ pub async fn run(
         CacheCommand::Refresh(a) => refresh(home, config, remote, no_remote, a).await,
         CacheCommand::Invalidate(a) => invalidate(home, config, remote, no_remote, a).await,
         CacheCommand::Vacuum(a) => vacuum(home, config, remote, no_remote, a).await,
+        CacheCommand::DropNamespace(a) => drop_namespace(home, config, remote, no_remote, a).await,
     }
+}
+
+async fn drop_namespace(
+    home: Option<PathBuf>,
+    config: Option<PathBuf>,
+    remote: Option<String>,
+    no_remote: bool,
+    args: DropNamespaceArgs,
+) -> anyhow::Result<()> {
+    let svc = crate::engine::build_engine(remote, no_remote, home, config).await?;
+    if svc.drop_namespace(&args.namespace).await? {
+        println!("dropped namespace {}", args.namespace);
+    } else {
+        println!("no namespace named `{}`", args.namespace);
+    }
+    Ok(())
 }
 
 async fn list(
