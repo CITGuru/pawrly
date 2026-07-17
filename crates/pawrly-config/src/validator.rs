@@ -865,8 +865,6 @@ fn placeholders(template: &str) -> Vec<String> {
 /// source loop so `source_names` is fully collected, and accumulates into
 /// `errors` like every other rule.
 fn validate_functions(cfg: &Config, source_names: &HashSet<String>, errors: &mut ConfigErrors) {
-    // (namespace, name) seen so far — seeded with the builtins, which are
-    // reserved (V4).
     let mut seen: HashSet<(String, String)> = pawrly_core::function::builtins()
         .into_iter()
         .map(|b| (b.namespace, b.name))

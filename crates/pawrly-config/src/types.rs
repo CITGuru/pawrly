@@ -85,9 +85,7 @@ pub struct SemanticConfig {
     #[serde(default)]
     pub models: Vec<SemanticModel>,
 
-    /// Workspace-level metrics composed over model measures (ratios, derived
-    /// expressions, windows). Dot-free names, queryable via the same
-    /// `measures` field as `model.measure` members.
+    /// Workspace-level metrics composed over model measures
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub metrics: Vec<pawrly_core::semantic::Metric>,
 

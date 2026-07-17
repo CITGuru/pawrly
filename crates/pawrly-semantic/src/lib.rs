@@ -237,8 +237,6 @@ impl SemanticCatalog {
             return Err(SemanticError::EmptyQuery);
         }
 
-        // A dot-free measure member is a metric (`model.member` always dots);
-        // those queries expand to leaf measures and re-enter this path.
         if q.measures.iter().any(|m| !m.contains('.')) {
             return metric::compile_with_metrics(self, q);
         }

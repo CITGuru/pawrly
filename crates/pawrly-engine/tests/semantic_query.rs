@@ -699,8 +699,6 @@ async fn rls_unbound_param_refused() {
     }
 }
 
-// ---- metrics (M2: ratio + derived) ----
-
 fn metric_f64(batch: &arrow_array::RecordBatch, col: &str) -> f64 {
     batch
         .column_by_name(col)

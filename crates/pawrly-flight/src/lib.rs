@@ -61,7 +61,7 @@ impl FlightSqlServerBuilder {
     ///
     /// # Errors
     ///
-    /// Always returns `FlightError::NotImplemented` in the current milestone.
+    /// Always returns `FlightError::NotImplemented`.
     pub async fn serve_tcp(self, _addr: std::net::SocketAddr) -> Result<(), FlightError> {
         Err(FlightError::NotImplemented)
     }
