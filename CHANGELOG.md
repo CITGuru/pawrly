@@ -35,6 +35,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- Security: runtime `add_source` (gRPC/REST/CLI) now runs the same validation as a config file, and rejects `kind: mcp` with `transport: stdio` outright — a remotely added source can no longer spawn processes on the server host. Declare stdio MCP sources in `pawrly.yaml` instead.
 - `pawrly cache refresh materialized.<name>` accepts `--namespace` (and the RPC/REST/MCP surfaces a `namespace`), so materialized tables in custom namespaces can be refreshed; previously only the default workspace namespace was reachable.
 - `pawrly validate` now honors the global `--config` / `PAWRLY_CONFIG` like every other command (it previously only looked at `./pawrly.yaml` relative to the shell's cwd).
 - `cache list` now reports materialized tables as mode `pinned` instead of the misleading `ttl` fallback (they were never TTL-governed; only the label was wrong). Version-skew note: a pre-`pinned` client listing against a newer daemon omits materialized rows from `cache list` (its decoder drops entries with an unknown mode); all other operations are unaffected. New clients keep such rows and approximate the mode from expiry instead.

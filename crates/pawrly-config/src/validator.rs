@@ -570,6 +570,56 @@ fn check_predicate_params(pred: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Validate a runtime-added source (`add_source` over gRPC/REST/CLI) with the
+/// same per-source rules a config file gets, plus one runtime-only rule: a
+/// remotely added source may not spawn host processes, so `kind: mcp` with
+/// `transport: stdio` is rejected — declare those in `pawrly.yaml` on the
+/// host instead.
+#[must_use]
+pub fn validate_engine_source(def: &pawrly_core::SourceDef) -> ConfigErrors {
+    let view = crate::types::SourceDef {
+        name: def.name.clone(),
+        kind: def.kind,
+        description: def.description.clone(),
+        wiki: def.wiki.clone(),
+        examples: def.examples.clone(),
+        from: None,
+        variables: Default::default(),
+        dynamic_vars: Vec::new(),
+        config: def.config.clone(),
+        cache: def.cache.clone(),
+        safety: def.safety.clone(),
+        tables: def
+            .tables
+            .iter()
+            .map(|t| crate::types::TableDef {
+                name: t.name.clone(),
+                description: t.description.clone(),
+                wiki: t.wiki.clone(),
+                body: t.config.clone(),
+                cache: t.cache.clone(),
+                safety: t.safety.clone(),
+            })
+            .collect(),
+        functions: Vec::new(),
+        raw_table: def.raw_table,
+        raw_table_safety: def.raw_table_safety.clone(),
+    };
+    let mut errors = ConfigErrors(Vec::new());
+    validate_source(&view, &mut errors);
+    if view.kind == SourceKind::Mcp
+        && view.config.get("transport").and_then(|v| v.as_str()) == Some("stdio")
+    {
+        errors.push(ConfigError::Source(
+            view.name,
+            "`transport: stdio` cannot be added at runtime (it spawns a process on the \
+             server host); declare it in pawrly.yaml instead"
+                .into(),
+        ));
+    }
+    errors
+}
+
 fn validate_source(src: &crate::types::SourceDef, errors: &mut ConfigErrors) {
     if src.name.is_empty() {
         errors.push(ConfigError::Source(

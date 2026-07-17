@@ -1350,6 +1350,17 @@ impl EngineService for LocalEngine {
     }
 
     async fn add_source(&self, def: SourceDef) -> Result<SourceInfo, EngineError> {
+        // Runtime-added sources get the same validation a config file gets
+        // (plus the no-stdio rule); config-file sources were validated at load.
+        let errors = pawrly_config::validate_engine_source(&def);
+        if !errors.is_empty() {
+            let msgs: Vec<String> = errors.0.iter().map(ToString::to_string).collect();
+            return Err(EngineError::Internal(format!(
+                "source `{}` failed validation: {}",
+                def.name,
+                msgs.join("; ")
+            )));
+        }
         register_source(&self.inner, def.clone()).await?;
         let info = self
             .inner
