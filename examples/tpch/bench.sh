@@ -37,9 +37,9 @@ done
 # time one `pawrly sql --file` call in milliseconds (query output discarded so
 # only the timing number reaches stdout); prints elapsed ms, or -1 on error.
 time_one() {
-  QF="$1" REMOTE="$REMOTE" perl -MTime::HiRes=time -e '
+  QF="$1" REMOTE="$REMOTE" PAWRLY_BIN="$PAWRLY" perl -MTime::HiRes=time -e '
     my $t0 = time;
-    my $rc = system("pawrly --remote \"$ENV{REMOTE}\" sql --file \"$ENV{QF}\" --format csv --max-rows 0 >/dev/null 2>&1");
+    my $rc = system("$ENV{PAWRLY_BIN} --remote \"$ENV{REMOTE}\" sql --file \"$ENV{QF}\" --format csv --max-rows 0 >/dev/null 2>&1");
     printf "%.1f", ($rc == 0 ? (time - $t0) * 1000 : -1);
   '
 }
