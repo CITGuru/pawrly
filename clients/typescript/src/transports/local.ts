@@ -128,6 +128,12 @@ export class LocalTransport implements Transport {
   listSemanticModels(): Promise<SemanticModelInfo[]> {
     return this.rest.listSemanticModels();
   }
+  listMetrics(): Promise<Record<string, unknown>[]> {
+    return this.rest.listMetrics();
+  }
+  describeMetric(name: string): Promise<Record<string, unknown>> {
+    return this.rest.describeMetric(name);
+  }
   describeSemanticModel(name: string): Promise<SemanticModelDescription> {
     return this.rest.describeSemanticModel(name);
   }

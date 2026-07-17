@@ -344,6 +344,12 @@ pub trait EngineService: Send + Sync + 'static {
         name: &str,
     ) -> Result<SemanticModelDescription, EngineError>;
 
+    /// Workspace metrics (composed measures), sorted by name.
+    async fn list_metrics(&self) -> Result<Vec<crate::semantic::Metric>, EngineError>;
+
+    /// One metric by its dot-free name.
+    async fn describe_metric(&self, name: &str) -> Result<crate::semantic::Metric, EngineError>;
+
     /// Compile and execute a structured query, returning a [`QueryHandle`] in
     /// the same shape as [`EngineService::query`].
     async fn semantic_query(&self, q: SemanticQuery) -> Result<QueryHandle, EngineError>;

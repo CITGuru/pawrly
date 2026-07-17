@@ -412,6 +412,18 @@ impl EngineService for RestEngineClient {
         whole(self.get(&format!("/v1/semantic/models/{name}")).await?)
     }
 
+    async fn list_metrics(&self) -> Result<Vec<pawrly_core::semantic::Metric>, EngineError> {
+        let resp = self.get("/v1/semantic/metrics").await?;
+        field(&resp, "metrics")
+    }
+
+    async fn describe_metric(
+        &self,
+        name: &str,
+    ) -> Result<pawrly_core::semantic::Metric, EngineError> {
+        whole(self.get(&format!("/v1/semantic/metrics/{name}")).await?)
+    }
+
     async fn semantic_query(&self, q: SemanticQuery) -> Result<QueryHandle, EngineError> {
         let body = serde_json::to_value(&q)
             .map_err(|e| EngineError::Protocol(format!("encode semantic query: {e}")))?;

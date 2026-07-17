@@ -184,6 +184,12 @@ class RestTransport:
             self._send("GET", f"/v1/semantic/models/{name}")
         )
 
+    def list_metrics(self) -> list[dict]:
+        return self._send("GET", "/v1/semantic/metrics").get("metrics", [])
+
+    def describe_metric(self, name: str) -> dict:
+        return self._send("GET", f"/v1/semantic/metrics/{name}")
+
     def add_source(self, definition: dict) -> SourceInfo:
         return convert.source_info(self._send("POST", "/v1/sources", definition))
 

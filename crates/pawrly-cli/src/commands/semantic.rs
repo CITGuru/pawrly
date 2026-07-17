@@ -30,6 +30,8 @@ pub enum SemanticCommand {
     List(ListArgs),
     /// Show one model's dimensions, measures, and relationships.
     Describe(DescribeArgs),
+    /// List the workspace metrics (composed business numbers).
+    Metrics(ListArgs),
     /// Run a structured query: measures by dimensions, with filters.
     Query(QueryArgs),
 }
@@ -108,6 +110,7 @@ pub async fn run(
     match args.command {
         SemanticCommand::List(a) => list(home, config, remote, no_remote, a).await,
         SemanticCommand::Describe(a) => describe(home, config, remote, no_remote, a).await,
+        SemanticCommand::Metrics(a) => metrics(home, config, remote, no_remote, a).await,
         SemanticCommand::Query(a) => query(home, config, remote, no_remote, a).await,
     }
 }
@@ -135,6 +138,36 @@ async fn list(
         println!(
             "{:<24} {:<6} {:<8} {}",
             m.name, m.dimension_count, m.measure_count, m.source
+        );
+    }
+    Ok(())
+}
+
+async fn metrics(
+    home: Option<PathBuf>,
+    config: Option<PathBuf>,
+    remote: Option<String>,
+    no_remote: bool,
+    args: ListArgs,
+) -> anyhow::Result<()> {
+    let svc = crate::engine::build_engine(remote, no_remote, home, config).await?;
+    let metrics = svc.list_metrics().await?;
+
+    if args.json {
+        println!("{}", serde_json::to_string(&metrics)?);
+        return Ok(());
+    }
+    if metrics.is_empty() {
+        println!("no metrics defined");
+        return Ok(());
+    }
+    println!("{:<24} {:<12} description", "metric", "kind");
+    for m in &metrics {
+        println!(
+            "{:<24} {:<12} {}",
+            m.name,
+            m.kind.label(),
+            m.description.as_deref().unwrap_or("")
         );
     }
     Ok(())

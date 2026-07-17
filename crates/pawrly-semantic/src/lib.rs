@@ -200,6 +200,20 @@ impl SemanticCatalog {
         out
     }
 
+    /// Workspace metrics, sorted by name for determinism.
+    #[must_use]
+    pub fn list_metrics(&self) -> Vec<Metric> {
+        let mut out: Vec<Metric> = self.metrics.values().map(|m| (**m).clone()).collect();
+        out.sort_by(|a, b| a.name.cmp(&b.name));
+        out
+    }
+
+    /// One metric by its dot-free name, if it exists.
+    #[must_use]
+    pub fn describe_metric(&self, name: &str) -> Option<Metric> {
+        self.metrics.get(name).map(|m| (**m).clone())
+    }
+
     /// Full spec for one model, if it exists.
     #[must_use]
     pub fn describe(&self, name: &str) -> Option<SemanticModelDescription> {

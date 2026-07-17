@@ -174,6 +174,15 @@ export class RestTransport implements Transport {
     );
   }
 
+  async listMetrics(): Promise<Record<string, unknown>[]> {
+    const r = await this.send("/v1/semantic/metrics");
+    return (r.metrics as Record<string, unknown>[]) ?? [];
+  }
+
+  async describeMetric(name: string): Promise<Record<string, unknown>> {
+    return this.send(`/v1/semantic/metrics/${encodeURIComponent(name)}`);
+  }
+
   async addSource(def: SourceDef): Promise<SourceInfo> {
     return convert.sourceInfo(
       await this.send("/v1/sources", { method: "POST", body: JSON.stringify(def) }),

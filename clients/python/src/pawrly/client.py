@@ -116,6 +116,12 @@ class PawrlyClient:
     def describe_semantic_model(self, name: str) -> SemanticModelDescription:
         return self._t.describe_semantic_model(name)
 
+    def list_metrics(self) -> list[dict]:
+        return self._t.list_metrics()
+
+    def describe_metric(self, name: str) -> dict:
+        return self._t.describe_metric(name)
+
     def add_source(self, definition: dict) -> SourceInfo:
         return self._t.add_source(definition)
 

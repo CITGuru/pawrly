@@ -278,6 +278,22 @@ class GrpcTransport:
         )
         return _model_description(resp.model)
 
+    def list_metrics(self) -> list[dict]:
+        resp = self._unary(
+            lambda: self._semantic.ListMetrics(
+                semantic_pb2.ListMetricsRequest(), metadata=self._metadata
+            )
+        )
+        return [json.loads(m) for m in resp.metrics_json]
+
+    def describe_metric(self, name: str) -> dict:
+        resp = self._unary(
+            lambda: self._semantic.DescribeMetric(
+                semantic_pb2.DescribeMetricRequest(name=name), metadata=self._metadata
+            )
+        )
+        return json.loads(resp.metric_json)
+
     def add_source(self, definition: dict) -> SourceInfo:
         # gRPC AddSource takes YAML; JSON is valid YAML, so serialize the object.
         resp = self._unary(

@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- Metrics discovery: `pawrly semantic metrics`, `list_metrics`/`describe_metric` MCP tools, `ListMetrics`/`DescribeMetric` RPCs, and `/v1/semantic/metrics` REST routes (TS/Python SDK methods included).
 - **Semantic metrics** — a workspace-level `semantic.metrics:` block composing measures into named, governed business numbers, queryable by their dot-free name through the existing `semantic query` surface (CLI, MCP, gRPC — no wire change): `pawrly semantic query aov --by orders.status`.
   - `ratio` (numerator/denominator with `NULLIF` guard and `DOUBLE` cast) and `derived` (arithmetic over `{member}` references) kinds, including cross-model ratios via the aggregate-locality compiler.
   - `cumulative` (running total / grain-to-date / trailing window), `offset` (period-over-period value/delta/growth), and `share` (percent-of-partition) kinds. Window metrics join onto a dense time axis — generated automatically or pinned to a declared `semantic.time_spine:` table — so running totals and period-over-period stay calendar-correct across gaps in the data.

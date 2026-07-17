@@ -283,6 +283,7 @@ Everything is merged before validation, so a model in one file can reference a `
 ```bash
 pawrly semantic list              # models with dimension/measure counts
 pawrly semantic describe orders   # full spec: dimensions, measures, relationships, segments
+pawrly semantic metrics           # workspace metrics with kind and description
 ```
 
-The MCP tools `list_semantic_models` and `describe_semantic_model` return the same information, including relationships, segments, and required filters or RLS params.
+The MCP tools `list_semantic_models`, `describe_semantic_model`, `list_metrics`, and `describe_metric` return the same information, including relationships, segments, and required filters or RLS params.

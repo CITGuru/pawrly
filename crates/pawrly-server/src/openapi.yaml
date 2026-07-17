@@ -285,6 +285,35 @@ paths:
           content:
             application/json: { schema: { $ref: '#/components/schemas/SemanticModelDescription' } }
         '400': { $ref: '#/components/responses/Error' }
+  /v1/semantic/metrics:
+    get:
+      tags: [semantic]
+      summary: List workspace metrics
+      operationId: listMetrics
+      responses:
+        '200':
+          description: Metrics, each in its config-YAML JSON shape.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  metrics:
+                    type: array
+                    items: { type: object, additionalProperties: true }
+  /v1/semantic/metrics/{name}:
+    get:
+      tags: [semantic]
+      summary: Describe a workspace metric
+      operationId: describeMetric
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: The metric definition.
+          content:
+            application/json: { schema: { type: object, additionalProperties: true } }
+        '400': { $ref: '#/components/responses/Error' }
   /v1/cache:
     get:
       tags: [cache]

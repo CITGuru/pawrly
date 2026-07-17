@@ -385,6 +385,16 @@ impl EngineService for MockEngine {
         )))
     }
 
+    async fn list_metrics(&self) -> Result<Vec<crate::semantic::Metric>, EngineError> {
+        Ok(Vec::new())
+    }
+
+    async fn describe_metric(&self, name: &str) -> Result<crate::semantic::Metric, EngineError> {
+        Err(EngineError::SemanticPlan(format!(
+            "unknown metric `{name}`"
+        )))
+    }
+
     async fn semantic_query(&self, _q: SemanticQuery) -> Result<QueryHandle, EngineError> {
         // MockEngine returns no rows for semantic queries by default.
         let batches: Vec<RecordBatch> = Vec::new();

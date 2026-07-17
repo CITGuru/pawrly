@@ -1484,6 +1484,20 @@ impl EngineService for LocalEngine {
             .ok_or_else(|| EngineError::SemanticPlan(format!("unknown semantic model `{name}`")))
     }
 
+    async fn list_metrics(&self) -> Result<Vec<pawrly_core::semantic::Metric>, EngineError> {
+        Ok(self.inner.semantic.list_metrics())
+    }
+
+    async fn describe_metric(
+        &self,
+        name: &str,
+    ) -> Result<pawrly_core::semantic::Metric, EngineError> {
+        self.inner
+            .semantic
+            .describe_metric(name)
+            .ok_or_else(|| pawrly_semantic::SemanticError::UnknownMetric(name.to_string()).into())
+    }
+
     #[tracing::instrument(name = "pawrly.engine.semantic_query", skip_all, fields(pawrly.engine = "local"))]
     async fn semantic_query(&self, q: SemanticQuery) -> Result<QueryHandle, EngineError> {
         let query_id = QueryId::new(uuid::Uuid::new_v4().to_string());

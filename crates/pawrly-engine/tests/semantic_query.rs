@@ -970,3 +970,18 @@ async fn window_metric_without_time_dimension_errors() {
         Ok(_) => panic!("expected MetricNeedsTimeGrain"),
     }
 }
+
+#[tokio::test]
+async fn list_and_describe_metrics() {
+    let svc = build_engine().await;
+
+    let metrics = svc.list_metrics().await.expect("list_metrics");
+    let names: Vec<&str> = metrics.iter().map(|m| m.name.as_str()).collect();
+    assert_eq!(names, vec!["aov", "paid_aov", "paid_share"]);
+
+    let aov = svc.describe_metric("aov").await.expect("describe");
+    assert_eq!(aov.kind.label(), "ratio");
+
+    let err = svc.describe_metric("ghost").await.unwrap_err();
+    assert!(err.to_string().contains("unknown metric `ghost`"), "{err}");
+}

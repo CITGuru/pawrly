@@ -7,9 +7,19 @@ import "pawrly/v1/query.proto"; // reuses QueryResponse + Error
 service SemanticService {
   rpc ListModels(ListModelsRequest) returns (ListModelsResponse);
   rpc DescribeModel(DescribeModelRequest) returns (DescribeModelResponse);
+  rpc ListMetrics(ListMetricsRequest) returns (ListMetricsResponse);
+  rpc DescribeMetric(DescribeMetricRequest) returns (DescribeMetricResponse);
   // Same streaming envelope as QueryService.Query.
   rpc SemanticQuery(SemanticQueryRequest) returns (stream QueryResponse);
 }
+
+message ListMetricsRequest {}
+// Each metric travels as its serde-JSON encoding (the same shape as the YAML
+// config and the REST surface), like the catalog snapshot does.
+message ListMetricsResponse { repeated bytes metrics_json = 1; }
+
+message DescribeMetricRequest { string name = 1; }
+message DescribeMetricResponse { bytes metric_json = 1; }
 
 message ListModelsRequest {}
 message ListModelsResponse { repeated ModelInfo models = 1; }

@@ -173,6 +173,25 @@ pub fn list_tools() -> Vec<Value> {
             "inputSchema": { "type": "object", "properties": {} }
         }),
         json!({
+            "name": "list_metrics",
+            "description": "List the workspace metrics — named business numbers composed over \
+                            model measures (ratios, derived expressions, windows, shares). \
+                            Query one by its bare name in `semantic_query`'s `measures`.",
+            "inputSchema": { "type": "object", "properties": {} }
+        }),
+        json!({
+            "name": "describe_metric",
+            "description": "Full definition of one workspace metric: kind, composed members, \
+                            governed filter, and display format.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "description": "The metric's dot-free name" }
+                },
+                "required": ["name"]
+            }
+        }),
+        json!({
             "name": "describe_semantic_model",
             "description": "Full spec for one semantic model: dimensions, measures, \
                             relationships, named segments (reusable filter sets you can \
@@ -576,6 +595,25 @@ pub async fn call_tool(
                 .await
                 .map_err(|e| ToolError::Engine(e.to_string()))?;
             serde_json::to_value(&outcome).map_err(|e| ToolError::Engine(e.to_string()))
+        }
+        "list_metrics" => {
+            let metrics = engine
+                .list_metrics()
+                .await
+                .map_err(|e| ToolError::Engine(e.to_string()))?;
+            serde_json::to_value(json!({ "metrics": metrics }))
+                .map_err(|e| ToolError::Engine(e.to_string()))
+        }
+        "describe_metric" => {
+            let name = args
+                .get("name")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| ToolError::BadArgs("`name` is required".into()))?;
+            let metric = engine
+                .describe_metric(name)
+                .await
+                .map_err(|e| ToolError::Engine(e.to_string()))?;
+            serde_json::to_value(&metric).map_err(|e| ToolError::Engine(e.to_string()))
         }
         "list_semantic_models" => {
             let models = engine

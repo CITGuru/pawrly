@@ -116,6 +116,14 @@ export class PawrlyClient {
     return this.t.describeSemanticModel(name);
   }
 
+  listMetrics(): Promise<Record<string, unknown>[]> {
+    return this.t.listMetrics();
+  }
+
+  describeMetric(name: string): Promise<Record<string, unknown>> {
+    return this.t.describeMetric(name);
+  }
+
   addSource(def: SourceDef): Promise<SourceInfo> {
     return this.t.addSource(def);
   }

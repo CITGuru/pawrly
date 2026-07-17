@@ -80,6 +80,7 @@ Browse and query the [semantic layer](./semantic.md).
 
 ```
 pawrly semantic list                       # list models (--json)
+pawrly semantic metrics                    # list workspace metrics (--json)
 pawrly semantic describe <MODEL>           # dimensions, measures, relationships (--json adds segments)
 pawrly semantic query <MEASURE>...         # run a structured query
     --by <MEMBER>                          # group-by dimension (repeatable)

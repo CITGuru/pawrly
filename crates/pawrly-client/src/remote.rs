@@ -584,6 +584,38 @@ impl EngineService for RemoteEngineClient {
             .map_err(|e: pawrly_proto::conv::ConvError| EngineError::Protocol(e.to_string()))
     }
 
+    async fn list_metrics(&self) -> Result<Vec<pawrly_core::semantic::Metric>, EngineError> {
+        let mut client = self.semantic.clone();
+        let resp = client
+            .list_metrics(pawrly_proto::v1::ListMetricsRequest {})
+            .await
+            .map_err(status_to_engine_error)?
+            .into_inner();
+        resp.metrics_json
+            .iter()
+            .map(|m| {
+                serde_json::from_slice(m)
+                    .map_err(|e| EngineError::Protocol(format!("decode metric: {e}")))
+            })
+            .collect()
+    }
+
+    async fn describe_metric(
+        &self,
+        name: &str,
+    ) -> Result<pawrly_core::semantic::Metric, EngineError> {
+        let mut client = self.semantic.clone();
+        let resp = client
+            .describe_metric(pawrly_proto::v1::DescribeMetricRequest {
+                name: name.to_string(),
+            })
+            .await
+            .map_err(status_to_engine_error)?
+            .into_inner();
+        serde_json::from_slice(&resp.metric_json)
+            .map_err(|e| EngineError::Protocol(format!("decode metric: {e}")))
+    }
+
     async fn semantic_query(&self, q: SemanticQuery) -> Result<QueryHandle, EngineError> {
         let mut client = self.semantic.clone();
         let proto: v1::SemanticQueryRequest = q.into();

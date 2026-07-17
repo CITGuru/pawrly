@@ -67,6 +67,8 @@ The server exposes these tools:
 | `materialize` | `{ name, sql? \| file? \| url?, format?, params?, namespace? }` | persists a named, self-backed table; `{ name, file_path, row_count, size_bytes }` |
 | `drop_materialized` | `{ name, namespace? }` | drops a materialized table; `{ dropped }` |
 | `list_semantic_models` | `{}` | the semantic models with dimension/measure counts |
+| `list_metrics` | `{}` | the workspace metrics (composed business numbers) |
+| `describe_metric` | `{ name }` | one metric's kind, members, filter, and format |
 | `describe_semantic_model` | `{ name }` | one model's full spec — dimensions, measures, relationships |
 | `semantic_query` | a structured query (below) | `{ columns, rows, row_count, truncated }` |
 

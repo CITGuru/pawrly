@@ -60,6 +60,8 @@ pub(crate) fn rest_router(engine: Arc<dyn EngineService>, bearer: Option<Arc<str
         .route("/v1/schema", get(rest_schema))
         .route("/v1/semantic/models", get(rest_semantic_models))
         .route("/v1/semantic/models/:name", get(rest_semantic_model))
+        .route("/v1/semantic/metrics", get(rest_semantic_metrics))
+        .route("/v1/semantic/metrics/:name", get(rest_semantic_metric))
         .route("/v1/cache", get(rest_cache))
         .route("/v1/cache/vacuum", post(rest_vacuum_cache))
         .route("/v1/cache/:name", delete(rest_invalidate_cache))
@@ -291,6 +293,33 @@ async fn rest_semantic_model(
     }
     match state.engine.describe_semantic_model(&name).await {
         Ok(model) => Json(model).into_response(),
+        Err(e) => engine_error_response(&e),
+    }
+}
+
+async fn rest_semantic_metrics(
+    State(state): State<RestState>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    if let Some(resp) = guard(&state, &headers) {
+        return resp;
+    }
+    match state.engine.list_metrics().await {
+        Ok(v) => Json(json!({ "metrics": v })).into_response(),
+        Err(e) => engine_error_response(&e),
+    }
+}
+
+async fn rest_semantic_metric(
+    State(state): State<RestState>,
+    headers: axum::http::HeaderMap,
+    Path(name): Path<String>,
+) -> Response {
+    if let Some(resp) = guard(&state, &headers) {
+        return resp;
+    }
+    match state.engine.describe_metric(&name).await {
+        Ok(metric) => Json(metric).into_response(),
         Err(e) => engine_error_response(&e),
     }
 }

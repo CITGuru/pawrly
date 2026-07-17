@@ -195,6 +195,18 @@ export class GrpcTransport implements Transport {
     return resp.model ? pbModelDescription(resp.model) : emptyModelDescription();
   }
 
+  async listMetrics(): Promise<Record<string, unknown>[]> {
+    const resp = await unary(this.semantic_.listMetrics({}));
+    return resp.metricsJson.map(
+      (b) => JSON.parse(new TextDecoder().decode(b)) as Record<string, unknown>,
+    );
+  }
+
+  async describeMetric(name: string): Promise<Record<string, unknown>> {
+    const resp = await unary(this.semantic_.describeMetric({ name }));
+    return JSON.parse(new TextDecoder().decode(resp.metricJson)) as Record<string, unknown>;
+  }
+
   async addSource(def: SourceDef): Promise<SourceInfo> {
     // gRPC AddSource takes YAML; JSON is valid YAML, so serialize the object.
     const resp = await unary(this.sources_.addSource({ yaml: JSON.stringify(def) }));
