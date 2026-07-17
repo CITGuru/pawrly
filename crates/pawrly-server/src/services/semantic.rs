@@ -74,8 +74,9 @@ impl SemanticService for SemanticSvc {
             .map_err(|e| engine_error_to_status(&e))?;
         let metrics_json = metrics
             .iter()
-            .map(|m| serde_json::to_vec(m).map_err(|e| Status::internal(e.to_string())))
-            .collect::<Result<Vec<_>, _>>()?;
+            .map(serde_json::to_vec)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| Status::internal(e.to_string()))?;
         Ok(Response::new(ListMetricsResponse { metrics_json }))
     }
 
