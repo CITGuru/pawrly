@@ -34,6 +34,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- `pawrly validate` now honors the global `--config` / `PAWRLY_CONFIG` like every other command (it previously only looked at `./pawrly.yaml` relative to the shell's cwd).
 - `cache list` now reports materialized tables as mode `pinned` instead of the misleading `ttl` fallback (they were never TTL-governed; only the label was wrong). Version-skew note: a pre-`pinned` client listing against a newer daemon omits materialized rows from `cache list` (its decoder drops entries with an unknown mode); all other operations are unaffected. New clients keep such rows and approximate the mode from expiry instead.
 - Version-skew guard: the `Materialize` / `DropMaterialized` / `ListEntries` responses now echo the request's namespace, and clients (Rust, TypeScript, Python; gRPC and REST) fail loudly when a namespace-oblivious older server ignores a requested namespace — previously the operation would silently target the default namespace (a namespaced `--drop` could delete the wrong table).
 
