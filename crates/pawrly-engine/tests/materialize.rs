@@ -657,7 +657,6 @@ async fn drop_namespace_tears_down_the_store() {
             .is_empty()
     );
 
-    // Idempotent-ish: a second drop reports false; unknown likewise.
     assert!(!svc.drop_namespace("sess_gone").await.unwrap());
     assert!(!svc.drop_namespace("never_was").await.unwrap());
 

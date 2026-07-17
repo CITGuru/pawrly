@@ -169,9 +169,8 @@ impl NamespaceRegistry {
         Ok(cache)
     }
 
-    /// Drop a namespace's entire store (memoized manager + on-disk directory).
-    /// Returns `false` if it never existed. The default workspace namespace is
-    /// refused — dropping it would take the live cache with it.
+    /// Returns `false` if the namespace never existed; the default workspace
+    /// namespace is refused — dropping it would take the live cache with it.
     pub(crate) fn remove(&self, ns: &str) -> Result<bool, EngineError> {
         if ns.is_empty() || ns == self.default_ns {
             return Err(EngineError::Internal(

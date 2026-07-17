@@ -977,8 +977,6 @@ impl SemanticCatalog {
     #[must_use]
     pub fn candidate_rollup(&self, q: &SemanticQuery) -> Option<RollupMatch> {
         let q = self.expand_segments(q).ok()?;
-        // A metric query matches on its leaf measures; ineligible expansions
-        // (window metrics, filtered leaves) read base.
         let q = if q.measures.iter().any(|m| !m.contains('.')) {
             metric::rollup_leaf_query(self, &q)?
         } else {
@@ -1031,8 +1029,6 @@ impl SemanticCatalog {
         r: &RollupMatch,
     ) -> Result<String, SemanticError> {
         let q = self.expand_segments(q)?;
-        // A metric query compiles its leaves against the rollup, then projects
-        // the metrics on top — the same wrap `compile_sql` applies over base.
         if q.measures.iter().any(|m| !m.contains('.')) {
             return metric::compile_with_metrics_via(self, &q, &|_augmented, inner| {
                 self.rollup_measure_sql(inner, r)

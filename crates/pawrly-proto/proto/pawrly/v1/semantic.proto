@@ -14,8 +14,8 @@ service SemanticService {
 }
 
 message ListMetricsRequest {}
-// Each metric travels as its serde-JSON encoding (the same shape as the YAML
-// config and the REST surface), like the catalog snapshot does.
+// Each metric travels as its serde-JSON encoding — the same shape as the
+// YAML config and the REST surface.
 message ListMetricsResponse { repeated bytes metrics_json = 1; }
 
 message DescribeMetricRequest { string name = 1; }
