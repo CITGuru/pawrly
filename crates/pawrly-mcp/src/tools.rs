@@ -147,13 +147,20 @@ pub fn list_tools() -> Vec<Value> {
         json!({
             "name": "refresh_table",
             "description": "Force a refresh of a cached table now. `table` is fully qualified \
-                            `<schema>.<table>`. Only valid for tables with caching enabled.",
+                            `<schema>.<table>`. Only valid for tables with caching enabled, \
+                            or `materialized.<name>` (re-runs the stored origin).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "table": {
                         "type": "string",
                         "description": "Fully qualified `<schema>.<table>`"
+                    },
+                    "namespace": {
+                        "type": "string",
+                        "description": "Materialize namespace of the table; only for \
+                                        `materialized.<name>` targets. Omitted = the default \
+                                        workspace namespace."
                     }
                 },
                 "required": ["table"]
@@ -164,6 +171,25 @@ pub fn list_tools() -> Vec<Value> {
             "description": "List the semantic-layer models (business vocabulary) with their \
                             dimension and measure counts.",
             "inputSchema": { "type": "object", "properties": {} }
+        }),
+        json!({
+            "name": "list_metrics",
+            "description": "List the workspace metrics — named business numbers composed over \
+                            model measures (ratios, derived expressions, windows, shares). \
+                            Query one by its bare name in `semantic_query`'s `measures`.",
+            "inputSchema": { "type": "object", "properties": {} }
+        }),
+        json!({
+            "name": "describe_metric",
+            "description": "Full definition of one workspace metric: kind, composed members, \
+                            governed filter, and display format.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "description": "The metric's dot-free name" }
+                },
+                "required": ["name"]
+            }
         }),
         json!({
             "name": "describe_semantic_model",
@@ -276,6 +302,19 @@ pub fn list_tools() -> Vec<Value> {
                     }
                 },
                 "required": ["name"]
+            }
+        }),
+        json!({
+            "name": "drop_namespace",
+            "description": "Drop an entire materialize namespace — every table, its manifest, \
+                            and its storage — in one call. The default workspace namespace is \
+                            refused. Returns { dropped }.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "namespace": { "type": "string" }
+                },
+                "required": ["namespace"]
             }
         }),
         json!({
@@ -563,11 +602,31 @@ pub async fn call_tool(
         }
         "refresh_table" => {
             let table = table_name_arg(args)?;
+            let namespace = args.get("namespace").and_then(|v| v.as_str());
             let outcome = engine
-                .refresh_table(&table)
+                .refresh_table(&table, namespace)
                 .await
                 .map_err(|e| ToolError::Engine(e.to_string()))?;
             serde_json::to_value(&outcome).map_err(|e| ToolError::Engine(e.to_string()))
+        }
+        "list_metrics" => {
+            let metrics = engine
+                .list_metrics()
+                .await
+                .map_err(|e| ToolError::Engine(e.to_string()))?;
+            serde_json::to_value(json!({ "metrics": metrics }))
+                .map_err(|e| ToolError::Engine(e.to_string()))
+        }
+        "describe_metric" => {
+            let name = args
+                .get("name")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| ToolError::BadArgs("`name` is required".into()))?;
+            let metric = engine
+                .describe_metric(name)
+                .await
+                .map_err(|e| ToolError::Engine(e.to_string()))?;
+            serde_json::to_value(&metric).map_err(|e| ToolError::Engine(e.to_string()))
         }
         "list_semantic_models" => {
             let models = engine
@@ -725,6 +784,17 @@ pub async fn call_tool(
             let namespace = args.get("namespace").and_then(|v| v.as_str());
             let dropped = engine
                 .drop_materialized(name, namespace)
+                .await
+                .map_err(|e| ToolError::Engine(e.to_string()))?;
+            Ok(json!({ "dropped": dropped }))
+        }
+        "drop_namespace" => {
+            let namespace = args
+                .get("namespace")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| ToolError::BadArgs("`namespace` is required".into()))?;
+            let dropped = engine
+                .drop_namespace(namespace)
                 .await
                 .map_err(|e| ToolError::Engine(e.to_string()))?;
             Ok(json!({ "dropped": dropped }))

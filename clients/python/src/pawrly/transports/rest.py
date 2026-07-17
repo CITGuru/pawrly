@@ -184,6 +184,12 @@ class RestTransport:
             self._send("GET", f"/v1/semantic/models/{name}")
         )
 
+    def list_metrics(self) -> list[dict]:
+        return self._send("GET", "/v1/semantic/metrics").get("metrics", [])
+
+    def describe_metric(self, name: str) -> dict:
+        return self._send("GET", f"/v1/semantic/metrics/{name}")
+
     def add_source(self, definition: dict) -> SourceInfo:
         return convert.source_info(self._send("POST", "/v1/sources", definition))
 
@@ -202,8 +208,12 @@ class RestTransport:
             self._send("POST", "/v1/catalog/refresh", params=params)
         )
 
-    def refresh_table(self, name: str) -> RefreshOutcome:
-        return convert.refresh_outcome(self._send("POST", f"/v1/tables/{name}/refresh"))
+    def refresh_table(
+        self, name: str, namespace: str | None = None
+    ) -> RefreshOutcome:
+        r = self._send("POST", f"/v1/tables/{name}/refresh{_ns_query(namespace)}")
+        _require_namespace_echo(namespace, r.get("namespace"))
+        return convert.refresh_outcome(r)
 
     def invalidate_cache(self, name: str) -> bool:
         return self._send("DELETE", f"/v1/cache/{name}").get("invalidated", False)
@@ -213,6 +223,11 @@ class RestTransport:
 
     def drop_materialized(self, name: str, namespace: str | None = None) -> bool:
         r = self._send("DELETE", f"/v1/materialized/{name}{_ns_query(namespace)}")
+        _require_namespace_echo(namespace, r.get("namespace"))
+        return r.get("dropped", False)
+
+    def drop_namespace(self, namespace: str) -> bool:
+        r = self._send("DELETE", f"/v1/namespaces/{namespace}")
         _require_namespace_echo(namespace, r.get("namespace"))
         return r.get("dropped", False)
 

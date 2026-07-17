@@ -3,14 +3,19 @@
 > **One SQL dialect over your APIs, files, and warehouses.**
 > No ETL, no warehouse, no per-source query language — just `pawrly sql`.
 
-Pawrly gives you a single SQL interface and local execution over heterogeneous data. You can query any REST/GraphQL APIs, local files (parquet, csv, json), object storage (S3/GCS/Azure), relational databases (Postgres, MySQL, SQLite, DuckDB), warehouses (Snowflake), and lakehouses (Iceberg, Delta, DuckLake), and join across all of them in a single statement.
+Pawrly gives you a single SQL interface and local execution over heterogeneous data. You can query any REST/GraphQL APIs, local files (parquet, csv, json), object storage (S3/GCS/Azure), MCP servers, relational databases (Postgres, MySQL, SQLite, DuckDB), warehouses (Snowflake), and lakehouses (Iceberg, Delta, DuckLake), and join across all of them in a single statement.
 
 It is built for two audiences:
 
 - **AI agents** that need a deterministic, audited query surface across the tools their humans live in. Pawrly ships a first-class MCP server so Claude Desktop, Cursor, Codex, and the rest can connect over stdio or HTTP and run `query` against the same workspace your CLI uses.
 - **Data engineers** who want SQL over APIs and files without standing up a warehouse, scheduling extracts, or learning five vendor query languages.
 
-Under the hood: **DataFusion** plans and executes; **DuckDB (in-memory)** acts as a sub-engine for the sources DuckDB already speaks (Postgres, MySQL, Snowflake, Iceberg, Delta, file formats). HTTP and AI sources are pure-Rust DataFusion `TableProvider`s. Every frontend talks the same `EngineService` trait — in-process via `LocalEngine` or over gRPC against a `pawrly serve` daemon.
+Pawrly under the hood:
+
+- **DataFusion** plans and executes every query — you write one SQL dialect.
+- **DuckDB (in-memory)** acts as a sub-engine for sources DuckDB already supports.
+- **HTTP and MCP sources** are native query providers, so an API or tool call is just another table or function in your SQL.
+- **Caching** is opt-in per table and writes Parquet + a JSON manifest to disk, so it survives restarts and is shared safely between processes.
 
 ---
 
@@ -18,7 +23,7 @@ Under the hood: **DataFusion** plans and executes; **DuckDB (in-memory)** acts a
 
 ### Installation
 
-The fastest path — download a prebuilt binary for your platform:
+Install a prebuilt binary:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/CITGuru/pawrly/main/scripts/install.sh | sh
@@ -59,7 +64,7 @@ Re-running the install script upgrades an existing install too, skipping the dow
 
 #### Building from source
 
-Tested on macOS (Apple Silicon and Intel) and Linux (x86_64). Should take under 15 minutes on a warm Cargo cache, longer on the first build.
+Tested on macOS (Apple Silicon and Intel) and Linux (`x86_64`).
 
 Prerequisites:
 
@@ -101,7 +106,7 @@ You should see a single-row table back. With no `pawrly.yaml` in the current dir
 
 #### Query Local Files
 
-Pawrly's `file` source serves parquet, csv, and json. Drop in two CSVs and you can join them with SQL — no warehouse, no ETL, no separate import step.
+Pawrly's `file` source exposes Parquet, CSV, and JSON files as tables. This example defines two CSV tables and joins them with SQL.
 
 Create a tiny dataset:
 
@@ -163,7 +168,7 @@ For more sources — HTTP APIs, object storage, Postgres, DuckDB, Snowflake, Ice
 
 #### Query an HTTP API — Stripe + Intercom
 
-Pawrly's `http` source turns any REST/GraphQL API into typed SQL tables — you declare the endpoint, the JSON path to the rows, and the columns you care about. Here we wire up two APIs and join them in one query.
+Pawrly's `http` source maps REST and GraphQL API responses to typed SQL tables. A table declaration specifies the endpoint, the JSON path containing its rows, and the output columns. This example defines tables for two APIs and joins them.
 
 Both APIs need a key. Export them, and let Pawrly read them from the environment:
 
@@ -226,7 +231,7 @@ sources:
             - { name: last_seen_at, type: bigint }
 ```
 
-Now join live data from both APIs in a single statement — your paying customers, ordered by how long it's been since Intercom last saw them, so you can spot disengaged accounts before they churn:
+The query joins customers from both APIs by email and orders them by `last_seen_at`:
 
 ```bash
 pawrly sql "
@@ -239,7 +244,7 @@ pawrly sql "
 "
 ```
 
-You describe each API's shape once in `pawrly.yaml`, then query and join them in plain SQL. There are no SDKs to wire up and no glue scripts to maintain.
+The API shapes are defined in `pawrly.yaml`; the query refers to them as `stripe.customers` and `intercom.contacts`.
 
 #### Other CLI commands
 
@@ -260,7 +265,7 @@ pawrly sql "SELECT COUNT(*) FROM data.orders"
 kill %1                                     # stop the backgrounded daemon
 ```
 
-Same query, same result — local mode and daemon mode are identical-output by design. Frontends (CLI, MCP, future web UI) all talk the same `EngineService` trait.
+Local and daemon modes use the same `EngineService` API.
 
 ---
 

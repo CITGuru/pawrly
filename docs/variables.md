@@ -127,14 +127,16 @@ A `${var:NAME}` reference is substituted only when the whole config value is the
 
 Static values are available as soon as Pawrly loads the config. Use them for hosts, tenant ids, API keys, and pasted bearer tokens.
 
-Pawrly looks for a static value in this order:
+Pawrly resolves static values while loading the config, before it registers the source. It then replaces each `${var:NAME}` reference with the resolved value.
+
+When more than one value is available, Pawrly uses the first match in this order:
 
 1. A value **set with Pawrly** using `pawrly variables set` or `pawrly source connect`. This always wins over the values below.
 2. `input`. For `kind: variable`, this reads an environment variable. For `kind: secret`, this reads the configured secret chain (`env` -> `keyring` -> `file`), the same way `${secret:NAME}` does. If omitted, `input` defaults to the variable name.
 3. `default` - allowed only for `kind: variable`.
 4. If nothing resolves: a load error for a required variable (the default), or `null` for an optional one (`required: false`). See [Required and Optional](#required-and-optional).
 
-For non-secret variables, a stored value is a per-machine override. It lets you change something like `REGION` or `PAGE_SIZE` without editing config or environment variables. Pawrly checks the stored value against the variable's `[type` and `choices](#value-types)` when you set it.
+For non-secret variables, a stored value is a per-machine override. It lets you change something like `REGION` or `PAGE_SIZE` without editing config or environment variables. Pawrly checks the stored value against the variable's [type and choices](#value-types) when you set it.
 
 To set a value, run either of:
 
@@ -344,14 +346,16 @@ Use `methods:` only when setup should offer a choice. A variable may use either 
 
 ## Scopes
 
+Where a variable is declared determines which sources can reference it. The file shapes below are explained in [Multi-file configs](./config.md#multi-file-configs).
+
 `variables:` can be declared in four places:
 
-1. **Global** - a top-level `variables:` block, visible to every source.
-2. **Fragment file** - a `variables:` block in an included file, visible to that file's sources and nested includes.
-3. **Single-source file** - a top-level `variables:` block in a bare one-source file.
-4. **Source-local** - a `variables:` key inside one source, visible only to that source.
+1. **Global** — a top-level block in `pawrly.yaml`, visible to every source.
+2. **Included fragment** — a block in a file loaded through top-level `include:`, visible to that file's sources and any files it includes.
+3. **Single-source file** — a top-level block beside that file's `name`, `kind`, and `config`, visible to its source.
+4. **Source-local** — a block inside one source, visible only to that source.
 
-A source sees the variables along its include chain. Inner declarations shadow outer ones.
+A source can use variables declared in its own scope and each containing include scope. If the same name is declared more than once along that path, the closest declaration wins.
 
 Variables use their own namespace, separate from `${secret:}` and `${env:}`. The same name in two unrelated sources refers to two independent variables. Two sources share a value only when both reference the same declaration, such as a global variable or one from a shared include.
 

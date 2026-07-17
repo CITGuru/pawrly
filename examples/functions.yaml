@@ -7,7 +7,7 @@
 # available with no config:
 #   SELECT file_name, size_bytes FROM file.glob('../crates/pawrly-cli/tests/fixtures/*')
 #   SELECT line FROM file.grep('enterprise', '../crates/pawrly-cli/tests/fixtures/*.csv')
-#   SELECT body FROM http.get('https://api.github.com/zen', '$')
+#   SELECT body FROM http.get('https://api.github.com/meta', '$.web')
 #
 # The file functions below run offline against the repo fixtures:
 #   pawrly --config examples/functions.yaml function list

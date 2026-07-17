@@ -1,6 +1,8 @@
 # MCP server
 
-Pawrly ships a [Model Context Protocol](https://modelcontextprotocol.io) server so AI assistants — Claude Desktop, Cursor, Codex, and others — can query your workspace directly. The MCP server is a **frontend**: it runs the same engine as the CLI (in-process by default, or proxied to a `pawrly serve` daemon), so an agent sees exactly the data and semantic models you do.
+Pawrly's [Model Context Protocol](https://modelcontextprotocol.io) server exposes Pawrly operations as tools for MCP clients such as Claude Desktop, Cursor, and Codex. Clients can inspect the workspace catalog, run SQL or semantic queries, and manage stored data.
+
+By default, the engine runs inside the MCP server process. The server can instead forward engine calls to a shared `pawrly serve` daemon.
 
 ## Running it
 
@@ -51,7 +53,13 @@ Use an absolute path to the binary if `pawrly` isn't on the client's `PATH`. Oth
 
 ## Tools
 
-The server exposes these tools:
+The tools fall into three groups:
+
+- **Discovery** tools inspect sources, tables, columns, functions, and semantic models before querying.
+- **Query** tools execute SQL or structured semantic queries and can cancel long-running work.
+- **Management** tools refresh cached tables or create and drop materialized tables.
+
+The server exposes:
 
 | Tool | Input | Returns |
 |---|---|---|
@@ -61,12 +69,14 @@ The server exposes these tools:
 | `list_tables` | `{ source? }` | the tables across configured sources |
 | `search_tables` | `{ query, source?, limit? }` | tables whose name or description match the keywords, ranked; `{ tables, match_count, truncated }` |
 | `list_columns` | `{ table?, source?, name?, limit? }` | columns flattened one-per-row across tables; `name` greps column name/description; `{ columns, column_count, truncated }` |
-| `describe_table` | `{ table }` | one table's columns, descriptions, pushdown affordances, examples, and agent-facing `wiki` notes |
-| `get_schema` | `{ sources?, compact? }` | a compact catalog overview for grounding an LLM |
+| `describe_table` | `{ table }` | one table's columns, descriptions, pushdown support, examples, and `wiki` notes |
+| `get_schema` | `{ sources?, compact? }` | schemas, tables, and column names in one response |
 | `refresh_table` | `{ table }` | forces a cache refresh; returns rows written, size, and expiry |
 | `materialize` | `{ name, sql? \| file? \| url?, format?, params?, namespace? }` | persists a named, self-backed table; `{ name, file_path, row_count, size_bytes }` |
 | `drop_materialized` | `{ name, namespace? }` | drops a materialized table; `{ dropped }` |
 | `list_semantic_models` | `{}` | the semantic models with dimension/measure counts |
+| `list_metrics` | `{}` | the workspace metrics (composed business numbers) |
+| `describe_metric` | `{ name }` | one metric's kind, members, filter, and format |
 | `describe_semantic_model` | `{ name }` | one model's full spec — dimensions, measures, relationships |
 | `semantic_query` | a structured query (below) | `{ columns, rows, row_count, truncated }` |
 
@@ -120,7 +130,7 @@ List columns flattened to one row per column — the column-level counterpart to
 
 ### `describe_table`
 
-Full detail for one fully-qualified `<schema>.<table>`: column schema, pushdown affordances, example queries, and agent-facing `wiki` usage notes.
+Full detail for one fully-qualified `<schema>.<table>`: column schema, pushdown support, example queries, and `wiki` usage notes. Pushdown support describes which filters and limits Pawrly can send to the backing source instead of applying after rows are returned.
 
 ```json
 { "table": "github.pulls" }
@@ -128,7 +138,7 @@ Full detail for one fully-qualified `<schema>.<table>`: column schema, pushdown 
 
 ### `get_schema`
 
-A compact catalog overview for grounding an LLM in one call — every schema, its tables, and a one-line column list per table. Limit to named sources, or set `compact: false` for fuller detail.
+Return every schema, its tables, and a one-line column list per table. Limit the response to named sources, or set `compact: false` for fuller detail.
 
 ```json
 { "sources": ["github", "warehouse"], "compact": true }
@@ -176,7 +186,7 @@ Full spec for one model: its dimensions, measures, relationships, named segments
 
 ### `semantic_query`
 
-Run a structured query against the [semantic layer](./semantic.md) — the recommended surface for agents, because models give them a curated business vocabulary instead of raw column names.
+Run a structured query against the [semantic layer](./semantic.md). The request names model-defined measures, dimensions, filters, ordering, and query parameters rather than supplying SQL.
 
 ```json
 {
@@ -192,12 +202,12 @@ Run a structured query against the [semantic layer](./semantic.md) — the recom
 
 `params` binds `${param:NAME}` placeholders used by a model's row-level-security predicates. If a model requires a param and the agent omits it, the query is refused before any scan — so an agent can't accidentally read across tenants.
 
-## Grounding agents
+## Typical discovery flow
 
-The intended flow for an assistant:
+Before querying an unfamiliar workspace:
 
 1. `list_semantic_models` to see what's available.
 2. `describe_semantic_model` to learn a model's dimensions, measures, and any required filters.
 3. `semantic_query` (or `query` for ad-hoc SQL) to get results.
 
-Because `describe_semantic_model` advertises required filters and RLS params up front, an agent can satisfy them in the very next call.
+`describe_semantic_model` also returns required filters and RLS params that must be included in the query.

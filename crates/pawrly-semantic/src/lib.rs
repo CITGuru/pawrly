@@ -200,6 +200,20 @@ impl SemanticCatalog {
         out
     }
 
+    /// Workspace metrics, sorted by name for determinism.
+    #[must_use]
+    pub fn list_metrics(&self) -> Vec<Metric> {
+        let mut out: Vec<Metric> = self.metrics.values().map(|m| (**m).clone()).collect();
+        out.sort_by(|a, b| a.name.cmp(&b.name));
+        out
+    }
+
+    /// One metric by its dot-free name, if it exists.
+    #[must_use]
+    pub fn describe_metric(&self, name: &str) -> Option<Metric> {
+        self.metrics.get(name).map(|m| (**m).clone())
+    }
+
     /// Full spec for one model, if it exists.
     #[must_use]
     pub fn describe(&self, name: &str) -> Option<SemanticModelDescription> {
@@ -963,6 +977,11 @@ impl SemanticCatalog {
     #[must_use]
     pub fn candidate_rollup(&self, q: &SemanticQuery) -> Option<RollupMatch> {
         let q = self.expand_segments(q).ok()?;
+        let q = if q.measures.iter().any(|m| !m.contains('.')) {
+            metric::rollup_leaf_query(self, &q)?
+        } else {
+            q
+        };
         // The rollup is pre-truncated in its own zone; a tz query reads base.
         if q.time_zone.is_some() {
             return None;
@@ -1010,6 +1029,21 @@ impl SemanticCatalog {
         r: &RollupMatch,
     ) -> Result<String, SemanticError> {
         let q = self.expand_segments(q)?;
+        if q.measures.iter().any(|m| !m.contains('.')) {
+            return metric::compile_with_metrics_via(self, &q, &|_augmented, inner| {
+                self.rollup_measure_sql(inner, r)
+            });
+        }
+        self.rollup_measure_sql(&q, r)
+    }
+
+    /// Compile a metric-free query against a matched rollup.
+    fn rollup_measure_sql(
+        &self,
+        q: &SemanticQuery,
+        r: &RollupMatch,
+    ) -> Result<String, SemanticError> {
+        let q = q.clone();
         let model = self
             .models
             .get(&r.model)

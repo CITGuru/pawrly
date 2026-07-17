@@ -58,14 +58,14 @@ impl CacheService for CacheSvc {
         &self,
         req: Request<RefreshRequest>,
     ) -> Result<Response<RefreshResponse>, Status> {
+        let req = req.into_inner();
         let name = req
-            .into_inner()
             .name
             .ok_or_else(|| Status::invalid_argument("name is required"))?;
         let core_name = pawrly_core::TableName::from(name);
         let r = self
             .engine
-            .refresh_table(&core_name)
+            .refresh_table(&core_name, none_if_empty(&req.namespace))
             .await
             .map_err(|e| engine_error_to_status(&e))?;
         Ok(Response::new(RefreshResponse {
@@ -76,6 +76,7 @@ impl CacheService for CacheSvc {
                 nanos: r.elapsed.subsec_nanos() as i32,
             }),
             expires_at: r.expires_at.map(timestamp),
+            namespace: req.namespace,
         }))
     }
 
@@ -142,6 +143,22 @@ impl CacheService for CacheSvc {
             .await
             .map_err(|e| engine_error_to_status(&e))?;
         Ok(Response::new(DropMaterializedResponse {
+            dropped,
+            namespace: req.namespace,
+        }))
+    }
+
+    async fn drop_namespace(
+        &self,
+        req: Request<v1::DropNamespaceRequest>,
+    ) -> Result<Response<v1::DropNamespaceResponse>, Status> {
+        let req = req.into_inner();
+        let dropped = self
+            .engine
+            .drop_namespace(&req.namespace)
+            .await
+            .map_err(|e| engine_error_to_status(&e))?;
+        Ok(Response::new(v1::DropNamespaceResponse {
             dropped,
             namespace: req.namespace,
         }))

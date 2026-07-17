@@ -174,6 +174,15 @@ export class RestTransport implements Transport {
     );
   }
 
+  async listMetrics(): Promise<Record<string, unknown>[]> {
+    const r = await this.send("/v1/semantic/metrics");
+    return (r.metrics as Record<string, unknown>[]) ?? [];
+  }
+
+  async describeMetric(name: string): Promise<Record<string, unknown>> {
+    return this.send(`/v1/semantic/metrics/${encodeURIComponent(name)}`);
+  }
+
   async addSource(def: SourceDef): Promise<SourceInfo> {
     return convert.sourceInfo(
       await this.send("/v1/sources", { method: "POST", body: JSON.stringify(def) }),
@@ -218,6 +227,14 @@ export class RestTransport implements Transport {
 
   async dropMaterialized(name: string, namespace?: string): Promise<boolean> {
     const r = await this.send(`/v1/materialized/${encodeURIComponent(name)}${nsQuery(namespace)}`, {
+      method: "DELETE",
+    });
+    requireNamespaceEcho(namespace, r.namespace as string | undefined);
+    return (r.dropped as boolean) ?? false;
+  }
+
+  async dropNamespace(namespace: string): Promise<boolean> {
+    const r = await this.send(`/v1/namespaces/${encodeURIComponent(namespace)}`, {
       method: "DELETE",
     });
     requireNamespaceEcho(namespace, r.namespace as string | undefined);

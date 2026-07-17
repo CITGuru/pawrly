@@ -8,8 +8,9 @@ use pawrly_core::EngineService;
 use pawrly_core::semantic::SemanticQuery;
 use pawrly_proto::arrow_helpers::encode_batch;
 use pawrly_proto::v1::{
-    self, DescribeModelRequest, DescribeModelResponse, ListModelsRequest, ListModelsResponse,
-    QueryResponse, SemanticQueryRequest, query_response::Payload,
+    self, DescribeMetricRequest, DescribeMetricResponse, DescribeModelRequest,
+    DescribeModelResponse, ListMetricsRequest, ListMetricsResponse, ListModelsRequest,
+    ListModelsResponse, QueryResponse, SemanticQueryRequest, query_response::Payload,
     semantic_service_server::SemanticService,
 };
 use prost_types::Timestamp;
@@ -60,6 +61,38 @@ impl SemanticService for SemanticSvc {
         Ok(Response::new(DescribeModelResponse {
             model: Some(desc.into()),
         }))
+    }
+
+    async fn list_metrics(
+        &self,
+        _req: Request<ListMetricsRequest>,
+    ) -> Result<Response<ListMetricsResponse>, Status> {
+        let metrics = self
+            .engine
+            .list_metrics()
+            .await
+            .map_err(|e| engine_error_to_status(&e))?;
+        let metrics_json = metrics
+            .iter()
+            .map(serde_json::to_vec)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| Status::internal(e.to_string()))?;
+        Ok(Response::new(ListMetricsResponse { metrics_json }))
+    }
+
+    async fn describe_metric(
+        &self,
+        req: Request<DescribeMetricRequest>,
+    ) -> Result<Response<DescribeMetricResponse>, Status> {
+        let name = req.into_inner().name;
+        let metric = self
+            .engine
+            .describe_metric(&name)
+            .await
+            .map_err(|e| engine_error_to_status(&e))?;
+        let metric_json =
+            serde_json::to_vec(&metric).map_err(|e| Status::internal(e.to_string()))?;
+        Ok(Response::new(DescribeMetricResponse { metric_json }))
     }
 
     async fn semantic_query(

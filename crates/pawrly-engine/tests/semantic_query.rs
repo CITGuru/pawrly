@@ -396,6 +396,9 @@ semantic:
         - name: by_sc
           dimensions: [status, country]
           measures: [revenue, orders_n]
+  metrics:
+    - name: rev_per_order
+      kind: {{ ratio: {{ numerator: orders.revenue, denominator: orders.orders_n }} }}
 "#,
         dir = dir.display(),
     );
@@ -969,4 +972,46 @@ async fn window_metric_without_time_dimension_errors() {
         Err(e) => assert!(e.to_string().contains("window metric"), "{e}"),
         Ok(_) => panic!("expected MetricNeedsTimeGrain"),
     }
+}
+
+#[tokio::test]
+async fn list_and_describe_metrics() {
+    let svc = build_engine().await;
+
+    let metrics = svc.list_metrics().await.expect("list_metrics");
+    let names: Vec<&str> = metrics.iter().map(|m| m.name.as_str()).collect();
+    assert_eq!(names, vec!["aov", "paid_aov", "paid_share"]);
+
+    let aov = svc.describe_metric("aov").await.expect("describe");
+    assert_eq!(aov.kind.label(), "ratio");
+
+    let err = svc.describe_metric("ghost").await.unwrap_err();
+    assert!(err.to_string().contains("unknown metric `ghost`"), "{err}");
+}
+
+#[tokio::test]
+async fn metric_over_additive_leaves_reads_the_rollup() {
+    let svc = build_preagg_engine().await;
+
+    let q = SemanticQuery {
+        measures: vec!["rev_per_order".into()],
+        dimensions: vec!["orders.status".into()],
+        order_by: vec![SemanticOrder {
+            member: "orders.status".into(),
+            direction: pawrly_core::semantic::OrderDir::Asc,
+        }],
+        ..Default::default()
+    };
+    let batches = collect(svc.semantic_query(q).await.expect("compile+run")).await;
+    let batch = one_batch(&batches);
+    // paid: 600/3; refunded: 50/1 — computed over the rollup's partials.
+    assert_eq!(metric_f64(&batch, "rev_per_order"), 200.0);
+
+    let entries = svc.cache_entries(None).await.expect("cache entries");
+    assert!(
+        entries
+            .iter()
+            .any(|e| e.name.schema == "semantic" && e.name.table == "orders__by_sc"),
+        "metric query should have materialized the rollup"
+    );
 }

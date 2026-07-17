@@ -198,7 +198,7 @@ fn main() -> ExitCode {
 async fn run(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
         Command::Init(args) => commands::init::run(args).await,
-        Command::Validate(args) => commands::validate::run(args).await,
+        Command::Validate(args) => commands::validate::run(cli.config, args).await,
         Command::Check(args) => {
             commands::check::run(cli.home, cli.config, cli.remote, cli.no_remote, args).await
         }

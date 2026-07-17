@@ -273,7 +273,11 @@ impl EngineService for MockEngine {
         Ok(self.inner.lock().cache_entries.clone())
     }
 
-    async fn refresh_table(&self, name: &TableName) -> Result<RefreshOutcome, EngineError> {
+    async fn refresh_table(
+        &self,
+        name: &TableName,
+        _namespace: Option<&str>,
+    ) -> Result<RefreshOutcome, EngineError> {
         Ok(RefreshOutcome {
             table: name.clone(),
             rows_written: 0,
@@ -310,6 +314,10 @@ impl EngineService for MockEngine {
         _name: &str,
         _namespace: Option<&str>,
     ) -> Result<bool, EngineError> {
+        Ok(false)
+    }
+
+    async fn drop_namespace(&self, _namespace: &str) -> Result<bool, EngineError> {
         Ok(false)
     }
 
@@ -378,6 +386,16 @@ impl EngineService for MockEngine {
     ) -> Result<SemanticModelDescription, EngineError> {
         Err(EngineError::SemanticPlan(format!(
             "unknown semantic model `{name}`"
+        )))
+    }
+
+    async fn list_metrics(&self) -> Result<Vec<crate::semantic::Metric>, EngineError> {
+        Ok(Vec::new())
+    }
+
+    async fn describe_metric(&self, name: &str) -> Result<crate::semantic::Metric, EngineError> {
+        Err(EngineError::SemanticPlan(format!(
+            "unknown metric `{name}`"
         )))
     }
 

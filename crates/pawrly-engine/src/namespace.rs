@@ -169,6 +169,25 @@ impl NamespaceRegistry {
         Ok(cache)
     }
 
+    /// Returns `false` if the namespace never existed; the default workspace
+    /// namespace is refused — dropping it would take the live cache with it.
+    pub(crate) fn remove(&self, ns: &str) -> Result<bool, EngineError> {
+        if ns.is_empty() || ns == self.default_ns {
+            return Err(EngineError::Internal(
+                "cannot drop the default workspace namespace".to_string(),
+            ));
+        }
+        validate_namespace(ns)?;
+        let existed = self.extra.write().remove(ns).is_some();
+        let dir = self.storage_root.join(ns);
+        if dir.join("manifest.json").is_file() {
+            std::fs::remove_dir_all(&dir)
+                .map_err(|e| EngineError::Internal(format!("drop namespace `{ns}`: {e}")))?;
+            return Ok(true);
+        }
+        Ok(existed)
+    }
+
     /// A namespace "exists" once its manager is memoized or its manifest is on
     /// disk; a bare directory does not count.
     fn open_existing(&self, ns: &str) -> Result<Option<Arc<CacheManager>>, EngineError> {

@@ -13,6 +13,15 @@ service CacheService {
   // Persist a query result as a named, self-backed materialized table.
   rpc Materialize(MaterializeRequest) returns (MaterializeResponse);
   rpc DropMaterialized(DropMaterializedRequest) returns (DropMaterializedResponse);
+  // Drop an entire materialize namespace (session teardown).
+  rpc DropNamespace(DropNamespaceRequest) returns (DropNamespaceResponse);
+}
+
+message DropNamespaceRequest { string namespace = 1; }
+message DropNamespaceResponse {
+  bool dropped = 1;
+  // Echo of the request's namespace (see MaterializeResponse.namespace).
+  string namespace = 2;
 }
 
 message CacheEntryInfo {
@@ -33,12 +42,19 @@ message ListEntriesResponse {
   string namespace = 2;
 }
 
-message RefreshRequest { TableName name = 1; }
+message RefreshRequest {
+  TableName name = 1;
+  // Materialize namespace of the table; empty = the default workspace
+  // namespace. Only valid for `materialized.<name>` targets.
+  string namespace = 2;
+}
 message RefreshResponse {
   uint64 rows_written = 1;
   uint64 size_bytes = 2;
   google.protobuf.Duration elapsed = 3;
   optional google.protobuf.Timestamp expires_at = 4;
+  // Echo of the request's namespace (see MaterializeResponse.namespace).
+  string namespace = 5;
 }
 
 message InvalidateRequest { TableName name = 1; }

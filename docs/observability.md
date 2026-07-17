@@ -1,8 +1,15 @@
 # Observability
 
-Pawrly can emit **traces**, **metrics**, and an **activity log** so you can see what queries run, how long they take, where the time goes, and what failed. It speaks [OpenTelemetry](https://opentelemetry.io/) (OTLP) and Prometheus, and exposes its own activity as a queryable SQL table.
+Pawrly uses the same observability pipeline across its interfaces and transports. Pawrly provides four kinds of operational data:
 
-Everything here is **off by default** — with no configuration, Pawrly logs to stderr as before and exports nothing. You turn pieces on with [CLI flags](./cli.md) for ad-hoc runs, or the `observability:` block in [`pawrly.yaml`](./config.md#observability) for a persistent setup. Flags override config.
+- **Logs** record individual process events and errors.
+- **Traces** break one operation into timed steps, including work across processes.
+- **Metrics** aggregate counts, durations, and current state over many operations.
+- The **activity log** records one entry per query for history or auditing.
+
+Traces, metrics, and logs can be exported through [OpenTelemetry](https://opentelemetry.io/) (OTLP), metrics can also be scraped by Prometheus, and activity records can be queried as a SQL table.
+
+Telemetry export and the activity log are off by default. Without configuration, Pawrly writes ordinary logs to stderr but sends nothing to OpenTelemetry or Prometheus. Enable individual signals with [CLI flags](./cli.md) for ad-hoc runs or the `observability:` block in [`pawrly.yaml`](./config.md#observability) for persistent settings.
 
 ## Quick start
 
@@ -46,7 +53,9 @@ The subscriber is unified across the CLI, the daemon, and the MCP server, so all
 
 ## Tracing
 
-When OTLP export is on, Pawrly produces a span tree per operation, named `pawrly.<subsystem>.<op>`, exported over OTLP:
+A trace follows one operation from start to finish. It contains **spans**, where each span measures one part of the work, such as compiling a semantic query, calling an HTTP source, or refreshing a cached table.
+
+When OTLP trace export is enabled, Pawrly creates a span tree for each operation. Span names use `pawrly.<subsystem>.<op>`:
 
 | Span | Covers |
 |---|---|
@@ -63,6 +72,8 @@ Trace context is propagated as W3C `traceparent` across the **gRPC** (CLI → da
 Configure under `otel:` — `endpoint`, `protocol` (`grpc` | `http`), `service_name` (the OTel resource name, default `pawrly`), `sample_ratio` (parent-based), and the `traces` / `logs` toggles.
 
 ## Metrics
+
+Metrics summarize behavior across operations rather than preserving individual query records. Counters track totals, histograms record value distributions such as query duration, and an up/down counter records a value that can increase or decrease, such as active queries.
 
 Metrics export over **OTLP push** (`otel.metrics`) and/or a **Prometheus pull** endpoint (`otel.prometheus`) — independently; enable either, both, or neither. The instruments:
 
@@ -82,10 +93,12 @@ Metrics export over **OTLP push** (`otel.metrics`) and/or a **Prometheus pull** 
 
 ## Activity log
 
-The activity log records **one structured record per query** — both raw SQL (`query`) and semantic (`semantic_query`) — capturing who ran it, how long it took, how many rows it returned, and whether it failed. Enable it under `activity:` and choose one or more sinks:
+Unlike metrics, the activity log keeps a separate structured record for each SQL or semantic query. A record includes who ran the query, how long it took, how many rows it returned, and whether it failed.
+
+Enable it under `activity:` and choose one or more destinations:
 
 - **`tracing`** — emits each record as a structured `tracing` event (target `pawrly.activity`), so it flows to your logs and, with OTLP, to your log pipeline.
-- **`table`** — exposes the records as the **`system.activity`** SQL table, so you query your own history with SQL:
+- **`table`** — exposes the records as the **`system.activity`** SQL table. This table exists only when the `table` destination is enabled:
 
   ```sql
   SELECT interface, status, count(*) AS n, avg(duration_ms) AS avg_ms

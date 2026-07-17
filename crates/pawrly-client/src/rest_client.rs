@@ -320,11 +320,20 @@ impl EngineService for RestEngineClient {
         field(&resp, "entries")
     }
 
-    async fn refresh_table(&self, name: &TableName) -> Result<RefreshOutcome, EngineError> {
-        whole(
-            self.post_empty(&format!("/v1/tables/{name}/refresh"))
-                .await?,
-        )
+    async fn refresh_table(
+        &self,
+        name: &TableName,
+        namespace: Option<&str>,
+    ) -> Result<RefreshOutcome, EngineError> {
+        let mut rb = self
+            .http
+            .post(self.url(&format!("/v1/tables/{name}/refresh")));
+        if let Some(ns) = namespace {
+            rb = rb.query(&[("namespace", ns)]);
+        }
+        let resp = self.send(rb).await?;
+        require_namespace_echo(namespace, &resp)?;
+        whole(resp)
     }
 
     async fn invalidate_cache(&self, name: &TableName) -> Result<bool, EngineError> {
@@ -372,6 +381,12 @@ impl EngineService for RestEngineClient {
         field(&resp, "dropped")
     }
 
+    async fn drop_namespace(&self, namespace: &str) -> Result<bool, EngineError> {
+        let resp = self.delete(&format!("/v1/namespaces/{namespace}")).await?;
+        require_namespace_echo(Some(namespace), &resp)?;
+        field(&resp, "dropped")
+    }
+
     async fn add_source(&self, def: SourceDef) -> Result<SourceInfo, EngineError> {
         let body = serde_json::to_value(&def)
             .map_err(|e| EngineError::Protocol(format!("encode source: {e}")))?;
@@ -401,6 +416,18 @@ impl EngineService for RestEngineClient {
         name: &str,
     ) -> Result<SemanticModelDescription, EngineError> {
         whole(self.get(&format!("/v1/semantic/models/{name}")).await?)
+    }
+
+    async fn list_metrics(&self) -> Result<Vec<pawrly_core::semantic::Metric>, EngineError> {
+        let resp = self.get("/v1/semantic/metrics").await?;
+        field(&resp, "metrics")
+    }
+
+    async fn describe_metric(
+        &self,
+        name: &str,
+    ) -> Result<pawrly_core::semantic::Metric, EngineError> {
+        whole(self.get(&format!("/v1/semantic/metrics/{name}")).await?)
     }
 
     async fn semantic_query(&self, q: SemanticQuery) -> Result<QueryHandle, EngineError> {

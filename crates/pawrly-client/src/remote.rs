@@ -406,15 +406,21 @@ impl EngineService for RemoteEngineClient {
         Ok(entries)
     }
 
-    async fn refresh_table(&self, name: &TableName) -> Result<RefreshOutcome, EngineError> {
+    async fn refresh_table(
+        &self,
+        name: &TableName,
+        namespace: Option<&str>,
+    ) -> Result<RefreshOutcome, EngineError> {
         let mut client = self.cache.clone();
         let resp = client
             .refresh(RefreshRequest {
                 name: Some(name.into()),
+                namespace: namespace.unwrap_or_default().to_string(),
             })
             .await
             .map_err(status_to_engine_error)?
             .into_inner();
+        require_namespace_echo(namespace, &resp.namespace)?;
         Ok(RefreshOutcome {
             table: name.clone(),
             rows_written: resp.rows_written,
@@ -485,6 +491,19 @@ impl EngineService for RemoteEngineClient {
             .map_err(status_to_engine_error)?
             .into_inner();
         require_namespace_echo(namespace, &resp.namespace)?;
+        Ok(resp.dropped)
+    }
+
+    async fn drop_namespace(&self, namespace: &str) -> Result<bool, EngineError> {
+        let mut client = self.cache.clone();
+        let resp = client
+            .drop_namespace(pawrly_proto::v1::DropNamespaceRequest {
+                namespace: namespace.to_string(),
+            })
+            .await
+            .map_err(status_to_engine_error)?
+            .into_inner();
+        require_namespace_echo(Some(namespace), &resp.namespace)?;
         Ok(resp.dropped)
     }
 
@@ -576,6 +595,38 @@ impl EngineService for RemoteEngineClient {
             .ok_or_else(|| EngineError::Protocol("DescribeModelResponse missing model".into()))?
             .try_into()
             .map_err(|e: pawrly_proto::conv::ConvError| EngineError::Protocol(e.to_string()))
+    }
+
+    async fn list_metrics(&self) -> Result<Vec<pawrly_core::semantic::Metric>, EngineError> {
+        let mut client = self.semantic.clone();
+        let resp = client
+            .list_metrics(pawrly_proto::v1::ListMetricsRequest {})
+            .await
+            .map_err(status_to_engine_error)?
+            .into_inner();
+        resp.metrics_json
+            .iter()
+            .map(|m| {
+                serde_json::from_slice(m)
+                    .map_err(|e| EngineError::Protocol(format!("decode metric: {e}")))
+            })
+            .collect()
+    }
+
+    async fn describe_metric(
+        &self,
+        name: &str,
+    ) -> Result<pawrly_core::semantic::Metric, EngineError> {
+        let mut client = self.semantic.clone();
+        let resp = client
+            .describe_metric(pawrly_proto::v1::DescribeMetricRequest {
+                name: name.to_string(),
+            })
+            .await
+            .map_err(status_to_engine_error)?
+            .into_inner();
+        serde_json::from_slice(&resp.metric_json)
+            .map_err(|e| EngineError::Protocol(format!("decode metric: {e}")))
     }
 
     async fn semantic_query(&self, q: SemanticQuery) -> Result<QueryHandle, EngineError> {

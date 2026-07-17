@@ -2,12 +2,14 @@
 
 ## Introduction
 
-Pawrly gives you a **single SQL interface** over heterogeneous data: local files (Parquet, CSV, JSON), SQLite databases, REST APIs (e.g. GitHub), and MCP-backed tools — all joinable in one statement, all served from one config file. No ETL pipelines, no warehouse to stand up, no learning a different query language per source.
+Pawrly is a SQL query engine that exposes local files, databases, REST APIs, and MCP tools as tables and functions in one workspace, where they can be queried separately or joined in one statement. No ETL pipelines, no warehouse to stand up, no learning a different query language per source.
 
-It's a single Rust binary, `pawrly`, that is also embeddable as a library. Under the hood:
+The engine can run inside a command process or as a daemon and is available through the CLI, MCP and HTTP interfaces, Console, TypeScript and Python clients, and Rust library. 
+
+Pawrly under the hood:
 
 - **DataFusion** plans and executes every query — you write one SQL dialect.
-- **DuckDB (in-memory)** acts as a sub-engine for sources DuckDB already speaks.
+- **DuckDB (in-memory)** acts as a sub-engine for sources DuckDB already supports.
 - **HTTP and MCP sources** are native query providers, so an API or tool call is just another table or function in your SQL.
 - **Caching** is opt-in per table and writes Parquet + a JSON manifest to disk, so it survives restarts and is shared safely between processes.
 
@@ -22,7 +24,7 @@ The same engine is reachable three ways: in-process (the default), over a local 
 
 Tested on macOS (Apple Silicon and Intel) and Linux (`x86_64`, `aarch64`).
 
-### Install a prebuilt binary (recommended)
+### Install a prebuilt binary
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/CITGuru/pawrly/main/scripts/install.sh | sh
@@ -161,7 +163,7 @@ pawrly sql "
 
 Acme comes out on top with two orders totalling 619. Swap `format: parquet` and point `path` at a `.parquet` file and the SQL stays identical.
 
-Two more commands you'll use constantly:
+Inspect the workspace or validate its config:
 
 ```bash
 pawrly schema      # list every table the workspace knows about
@@ -178,23 +180,23 @@ pawrly status                                   # confirms it's up
 pawrly sql "SELECT COUNT(*) FROM data.orders"   # auto-discovers the daemon
 ```
 
-Local mode and daemon mode return identical output by design.
+Commands use the same engine API in local and daemon modes.
 
 ### 4. (Optional) Open the Console
 
-Prefer a browser? Launch the web [Console](./console.md) for the same workspace — browse sources, the catalog, and semantic models, and run SQL with live-streaming results:
+Start the [Console](./console.md) for the current workspace:
 
 ```bash
 pawrly console        # → http://127.0.0.1:8787
 ```
 
-It's read-only and binds loopback by default (no token needed).
+The default address is loopback and does not require a token.
 
 ## Where to next
 
 - Add more sources — see **[Sources](./sources.md)**.
 - Shape `pawrly.yaml` — see **[Configuration](./config.md)**.
-- Define business models for humans and agents — see **[Semantic layer](./semantic.md)**.
-- Connect an AI assistant — see **[MCP server](./mcp.md)**.
+- Define business models and metrics — see **[Semantic layer](./semantic.md)**.
+- Connect an MCP client — see **[MCP server](./mcp.md)**.
 - Browse and query in the browser — see **[Console](./console.md)**.
 - Full command reference — see **[CLI](./cli.md)**.

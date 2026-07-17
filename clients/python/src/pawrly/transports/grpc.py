@@ -278,6 +278,22 @@ class GrpcTransport:
         )
         return _model_description(resp.model)
 
+    def list_metrics(self) -> list[dict]:
+        resp = self._unary(
+            lambda: self._semantic.ListMetrics(
+                semantic_pb2.ListMetricsRequest(), metadata=self._metadata
+            )
+        )
+        return [json.loads(m) for m in resp.metrics_json]
+
+    def describe_metric(self, name: str) -> dict:
+        resp = self._unary(
+            lambda: self._semantic.DescribeMetric(
+                semantic_pb2.DescribeMetricRequest(name=name), metadata=self._metadata
+            )
+        )
+        return json.loads(resp.metric_json)
+
     def add_source(self, definition: dict) -> SourceInfo:
         # gRPC AddSource takes YAML; JSON is valid YAML, so serialize the object.
         resp = self._unary(
@@ -332,13 +348,18 @@ class GrpcTransport:
             tables_discovered=resp.tables_discovered,
         )
 
-    def refresh_table(self, name: str) -> RefreshOutcome:
+    def refresh_table(
+        self, name: str, namespace: str | None = None
+    ) -> RefreshOutcome:
         resp = self._unary(
             lambda: self._cache.Refresh(
-                cache_pb2.RefreshRequest(name=_table_name_pb(name)),
+                cache_pb2.RefreshRequest(
+                    name=_table_name_pb(name), namespace=namespace or ""
+                ),
                 metadata=self._metadata,
             )
         )
+        _require_namespace_echo(namespace, resp.namespace)
         schema, _, table = name.partition(".")
         return RefreshOutcome(
             table=TableName(schema=schema, table=table),
@@ -376,6 +397,16 @@ class GrpcTransport:
                 cache_pb2.DropMaterializedRequest(
                     name=name, namespace=namespace or ""
                 ),
+                metadata=self._metadata,
+            )
+        )
+        _require_namespace_echo(namespace, resp.namespace)
+        return resp.dropped
+
+    def drop_namespace(self, namespace: str) -> bool:
+        resp = self._unary(
+            lambda: self._cache.DropNamespace(
+                cache_pb2.DropNamespaceRequest(namespace=namespace),
                 metadata=self._metadata,
             )
         )

@@ -15,7 +15,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use pawrly_config::Config;
-use pawrly_core::{CacheMode, EngineService, EngineServiceExt, MaterializeSpec, TableName};
+use pawrly_core::{
+    CacheMode, EngineService, EngineServiceExt, MaterializeFormat, MaterializeSpec, TableName,
+};
 use pawrly_engine::{LocalEngine, LocalEngineConfig};
 use tempfile::TempDir;
 
@@ -325,7 +327,7 @@ async fn refresh_reruns_materialized_origin() {
     // Grow the source file, then refresh by name — it re-runs the stored origin.
     std::fs::write(&src, "city,pop\nlagos,1\nabuja,2\nkano,3\n").unwrap();
     let refreshed = svc
-        .refresh_table(&TableName::new("materialized", "cities"))
+        .refresh_table(&TableName::new("materialized", "cities"), None)
         .await
         .unwrap();
     assert_eq!(refreshed.rows_written, 3, "refresh must re-read the file");
@@ -338,7 +340,7 @@ async fn refresh_reruns_materialized_origin() {
 
     // Refreshing a non-existent materialized table errors.
     assert!(
-        svc.refresh_table(&TableName::new("materialized", "ghost"))
+        svc.refresh_table(&TableName::new("materialized", "ghost"), None)
             .await
             .is_err()
     );
@@ -585,4 +587,80 @@ async fn namespaced_table_survives_engine_restart() {
         .unwrap();
     assert_eq!(count_of(&rows), 1);
     assert_eq!(svc.cache_entries(Some("sess_a")).await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn refresh_reruns_namespaced_origin() {
+    let workspace = TempDir::new().unwrap();
+    let svc = build_engine(workspace.path()).await;
+
+    let src = workspace.path().join("cities.csv");
+    std::fs::write(&src, "city,pop\nlagos,1\n").unwrap();
+    svc.materialize(
+        "cities",
+        MaterializeSpec::File {
+            path: src.clone(),
+            format: Some(MaterializeFormat::Csv),
+        },
+        Some("sess_a"),
+    )
+    .await
+    .unwrap();
+
+    std::fs::write(&src, "city,pop\nlagos,1\nabuja,2\n").unwrap();
+    let out = svc
+        .refresh_table(&TableName::new("materialized", "cities"), Some("sess_a"))
+        .await
+        .unwrap();
+    assert_eq!(out.rows_written, 2);
+
+    // The default namespace has no such table, and a non-materialized name
+    // rejects the namespace.
+    assert!(
+        svc.refresh_table(&TableName::new("materialized", "cities"), None)
+            .await
+            .is_err()
+    );
+    assert!(
+        svc.refresh_table(&TableName::new("data", "orders"), Some("sess_a"))
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn drop_namespace_tears_down_the_store() {
+    let workspace = TempDir::new().unwrap();
+    let svc = build_engine(workspace.path()).await;
+
+    svc.materialize("a", query("SELECT 1 AS x"), Some("sess_gone"))
+        .await
+        .unwrap();
+    svc.materialize("b", query("SELECT 2 AS y"), Some("sess_gone"))
+        .await
+        .unwrap();
+    let dir = storage_root(workspace.path()).join("sess_gone");
+    assert!(dir.exists());
+
+    assert!(svc.drop_namespace("sess_gone").await.unwrap());
+    assert!(!dir.exists(), "storage dir removed");
+    assert!(
+        svc.query_collect("SELECT * FROM sess_gone.materialized.a")
+            .await
+            .is_err(),
+        "dropped namespace must not resolve"
+    );
+    assert!(
+        svc.cache_entries(Some("sess_gone"))
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
+    assert!(!svc.drop_namespace("sess_gone").await.unwrap());
+    assert!(!svc.drop_namespace("never_was").await.unwrap());
+
+    // The default workspace namespace and reserved names are refused.
+    assert!(svc.drop_namespace("test").await.is_err());
+    assert!(svc.drop_namespace("pawrly").await.is_err());
 }

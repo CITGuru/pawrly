@@ -8,6 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- Metric queries now use pre-aggregation rollups: a metric whose leaves are all additive measures covered by a declared rollup reads the materialized pre-agg instead of the base table (window metrics and governed-filter metrics conservatively read base).
+- `DropNamespace`: tear down an entire materialize namespace (tables, manifest, storage) in one call — `pawrly cache drop-namespace <ns>`, `DELETE /v1/namespaces/{ns}`, a `DropNamespace` RPC, a `drop_namespace` MCP tool, and SDK methods. The default workspace namespace is refused.
+- Metrics discovery: `pawrly semantic metrics`, `list_metrics`/`describe_metric` MCP tools, `ListMetrics`/`DescribeMetric` RPCs, and `/v1/semantic/metrics` REST routes (TS/Python SDK methods included).
 - **Semantic metrics** — a workspace-level `semantic.metrics:` block composing measures into named, governed business numbers, queryable by their dot-free name through the existing `semantic query` surface (CLI, MCP, gRPC — no wire change): `pawrly semantic query aov --by orders.status`.
   - `ratio` (numerator/denominator with `NULLIF` guard and `DOUBLE` cast) and `derived` (arithmetic over `{member}` references) kinds, including cross-model ratios via the aggregate-locality compiler.
   - `cumulative` (running total / grain-to-date / trailing window), `offset` (period-over-period value/delta/growth), and `share` (percent-of-partition) kinds. Window metrics join onto a dense time axis — generated automatically or pinned to a declared `semantic.time_spine:` table — so running totals and period-over-period stay calendar-correct across gaps in the data.
@@ -34,6 +37,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- Security: runtime `add_source` (gRPC/REST/CLI) now runs the same validation as a config file, and rejects `kind: mcp` with `transport: stdio` outright — a remotely added source can no longer spawn processes on the server host. Declare stdio MCP sources in `pawrly.yaml` instead.
+- `pawrly cache refresh materialized.<name>` accepts `--namespace` (and the RPC/REST/MCP surfaces a `namespace`), so materialized tables in custom namespaces can be refreshed; previously only the default workspace namespace was reachable.
+- `pawrly validate` now honors the global `--config` / `PAWRLY_CONFIG` like every other command (it previously only looked at `./pawrly.yaml` relative to the shell's cwd).
 - `cache list` now reports materialized tables as mode `pinned` instead of the misleading `ttl` fallback (they were never TTL-governed; only the label was wrong). Version-skew note: a pre-`pinned` client listing against a newer daemon omits materialized rows from `cache list` (its decoder drops entries with an unknown mode); all other operations are unaffected. New clients keep such rows and approximate the mode from expiry instead.
 - Version-skew guard: the `Materialize` / `DropMaterialized` / `ListEntries` responses now echo the request's namespace, and clients (Rust, TypeScript, Python; gRPC and REST) fail loudly when a namespace-oblivious older server ignores a requested namespace — previously the operation would silently target the default namespace (a namespaced `--drop` could delete the wrong table).
 

@@ -28,5 +28,5 @@ pub use types::{
     Config, SecretsBackendDef, SecretsFileFormat, SemanticConfig, SourceDef as ConfigSourceDef,
     TableDef as ConfigTableDef,
 };
-pub use validator::validate;
+pub use validator::{validate, validate_engine_source};
 pub use variables::{CredentialMethod, InputMethod, StaticVarRef, VarKind, VarType, VariableDef};

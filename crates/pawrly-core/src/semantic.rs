@@ -371,6 +371,20 @@ fn one() -> u32 {
     1
 }
 
+impl MetricKind {
+    /// Stable lowercase label for wire/display use.
+    #[must_use]
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Ratio { .. } => "ratio",
+            Self::Derived { .. } => "derived",
+            Self::Cumulative { .. } => "cumulative",
+            Self::Offset { .. } => "offset",
+            Self::Share { .. } => "share",
+        }
+    }
+}
+
 impl Metric {
     /// Every member this metric references — measures (`model.measure`) or
     /// other metrics (dot-free) — with any per-operand / per-token filter.

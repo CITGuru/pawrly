@@ -1,20 +1,20 @@
 # Client SDKs
 
-First-party clients let application code embed a Pawrly workspace the way it embeds a database driver — construct a client, call typed methods. Like the [REST API](./api.md) and [MCP server](./mcp.md), they're **frontends**: they run the same engine, so they see exactly the data, caching, and [semantic models](./semantic.md) you do.
-
-Two clients ship today — **TypeScript** (`@pawrly/client`) and **Python** (`pawrly`) — and both expose the full engine surface identically over three transports.
+Use the **TypeScript** (`@pawrly/client`) or **Python** (`pawrly`) SDK to run Pawrly queries and management operations from application code. Both expose the same method set and support gRPC, REST, and managed local modes.
 
 > Not yet published to npm / PyPI; use them from the repo (`clients/typescript`, `clients/python`).
 
 ## Transports
 
-Pick a transport at construction; every method after that is the same regardless of wire.
+In the SDKs, a transport is how the client reaches Pawrly. Choose one when constructing the client:
 
 | Transport | Attach to | Use it for |
 |---|---|---|
-| **gRPC** | `pawrly serve` | Highest fidelity — typed Arrow, streaming, query cancel ids |
-| **REST** | `pawrly console` | Plain JSON over HTTP; firewall / browser-friendly |
-| **in-process** | — (spawns its own) | Zero infra — the client spawns and owns a `pawrly console` child |
+| **gRPC** | An existing `pawrly serve` daemon | Typed Arrow results, streaming, and query cancellation |
+| **REST** | An existing `pawrly console` server | Plain JSON over HTTP with fewer client dependencies |
+| **local** | A managed child process | Development, tests, or applications that do not want to manage a daemon |
+
+Despite sometimes being called “in-process,” local mode runs Pawrly in a separate child process. The client starts `pawrly console` on a private loopback port, connects over REST, and stops the child when the client closes.
 
 ## TypeScript
 
@@ -23,7 +23,7 @@ import { PawrlyClient } from "@pawrly/client";
 
 const client = new PawrlyClient({ transport: "grpc", endpoint: "tcp://127.0.0.1:8787" });
 // or: { transport: "rest", baseUrl: "http://127.0.0.1:8787" }
-// or: await PawrlyClient.local()  // spawns its own `pawrly console`
+// or: await PawrlyClient.local()  // manages a private `pawrly console` child
 
 const res = await (await client.query("select status, count(*) n from data.orders group by status")).collect();
 console.log(res.columns, res.rows);
@@ -40,7 +40,7 @@ from pawrly import PawrlyClient
 
 client = PawrlyClient.grpc("tcp://127.0.0.1:8787")
 # or: PawrlyClient.rest("http://127.0.0.1:8787")
-# or: with PawrlyClient.local() as client: ...   # spawns its own `pawrly console`
+# or: with PawrlyClient.local() as client: ...   # manages a private `pawrly console` child
 
 res = client.query("select status, count(*) n from data.orders group by status").collect()
 print(res.columns, res.rows)
@@ -49,11 +49,24 @@ for row in client.query("select * from data.orders"):  # streaming
     handle(row)
 ```
 
-The Python gRPC transport is opt-in (`pip install pawrly[grpc]`); REST and in-process need only `requests`.
+The Python gRPC transport is opt-in (`pip install pawrly[grpc]`); REST and local mode need only `requests`.
 
-## What they cover
+## Supported operations
 
-The full `EngineService` surface — queries and [semantic](./semantic.md) queries, [materialized tables](./materialize.md), catalog/table/function introspection, [cache](./config.md#caching) management, and source/config management — with identical result shapes across transports. Every failure is a `PawrlyError` carrying the same stable `PAWRLY_*` code as the [REST API](./api.md#errors) and CLI.
+Both clients support:
+
+- SQL and [semantic](./semantic.md) queries
+- [Materialized tables](./materialize.md)
+- Catalog, table, and function introspection
+- [Cache](./config.md#caching) management
+- Source and config management
+
+Transport-specific behavior:
+
+- gRPC provides typed Arrow streaming and server query IDs for cancellation.
+- REST and local mode return JSON-shaped results.
+
+Failures are returned as `PawrlyError` values with `PAWRLY_*` codes documented by the [REST API](./api.md#errors).
 
 See the per-client READMEs for the complete method reference, error handling, and build steps:
 

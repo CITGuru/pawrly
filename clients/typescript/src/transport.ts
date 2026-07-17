@@ -45,6 +45,8 @@ export interface Transport {
   describeFunction(namespace: string, name: string): Promise<FunctionDescription>;
   listSemanticModels(): Promise<SemanticModelInfo[]>;
   describeSemanticModel(name: string): Promise<SemanticModelDescription>;
+  listMetrics(): Promise<Record<string, unknown>[]>;
+  describeMetric(name: string): Promise<Record<string, unknown>>;
   addSource(def: SourceDef): Promise<SourceInfo>;
   removeSource(name: string): Promise<boolean>;
   testSource(name: string): Promise<SourceTestReport>;
@@ -54,6 +56,7 @@ export interface Transport {
   invalidateCache(name: string): Promise<boolean>;
   vacuumCache(): Promise<VacuumReport>;
   dropMaterialized(name: string, namespace?: string): Promise<boolean>;
+  dropNamespace(namespace: string): Promise<boolean>;
   health(): Promise<HealthReport>;
   shutdown(): Promise<void>;
   close(): void;

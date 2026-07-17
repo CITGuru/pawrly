@@ -6,13 +6,17 @@ use clap::Args as ClapArgs;
 
 #[derive(ClapArgs, Debug)]
 pub struct Args {
-    /// Path to validate. Defaults to ./pawrly.yaml.
-    #[arg(default_value = "./pawrly.yaml")]
-    pub path: PathBuf,
+    /// Path to validate. Defaults to `--config` / `PAWRLY_CONFIG`, then
+    /// ./pawrly.yaml.
+    pub path: Option<PathBuf>,
 }
 
-pub async fn run(args: Args) -> anyhow::Result<()> {
-    let cfg = pawrly_config::load_auto(&args.path)?;
+pub async fn run(config: Option<PathBuf>, args: Args) -> anyhow::Result<()> {
+    let path = args
+        .path
+        .or(config)
+        .unwrap_or_else(|| PathBuf::from("./pawrly.yaml"));
+    let cfg = pawrly_config::load_auto(&path)?;
     let errs = pawrly_config::validate(&cfg);
     if errs.is_empty() {
         println!(

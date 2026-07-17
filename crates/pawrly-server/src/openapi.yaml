@@ -228,6 +228,7 @@ paths:
           required: true
           description: "`schema.table`"
           schema: { type: string }
+        - $ref: '#/components/parameters/MaterializeNamespace'
       responses:
         '200':
           description: Refresh outcome.
@@ -283,6 +284,35 @@ paths:
           description: Model dimensions + measures.
           content:
             application/json: { schema: { $ref: '#/components/schemas/SemanticModelDescription' } }
+        '400': { $ref: '#/components/responses/Error' }
+  /v1/semantic/metrics:
+    get:
+      tags: [semantic]
+      summary: List workspace metrics
+      operationId: listMetrics
+      responses:
+        '200':
+          description: Metrics, each in its config-YAML JSON shape.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  metrics:
+                    type: array
+                    items: { type: object, additionalProperties: true }
+  /v1/semantic/metrics/{name}:
+    get:
+      tags: [semantic]
+      summary: Describe a workspace metric
+      operationId: describeMetric
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: The metric definition.
+          content:
+            application/json: { schema: { type: object, additionalProperties: true } }
         '400': { $ref: '#/components/responses/Error' }
   /v1/cache:
     get:
@@ -377,6 +407,24 @@ paths:
                     type: string
                     description: Echo of `?namespace=`, when supplied.
         '404': { $ref: '#/components/responses/Error' }
+  /v1/namespaces/{namespace}:
+    delete:
+      tags: [materialized]
+      summary: Drop an entire materialize namespace
+      operationId: dropNamespace
+      parameters:
+        - { name: namespace, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Whether the namespace existed. The default workspace namespace is refused.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  dropped: { type: boolean }
+                  namespace: { type: string }
+        '400': { $ref: '#/components/responses/Error' }
   /v1/config/reload:
     post:
       tags: [system]

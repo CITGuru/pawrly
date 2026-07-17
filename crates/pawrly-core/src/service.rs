@@ -291,7 +291,14 @@ pub trait EngineService: Send + Sync + 'static {
         namespace: Option<&str>,
     ) -> Result<Vec<CacheEntryInfo>, EngineError>;
 
-    async fn refresh_table(&self, name: &TableName) -> Result<RefreshOutcome, EngineError>;
+    /// Re-fetch a cached table, or re-run a materialized table's stored
+    /// origin. `namespace` targets a materialize namespace's tables; it is an
+    /// error for non-materialized names.
+    async fn refresh_table(
+        &self,
+        name: &TableName,
+        namespace: Option<&str>,
+    ) -> Result<RefreshOutcome, EngineError>;
 
     async fn invalidate_cache(&self, name: &TableName) -> Result<bool, EngineError>;
 
@@ -308,6 +315,12 @@ pub trait EngineService: Send + Sync + 'static {
         spec: MaterializeSpec,
         namespace: Option<&str>,
     ) -> Result<MaterializeOutcome, EngineError>;
+
+    /// Drop an entire materialize namespace — every table, its manifest, and
+    /// its storage directory — in one call (session teardown). Returns `false`
+    /// if the namespace never existed; the default workspace namespace is
+    /// refused.
+    async fn drop_namespace(&self, namespace: &str) -> Result<bool, EngineError>;
 
     /// Drop a materialized table, returns `false` if no such table existed.
     async fn drop_materialized(
@@ -336,6 +349,12 @@ pub trait EngineService: Send + Sync + 'static {
         &self,
         name: &str,
     ) -> Result<SemanticModelDescription, EngineError>;
+
+    /// Workspace metrics (composed measures), sorted by name.
+    async fn list_metrics(&self) -> Result<Vec<crate::semantic::Metric>, EngineError>;
+
+    /// One metric by its dot-free name.
+    async fn describe_metric(&self, name: &str) -> Result<crate::semantic::Metric, EngineError>;
 
     /// Compile and execute a structured query, returning a [`QueryHandle`] in
     /// the same shape as [`EngineService::query`].

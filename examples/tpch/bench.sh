@@ -12,6 +12,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$HERE"
 ITER="${1:-3}"
+PAWRLY="${PAWRLY:-pawrly}"
 HOME_DIR="$HERE/.pawrlyhome"
 SOCK="$HOME_DIR/pawrly.sock"
 REMOTE="uds://$SOCK"
@@ -22,13 +23,13 @@ cleanup() { [[ -n "${DAEMON_PID:-}" ]] && kill "$DAEMON_PID" 2>/dev/null || true
 trap cleanup EXIT
 
 echo ">> starting daemon"
-pawrly --home "$HOME_DIR" --config "$HERE/pawrly.yaml" serve --socket "$SOCK" \
+$PAWRLY --home "$HOME_DIR" --config "$HERE/pawrly.yaml" serve --socket "$SOCK" \
   >"$HOME_DIR/serve.log" 2>&1 &
 DAEMON_PID=$!
 
 # wait for health
 for i in $(seq 1 50); do
-  if pawrly --remote "$REMOTE" sql "SELECT 1" >/dev/null 2>&1; then break; fi
+  if $PAWRLY --remote "$REMOTE" sql "SELECT 1" >/dev/null 2>&1; then break; fi
   sleep 0.2
   if ! kill -0 "$DAEMON_PID" 2>/dev/null; then echo "daemon died:"; cat "$HOME_DIR/serve.log"; exit 1; fi
 done
@@ -36,9 +37,9 @@ done
 # time one `pawrly sql --file` call in milliseconds (query output discarded so
 # only the timing number reaches stdout); prints elapsed ms, or -1 on error.
 time_one() {
-  QF="$1" REMOTE="$REMOTE" perl -MTime::HiRes=time -e '
+  QF="$1" REMOTE="$REMOTE" PAWRLY_BIN="$PAWRLY" perl -MTime::HiRes=time -e '
     my $t0 = time;
-    my $rc = system("pawrly --remote \"$ENV{REMOTE}\" sql --file \"$ENV{QF}\" --format csv --max-rows 0 >/dev/null 2>&1");
+    my $rc = system("$ENV{PAWRLY_BIN} --remote \"$ENV{REMOTE}\" sql --file \"$ENV{QF}\" --format csv --max-rows 0 >/dev/null 2>&1");
     printf "%.1f", ($rc == 0 ? (time - $t0) * 1000 : -1);
   '
 }
@@ -51,7 +52,7 @@ for f in queries/q*.sql; do
   q="$(basename "$f" .sql)"
   # warm + capture row count
   out="$RESULTS/$q.csv"
-  if ! pawrly --remote "$REMOTE" sql --file "$f" --format csv --max-rows 0 >"$out" 2>"$RESULTS/$q.err"; then
+  if ! $PAWRLY --remote "$REMOTE" sql --file "$f" --format csv --max-rows 0 >"$out" 2>"$RESULTS/$q.err"; then
     printf "%-5s %8s %12s %12s\n" "$q" "ERR" "-" "-"; sed 's/^/    /' "$RESULTS/$q.err" | head -3; continue
   fi
   rows=$(($(wc -l < "$out") - 1)); rows=$(( rows < 0 ? 0 : rows ))

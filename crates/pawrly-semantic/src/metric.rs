@@ -28,6 +28,56 @@ pub(crate) fn compile_with_metrics(
     catalog: &SemanticCatalog,
     q: &SemanticQuery,
 ) -> Result<String, SemanticError> {
+    compile_with_metrics_via(catalog, q, &|augmented, inner| augmented.compile_sql(inner))
+}
+
+/// The metric-free leaf query a rollup could serve: metrics expanded to their
+/// plain leaves. `None` when ineligible — window metrics need the time axis,
+/// and filtered leaves become synthetic measures no rollup carries.
+pub(crate) fn rollup_leaf_query(
+    catalog: &SemanticCatalog,
+    q: &SemanticQuery,
+) -> Option<SemanticQuery> {
+    if q.measures
+        .iter()
+        .filter(|m| !m.contains('.'))
+        .any(|m| has_window(catalog, m, &mut Vec::new()))
+    {
+        return None;
+    }
+    let mut expansion = Expansion {
+        catalog,
+        q,
+        time_dims: Vec::new(),
+        dims_alias: AGG_ALIAS,
+        leaves: Vec::new(),
+        leaf_index: HashMap::new(),
+        synthetic: HashMap::new(),
+    };
+    for m in &q.measures {
+        if m.contains('.') {
+            expansion.leaf(m, &[]).ok()?;
+        } else {
+            expansion.metric_expr(m, &[], &mut Vec::new()).ok()?;
+        }
+    }
+    if !expansion.synthetic.is_empty() {
+        return None;
+    }
+    let mut inner = q.clone();
+    inner.measures = expansion.leaves;
+    inner.order_by = Vec::new();
+    inner.limit = None;
+    Some(inner)
+}
+
+/// `compile_with_metrics` with the inner (leaf) compilation pluggable, so the
+/// same metric projection wraps both the base pipeline and a matched rollup.
+pub(crate) fn compile_with_metrics_via(
+    catalog: &SemanticCatalog,
+    q: &SemanticQuery,
+    compile_inner: &dyn Fn(&SemanticCatalog, &SemanticQuery) -> Result<String, SemanticError>,
+) -> Result<String, SemanticError> {
     // Cumulative/offset join the aggregate onto a dense time axis so data
     // gaps can't misalign the window; dimensions then read from the axis side.
     let spine_mode = q
@@ -81,7 +131,7 @@ pub(crate) fn compile_with_metrics(
     inner.measures = expansion.leaves.clone();
     inner.order_by = Vec::new();
     inner.limit = None;
-    let inner_sql = expansion.augmented_catalog().compile_sql(&inner)?;
+    let inner_sql = compile_inner(&expansion.augmented_catalog(), &inner)?;
 
     let mut sql = if spine_mode {
         let axis = expansion.axis_sql()?;
@@ -510,7 +560,7 @@ fn and_filter(base: &[String], extra: Option<&String>) -> Vec<String> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use pawrly_core::semantic::{
         CumulativeWindow, Dimension, DimensionType, Measure, MeasureAgg, Metric, MetricKind,
         OffsetOutput, Operand, Relationship, RelationshipKind, SemanticOrder, SemanticQuery,
@@ -519,7 +569,7 @@ mod tests {
 
     use crate::{SemanticCatalog, SemanticError};
 
-    fn measure(name: &str, expr: &str, agg: MeasureAgg) -> Measure {
+    pub(crate) fn measure(name: &str, expr: &str, agg: MeasureAgg) -> Measure {
         Measure {
             name: name.into(),
             agg,
@@ -530,7 +580,7 @@ mod tests {
         }
     }
 
-    fn orders_model() -> pawrly_core::semantic::SemanticModel {
+    pub(crate) fn orders_model() -> pawrly_core::semantic::SemanticModel {
         pawrly_core::semantic::SemanticModel {
             name: "orders".into(),
             description: None,
@@ -569,7 +619,7 @@ mod tests {
         }
     }
 
-    fn customers_model() -> pawrly_core::semantic::SemanticModel {
+    pub(crate) fn customers_model() -> pawrly_core::semantic::SemanticModel {
         pawrly_core::semantic::SemanticModel {
             name: "customers".into(),
             description: None,
@@ -590,7 +640,7 @@ mod tests {
         }
     }
 
-    fn ratio(name: &str, num: &str, den: &str) -> Metric {
+    pub(crate) fn ratio(name: &str, num: &str, den: &str) -> Metric {
         Metric {
             name: name.into(),
             description: None,
@@ -609,7 +659,7 @@ mod tests {
         }
     }
 
-    fn derived(name: &str, expr: &str) -> Metric {
+    pub(crate) fn derived(name: &str, expr: &str) -> Metric {
         Metric {
             name: name.into(),
             description: None,
@@ -619,11 +669,11 @@ mod tests {
         }
     }
 
-    fn catalog(metrics: Vec<Metric>) -> SemanticCatalog {
+    pub(crate) fn catalog(metrics: Vec<Metric>) -> SemanticCatalog {
         SemanticCatalog::new_with_metrics(vec![orders_model(), customers_model()], metrics)
     }
 
-    fn q(measures: &[&str], dimensions: &[&str]) -> SemanticQuery {
+    pub(crate) fn q(measures: &[&str], dimensions: &[&str]) -> SemanticQuery {
         SemanticQuery {
             measures: measures.iter().map(|s| (*s).to_string()).collect(),
             dimensions: dimensions.iter().map(|s| (*s).to_string()).collect(),
@@ -768,7 +818,7 @@ mod tests {
         ));
     }
 
-    fn cumulative(name: &str, window: CumulativeWindow, agg: WindowAgg) -> Metric {
+    pub(crate) fn cumulative(name: &str, window: CumulativeWindow, agg: WindowAgg) -> Metric {
         Metric {
             name: name.into(),
             description: None,
@@ -933,6 +983,67 @@ mod tests {
             sql.contains("SELECT DISTINCT DATE_TRUNC('month', \"d\") FROM \"shop\".\"calendar\"")
                 || sql.contains("FROM \"shop\".\"calendar\""),
             "{sql}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod rollup_tests {
+    use pawrly_core::semantic::{CumulativeWindow, Metric, PreAggregation, WindowAgg};
+
+    use super::tests::{cumulative, customers_model, derived, orders_model, q, ratio};
+    use crate::SemanticCatalog;
+
+    fn rollup_catalog(metrics: Vec<Metric>) -> SemanticCatalog {
+        let mut orders = orders_model();
+        orders.pre_aggregations = vec![PreAggregation {
+            name: "by_status".into(),
+            dimensions: vec!["status".into()],
+            measures: vec!["revenue".into(), "cost".into()],
+            refresh: None,
+            partition_by: None,
+        }];
+        SemanticCatalog::new_with_metrics(vec![orders, customers_model()], metrics)
+    }
+
+    #[test]
+    fn metric_over_additive_leaves_compiles_against_the_rollup() {
+        let cat = rollup_catalog(vec![derived("gross", "{orders.revenue} - {orders.cost}")]);
+        let query = q(&["gross"], &["orders.status"]);
+        let m = cat.candidate_rollup(&query).expect("rollup match");
+        let sql = cat.compile_rollup_sql(&query, &m).unwrap();
+        assert!(sql.contains("\"semantic\".\"orders__by_status\""), "{sql}");
+        assert!(sql.contains("AS \"gross\""), "{sql}");
+        assert!(sql.contains("FROM (\n"), "{sql}");
+    }
+
+    #[test]
+    fn non_additive_filtered_and_window_metrics_read_base() {
+        // A count_distinct leaf is not re-aggregatable from stored partials.
+        let cat = rollup_catalog(vec![ratio("aov", "orders.revenue", "orders.order_count")]);
+        assert!(
+            cat.candidate_rollup(&q(&["aov"], &["orders.status"]))
+                .is_none()
+        );
+
+        // A governed filter turns its leaf synthetic; no rollup carries it.
+        let mut paid = ratio("paid_margin", "orders.revenue", "orders.cost");
+        paid.filter = Some("status = 'paid'".into());
+        let cat = rollup_catalog(vec![paid]);
+        assert!(
+            cat.candidate_rollup(&q(&["paid_margin"], &["orders.status"]))
+                .is_none()
+        );
+
+        // Window metrics need the dense time axis.
+        let cat = rollup_catalog(vec![cumulative(
+            "running",
+            CumulativeWindow::RunningTotal,
+            WindowAgg::Sum,
+        )]);
+        assert!(
+            cat.candidate_rollup(&q(&["running"], &["orders.order_date.month"]))
+                .is_none()
         );
     }
 }

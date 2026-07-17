@@ -60,6 +60,8 @@ pub(crate) fn rest_router(engine: Arc<dyn EngineService>, bearer: Option<Arc<str
         .route("/v1/schema", get(rest_schema))
         .route("/v1/semantic/models", get(rest_semantic_models))
         .route("/v1/semantic/models/:name", get(rest_semantic_model))
+        .route("/v1/semantic/metrics", get(rest_semantic_metrics))
+        .route("/v1/semantic/metrics/:name", get(rest_semantic_metric))
         .route("/v1/cache", get(rest_cache))
         .route("/v1/cache/vacuum", post(rest_vacuum_cache))
         .route("/v1/cache/:name", delete(rest_invalidate_cache))
@@ -67,6 +69,7 @@ pub(crate) fn rest_router(engine: Arc<dyn EngineService>, bearer: Option<Arc<str
             "/v1/materialized/:name",
             put(rest_materialize).delete(rest_drop_materialized),
         )
+        .route("/v1/namespaces/:namespace", delete(rest_drop_namespace))
         .route("/v1/config/reload", post(rest_reload_config))
         .route("/v1/functions", get(rest_functions))
         .route(
@@ -295,6 +298,33 @@ async fn rest_semantic_model(
     }
 }
 
+async fn rest_semantic_metrics(
+    State(state): State<RestState>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    if let Some(resp) = guard(&state, &headers) {
+        return resp;
+    }
+    match state.engine.list_metrics().await {
+        Ok(v) => Json(json!({ "metrics": v })).into_response(),
+        Err(e) => engine_error_response(&e),
+    }
+}
+
+async fn rest_semantic_metric(
+    State(state): State<RestState>,
+    headers: axum::http::HeaderMap,
+    Path(name): Path<String>,
+) -> Response {
+    if let Some(resp) = guard(&state, &headers) {
+        return resp;
+    }
+    match state.engine.describe_metric(&name).await {
+        Ok(metric) => Json(metric).into_response(),
+        Err(e) => engine_error_response(&e),
+    }
+}
+
 /// `?namespace=`; absent/empty = the default workspace namespace.
 #[derive(Deserialize)]
 struct NamespaceParams {
@@ -387,6 +417,20 @@ async fn rest_drop_materialized(
             codes::UNKNOWN_MATERIALIZED,
             &format!("no materialized table named `{name}`"),
         ),
+        Err(e) => engine_error_response(&e),
+    }
+}
+
+async fn rest_drop_namespace(
+    State(state): State<RestState>,
+    headers: axum::http::HeaderMap,
+    Path(namespace): Path<String>,
+) -> Response {
+    if let Some(resp) = guard(&state, &headers) {
+        return resp;
+    }
+    match state.engine.drop_namespace(&namespace).await {
+        Ok(dropped) => Json(json!({ "dropped": dropped, "namespace": namespace })).into_response(),
         Err(e) => engine_error_response(&e),
     }
 }
@@ -616,6 +660,7 @@ async fn rest_refresh_table(
     State(state): State<RestState>,
     headers: axum::http::HeaderMap,
     Path(name): Path<String>,
+    Query(params): Query<NamespaceParams>,
 ) -> Response {
     if let Some(resp) = guard(&state, &headers) {
         return resp;
@@ -627,8 +672,8 @@ async fn rest_refresh_table(
             &format!("expected `schema.table`, got `{name}`"),
         );
     };
-    match state.engine.refresh_table(&table).await {
-        Ok(outcome) => Json(outcome).into_response(),
+    match state.engine.refresh_table(&table, params.namespace()).await {
+        Ok(outcome) => Json(with_namespace_echo(json!(outcome), &params)).into_response(),
         Err(e) => engine_error_response(&e),
     }
 }

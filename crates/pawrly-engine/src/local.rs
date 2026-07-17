@@ -1257,21 +1257,26 @@ impl EngineService for LocalEngine {
             .unwrap_or_default())
     }
 
-    async fn refresh_table(&self, name: &TableName) -> Result<RefreshOutcome, EngineError> {
+    async fn refresh_table(
+        &self,
+        name: &TableName,
+        namespace: Option<&str>,
+    ) -> Result<RefreshOutcome, EngineError> {
         // A materialized table has no live inner provider to re-scan — re-run its
         // stored origin spec (re-execute the query / re-read the file or URL) and
         // overwrite the pinned Parquet.
         if name.schema == pawrly_core::MATERIALIZED_SCHEMA {
-            let spec = self
+            let cache = self
                 .inner
-                .cache
+                .namespaces
+                .for_read(namespace)?
+                .ok_or_else(|| EngineError::UnknownTable(name.to_string()))?;
+            let spec = cache
                 .materialized_spec(&name.table)
                 .ok_or_else(|| EngineError::UnknownTable(name.to_string()))?;
             let started = std::time::Instant::now();
             let (schema, batches, _tmp) = self.produce_materialize(&spec).await?;
-            let entry = self
-                .inner
-                .cache
+            let entry = cache
                 .materialize(&name.table, schema, &batches, spec)
                 .map_err(|e| EngineError::Internal(format!("materialize refresh: {e}")))?;
             return Ok(RefreshOutcome {
@@ -1281,6 +1286,12 @@ impl EngineService for LocalEngine {
                 elapsed: started.elapsed(),
                 expires_at: None,
             });
+        }
+        if namespace.is_some() {
+            return Err(EngineError::Internal(format!(
+                "`{name}` is not a materialized table; only `materialized.<name>` \
+                 can be refreshed in a namespace"
+            )));
         }
         self.inner.cache.refresh(name, &self.inner.ctx).await
     }
@@ -1338,7 +1349,21 @@ impl EngineService for LocalEngine {
         }
     }
 
+    async fn drop_namespace(&self, namespace: &str) -> Result<bool, EngineError> {
+        self.inner.namespaces.remove(namespace)
+    }
+
     async fn add_source(&self, def: SourceDef) -> Result<SourceInfo, EngineError> {
+        // Config-file sources were validated at load; runtime adds get it here.
+        let errors = pawrly_config::validate_engine_source(&def);
+        if !errors.is_empty() {
+            let msgs: Vec<String> = errors.0.iter().map(ToString::to_string).collect();
+            return Err(EngineError::Internal(format!(
+                "source `{}` failed validation: {}",
+                def.name,
+                msgs.join("; ")
+            )));
+        }
         register_source(&self.inner, def.clone()).await?;
         let info = self
             .inner
@@ -1471,6 +1496,20 @@ impl EngineService for LocalEngine {
             .semantic
             .describe(name)
             .ok_or_else(|| EngineError::SemanticPlan(format!("unknown semantic model `{name}`")))
+    }
+
+    async fn list_metrics(&self) -> Result<Vec<pawrly_core::semantic::Metric>, EngineError> {
+        Ok(self.inner.semantic.list_metrics())
+    }
+
+    async fn describe_metric(
+        &self,
+        name: &str,
+    ) -> Result<pawrly_core::semantic::Metric, EngineError> {
+        self.inner
+            .semantic
+            .describe_metric(name)
+            .ok_or_else(|| pawrly_semantic::SemanticError::UnknownMetric(name.to_string()).into())
     }
 
     #[tracing::instrument(name = "pawrly.engine.semantic_query", skip_all, fields(pawrly.engine = "local"))]
