@@ -977,6 +977,13 @@ impl SemanticCatalog {
     #[must_use]
     pub fn candidate_rollup(&self, q: &SemanticQuery) -> Option<RollupMatch> {
         let q = self.expand_segments(q).ok()?;
+        // A metric query matches on its leaf measures; ineligible expansions
+        // (window metrics, filtered leaves) read base.
+        let q = if q.measures.iter().any(|m| !m.contains('.')) {
+            metric::rollup_leaf_query(self, &q)?
+        } else {
+            q
+        };
         // The rollup is pre-truncated in its own zone; a tz query reads base.
         if q.time_zone.is_some() {
             return None;
@@ -1024,6 +1031,23 @@ impl SemanticCatalog {
         r: &RollupMatch,
     ) -> Result<String, SemanticError> {
         let q = self.expand_segments(q)?;
+        // A metric query compiles its leaves against the rollup, then projects
+        // the metrics on top — the same wrap `compile_sql` applies over base.
+        if q.measures.iter().any(|m| !m.contains('.')) {
+            return metric::compile_with_metrics_via(self, &q, &|_augmented, inner| {
+                self.rollup_measure_sql(inner, r)
+            });
+        }
+        self.rollup_measure_sql(&q, r)
+    }
+
+    /// Compile a metric-free query against a matched rollup.
+    fn rollup_measure_sql(
+        &self,
+        q: &SemanticQuery,
+        r: &RollupMatch,
+    ) -> Result<String, SemanticError> {
+        let q = q.clone();
         let model = self
             .models
             .get(&r.model)
