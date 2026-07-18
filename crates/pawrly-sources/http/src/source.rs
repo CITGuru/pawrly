@@ -526,6 +526,8 @@ pub struct ResponseColumn {
 pub struct HttpSource {
     pub name: String,
     pub base_url: url::Url,
+    /// Hosts beyond `base_url` trusted with this source's credentials.
+    pub(crate) allowed_hosts: Vec<crate::guard::HostPattern>,
     pub auth: AuthSpec,
     pub headers: HeaderMap,
     pub client: reqwest::Client,
@@ -562,12 +564,34 @@ impl HttpSource {
     /// overall query time (across paginated calls) is bounded separately by the
     /// engine's query timeout.
     pub fn build_client() -> reqwest::Client {
+        Self::client_builder()
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new())
+    }
+
+    /// [`Self::build_client`] plus the outbound-target redirect guard and rebinding resolver.
+    pub(crate) fn build_client_for(
+        base: &url::Url,
+        allowed: &[crate::guard::HostPattern],
+        has_auth: bool,
+    ) -> reqwest::Client {
+        let resolver = Arc::new(crate::guard::GuardedResolver::new(base, allowed.to_vec()));
+        Self::client_builder()
+            .redirect(crate::guard::redirect_policy(
+                base.clone(),
+                allowed.to_vec(),
+                has_auth,
+            ))
+            .dns_resolver(resolver)
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new())
+    }
+
+    fn client_builder() -> reqwest::ClientBuilder {
         reqwest::Client::builder()
             .user_agent(format!("pawrly/{}", env!("CARGO_PKG_VERSION")))
             .connect_timeout(std::time::Duration::from_secs(10))
             .timeout(std::time::Duration::from_secs(60))
-            .build()
-            .unwrap_or_else(|_| reqwest::Client::new())
     }
 
     /// Apply this source's auth to a request, fetching/refreshing an OAuth2
@@ -578,6 +602,19 @@ impl HttpSource {
         &self,
         req: reqwest::RequestBuilder,
     ) -> Result<reqwest::RequestBuilder, String> {
+        if !matches!(self.auth, AuthSpec::None) {
+            let probe = req
+                .try_clone()
+                .and_then(|r| r.build().ok())
+                .ok_or_else(|| "cannot inspect request target for auth".to_string())?;
+            if !crate::guard::is_trusted(probe.url(), &self.base_url, &self.allowed_hosts) {
+                return Err(format!(
+                    "refusing to send `{}` credentials to `{}` (cross-origin)",
+                    self.name,
+                    probe.url()
+                ));
+            }
+        }
         Ok(match &self.auth {
             AuthSpec::None => req,
             AuthSpec::Header { headers } => {

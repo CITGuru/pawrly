@@ -16,12 +16,19 @@ In the SDKs, a transport is how the client reaches Pawrly. Choose one when const
 
 Despite sometimes being called “in-process,” local mode runs Pawrly in a separate child process. The client starts `pawrly console` on a private loopback port, connects over REST, and stops the child when the client closes.
 
+For the examples below, native gRPC and REST use different listeners:
+
+```bash
+pawrly serve --addr tcp://127.0.0.1:8788   # native gRPC
+pawrly console --addr 127.0.0.1:8787       # REST, gRPC-Web, and Console
+```
+
 ## TypeScript
 
 ```ts
 import { PawrlyClient } from "@pawrly/client";
 
-const client = new PawrlyClient({ transport: "grpc", endpoint: "tcp://127.0.0.1:8787" });
+const client = new PawrlyClient({ transport: "grpc", endpoint: "tcp://127.0.0.1:8788" });
 // or: { transport: "rest", baseUrl: "http://127.0.0.1:8787" }
 // or: await PawrlyClient.local()  // manages a private `pawrly console` child
 
@@ -38,7 +45,7 @@ client.close();
 ```python
 from pawrly import PawrlyClient
 
-client = PawrlyClient.grpc("tcp://127.0.0.1:8787")
+client = PawrlyClient.grpc("tcp://127.0.0.1:8788")
 # or: PawrlyClient.rest("http://127.0.0.1:8787")
 # or: with PawrlyClient.local() as client: ...   # manages a private `pawrly console` child
 

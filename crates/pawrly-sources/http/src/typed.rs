@@ -227,6 +227,7 @@ impl HttpTableProvider {
                 Some(u) => u.clone(),
                 None => build_url(
                     &self.source.base_url,
+                    &self.source.allowed_hosts,
                     endpoint,
                     &next_params,
                     body_template,
@@ -410,6 +411,12 @@ impl HttpTableProvider {
                     let parsed = url::Url::parse(&u).map_err(|e| {
                         DataFusionError::Plan(format!("bad pagination url `{u}`: {e}"))
                     })?;
+                    crate::guard::check_target(
+                        &parsed,
+                        &self.source.base_url,
+                        &self.source.allowed_hosts,
+                    )
+                    .map_err(DataFusionError::Plan)?;
                     next_url = Some(parsed);
                 }
                 Some(NextPage::BodyCursor(c)) => {
@@ -709,7 +716,8 @@ async fn send_with_retry_inner(
             None => {
                 return req.send().await.map_err(|e| {
                     DataFusionError::External(Box::new(std::io::Error::other(format!(
-                        "http request failed: {e}"
+                        "http request failed: {}",
+                        error_chain(&e)
                     ))))
                 });
             }
@@ -737,9 +745,10 @@ async fn send_with_retry_inner(
                 tokio::time::sleep(std::time::Duration::from_millis(wait_ms)).await;
             }
             Err(e) => {
-                if attempt >= retry.max_retries {
+                // A refused redirect is a policy decision, not a transient failure — don't retry.
+                if e.is_redirect() || attempt >= retry.max_retries {
                     return Err(DataFusionError::External(Box::new(std::io::Error::other(
-                        format!("http request failed: {e}"),
+                        format!("http request failed: {}", error_chain(&e)),
                     ))));
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(backoff_ms(retry, attempt)))
@@ -748,6 +757,23 @@ async fn send_with_retry_inner(
         }
         attempt += 1;
     }
+}
+
+/// reqwest's `Display` omits the cause for redirect-policy refusals; append
+/// the source chain so the reason reaches the user.
+fn error_chain(e: &reqwest::Error) -> String {
+    use std::error::Error as _;
+    let mut s = e.to_string();
+    let mut src = e.source();
+    while let Some(inner) = src {
+        let inner_s = inner.to_string();
+        if !s.contains(&inner_s) {
+            s.push_str(": ");
+            s.push_str(&inner_s);
+        }
+        src = inner.source();
+    }
+    s
 }
 
 /// Exponential backoff for `attempt` (0-based), capped at `max_backoff_ms`.
@@ -991,6 +1017,7 @@ fn scalar_to_string(scalar: &datafusion::scalar::ScalarValue) -> Option<String> 
 
 fn build_url(
     base: &url::Url,
+    allowed: &[crate::guard::HostPattern],
     endpoint: &str,
     params: &BTreeMap<String, String>,
     body_template: Option<&str>,
@@ -1018,6 +1045,7 @@ fn build_url(
     let mut url = base
         .join(trimmed)
         .map_err(|e| DataFusionError::Plan(format!("bad url: {e}")))?;
+    crate::guard::check_target(&url, base, allowed).map_err(DataFusionError::Plan)?;
     if !query_params.is_empty() {
         let mut q = url.query_pairs_mut();
         for (k, v) in &query_params {
@@ -1459,6 +1487,7 @@ mod build_tests {
         // the query string; `page` (a real query param) stays.
         let url = build_url(
             &base(),
+            &[],
             "/_search",
             &params,
             Some("{\"q\": \"{stream}\"}"),
@@ -1473,7 +1502,7 @@ mod build_tests {
         let mut params = BTreeMap::new();
         params.insert("id".to_string(), "7".to_string());
         params.insert("state".to_string(), "open".to_string());
-        let url = build_url(&base(), "/items/{id}", &params, None, &BTreeMap::new()).unwrap();
+        let url = build_url(&base(), &[], "/items/{id}", &params, None, &BTreeMap::new()).unwrap();
         assert_eq!(url.path(), "/items/7");
         assert_eq!(url.query(), Some("state=open"));
     }
@@ -1482,7 +1511,7 @@ mod build_tests {
     fn build_url_explodes_in_list() {
         let mut explode = BTreeMap::new();
         explode.insert("status".to_string(), vec!["a".to_string(), "b".to_string()]);
-        let url = build_url(&base(), "/x", &BTreeMap::new(), None, &explode).unwrap();
+        let url = build_url(&base(), &[], "/x", &BTreeMap::new(), None, &explode).unwrap();
         assert_eq!(url.query(), Some("status=a&status=b"));
     }
 

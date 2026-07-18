@@ -11,6 +11,7 @@ mod dependent_join;
 mod expr;
 mod fetch;
 mod function;
+mod guard;
 mod openapi;
 mod paginate;
 mod raw;
