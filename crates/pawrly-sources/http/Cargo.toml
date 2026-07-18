@@ -22,6 +22,7 @@ async-trait = { workspace = true }
 futures = { workspace = true }
 reqwest = { workspace = true }
 url = { workspace = true }
+psl = { workspace = true }
 governor = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

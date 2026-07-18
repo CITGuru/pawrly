@@ -122,6 +122,8 @@ impl TableProvider for RawHttpTableProvider {
             if let Some(q) = &query {
                 url.set_query(Some(q));
             }
+            crate::guard::check_target(&url, &self.source.base_url, &self.source.allowed_hosts)
+                .map_err(DataFusionError::Plan)?;
             let mut req = self.source.client.request(method_parsed.clone(), url);
             for (k, v) in &self.source.headers {
                 req = req.header(k, v);

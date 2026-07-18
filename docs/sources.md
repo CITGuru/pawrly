@@ -483,6 +483,7 @@ replace wholesale, and a `null` clears a field.
 | `headers`    | no       | Static request headers attached to every call.                                                                |
 | `retry`      | no       | `{ max_retries, base_backoff_ms, max_backoff_ms }` — see [Rate limiting & retries](#rate-limiting--retries).  |
 | `rate_limit` | no       | `{ requests_per_second, remaining_header, reset_header, extra_statuses }`.                                    |
+| `allowed_hosts` | no    | Hosts beyond `base_url` this source may reach and send credentials to — see [Outbound requests](#outbound-requests--allowed_hosts). |
 
 
 **config.openapi** (synthesis-specific):
@@ -558,6 +559,31 @@ Set source-level auth with the `config.token` shorthand or a full `auth:` block 
 ```
 
 > **Authentication fallback.** A malformed `auth:` block (wrong `type`, a missing required field) does **not** raise a config error — it falls back to *no authentication*, and requests go out unauthenticated. If an API starts returning `401`/`403`, double-check the `auth` block's shape first.
+
+#### Allowed Hosts
+
+Because a SQL query shapes the request URL — through path params, the raw table's `request_path`, `http.get`, pagination links, and redirects — Pawrly restricts where those requests can go, so a query can't turn the engine into a proxy into your network:
+
+- Requests to the source's own `base_url` origin are always allowed, and carry the source's credentials.
+- A request to any **other** origin is allowed only if the target is public. Private ranges (RFC1918), cloud-metadata addresses (`169.254.169.254`), CGN, ULA, and `*.internal` hosts are refused. `localhost`/loopback stays allowed for local development.
+- The check is on the resolved address, not just the URL string: a public-looking hostname that resolves to a private or metadata IP (DNS rebinding) is rejected at connect time.
+- Credentials are pinned to trusted origins. If a source has authentication configured, a request or redirect to an untrusted origin is refused. An unauthenticated source may follow an allowed public cross-origin target without credentials.
+
+`allowed_hosts` widens that trust to hosts beyond `base_url` — an API that serves a sibling host (uploads, a CDN, a regional endpoint). A listed host is treated like `base_url`: reachable and credential-bearing. Entries are exact hostnames or a `*.suffix` wildcard matching that suffix's subdomains:
+
+```yaml
+    config:
+      base_url: https://api.github.com
+      token: ${secret:GITHUB_TOKEN}
+      allowed_hosts:
+        - uploads.github.com     # exact host — release-asset uploads
+        - "*.internal.acme.com"  # a subdomain wildcard you control
+```
+
+A listed host **receives this source's credentials**, so keep the list to hosts you trust with that identity. Entries match hostnames, not ports: a match applies over HTTP or HTTPS on any port.
+
+A wildcard on a public or multi-tenant suffix (`*.com`, `*.s3.amazonaws.com`, `*.githubusercontent.com`) is invalid. Pawrly logs and skips an invalid entry while loading the source. Every accepted wildcard is also logged with a reminder that it carries credentials. 
+
 
 #### Request headers
 

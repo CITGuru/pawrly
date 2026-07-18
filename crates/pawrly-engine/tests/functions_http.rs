@@ -252,3 +252,31 @@ async fn builtin_http_get_end_to_end() {
     assert!(bodies[0].contains("\"name\":\"a\""), "{:?}", bodies[0]);
     assert!(bodies[1].contains("\"name\":\"b\""), "{:?}", bodies[1]);
 }
+
+#[tokio::test]
+async fn builtin_http_get_refuses_private_targets() {
+    let engine = LocalEngine::new(LocalEngineConfig {
+        config: cfg_yaml("version: 1"),
+        workspace_dir: std::env::temp_dir(),
+        duckdb_pool_size: None,
+        home: None,
+    })
+    .await
+    .expect("engine");
+    let svc: Arc<dyn EngineService> = Arc::new(engine);
+
+    for target in [
+        "http://169.254.169.254/latest/meta-data/",
+        "http://10.0.0.8/admin",
+        "http://192.168.1.1/router",
+        "http://metadata.google.internal/computeMetadata/v1/",
+    ] {
+        let sql = format!("SELECT body FROM http.get('{target}', '$')");
+        let err = svc
+            .query_collect(&sql)
+            .await
+            .expect_err("private target must be refused")
+            .to_string();
+        assert!(err.contains("refusing cross-origin request"), "{err}");
+    }
+}

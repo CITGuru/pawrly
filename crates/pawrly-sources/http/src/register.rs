@@ -131,12 +131,19 @@ pub async fn register_http_source_with_vars(
         (base, Vec::new())
     };
 
+    let allowed_hosts = parse_allowed_hosts(def);
+    let auth = parse_auth(def);
     let source = Arc::new(HttpSource {
         name: def.name.clone(),
+        client: HttpSource::build_client_for(
+            &base_url,
+            &allowed_hosts,
+            !matches!(auth, AuthSpec::None),
+        ),
         base_url,
-        auth: parse_auth(def),
+        allowed_hosts,
+        auth,
         headers: parse_headers(def),
-        client,
         retry: parse_retry(def),
         rate_limit: parse_rate_limit(def),
         oauth_token: tokio::sync::Mutex::new(None),
@@ -265,12 +272,19 @@ pub fn build_http_source(
         raw_table: false,
         raw_table_safety: None,
     };
+    let allowed_hosts = parse_allowed_hosts(&def);
+    let auth = parse_auth(&def);
     Ok(Arc::new(HttpSource {
         name: name.to_string(),
+        client: HttpSource::build_client_for(
+            &base_url,
+            &allowed_hosts,
+            !matches!(auth, AuthSpec::None),
+        ),
         base_url,
-        auth: parse_auth(&def),
+        allowed_hosts,
+        auth,
         headers: parse_headers(&def),
-        client: HttpSource::build_client(),
         retry: parse_retry(&def),
         rate_limit: parse_rate_limit(&def),
         oauth_token: tokio::sync::Mutex::new(None),
@@ -352,6 +366,31 @@ fn parse_auth(def: &SourceDef) -> AuthSpec {
         Some(auth) => serde_json::from_value::<AuthSpec>(auth.clone()).unwrap_or(AuthSpec::None),
         None => AuthSpec::None,
     }
+}
+
+/// Parse `config.allowed_hosts` into host patterns, warning on wildcards
+/// (they carry credentials) and dropping over-broad or malformed entries.
+fn parse_allowed_hosts(def: &SourceDef) -> Vec<crate::guard::HostPattern> {
+    let Some(list) = def.config.get("allowed_hosts").and_then(|v| v.as_array()) else {
+        return Vec::new();
+    };
+    list.iter()
+        .filter_map(|v| {
+            let raw = v.as_str()?;
+            match crate::guard::HostPattern::parse(raw) {
+                Ok(pattern) => {
+                    if pattern.is_wildcard() {
+                        tracing::warn!(source = %def.name, host = %raw, "allowed_hosts wildcard receives this source's credentials");
+                    }
+                    Some(pattern)
+                }
+                Err(e) => {
+                    tracing::warn!(source = %def.name, host = %raw, "invalid config.allowed_hosts entry ({e}); skipping");
+                    None
+                }
+            }
+        })
+        .collect()
 }
 
 /// Parse static source-level request headers from `config.headers` (a

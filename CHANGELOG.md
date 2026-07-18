@@ -37,6 +37,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- Security: SQL-driven HTTP requests (`http.get`, typed tables, raw table, pagination, redirects) can no longer pivot off a source's `base_url` origin into private/metadata/`.internal` hosts, and source credentials are only sent to trusted origins. Hostnames are screened on their resolved IP, so DNS rebinding into private space is refused at connect time. An http source may declare `config.allowed_hosts` (exact hosts or `*.suffix` wildcards) to trust hosts beyond `base_url`; wildcards on a multi-tenant public suffix are rejected.
 - Security: runtime `add_source` (gRPC/REST/CLI) now runs the same validation as a config file, and rejects `kind: mcp` with `transport: stdio` outright — a remotely added source can no longer spawn processes on the server host. Declare stdio MCP sources in `pawrly.yaml` instead.
 - `pawrly cache refresh materialized.<name>` accepts `--namespace` (and the RPC/REST/MCP surfaces a `namespace`), so materialized tables in custom namespaces can be refreshed; previously only the default workspace namespace was reachable.
 - `pawrly validate` now honors the global `--config` / `PAWRLY_CONFIG` like every other command (it previously only looked at `./pawrly.yaml` relative to the shell's cwd).

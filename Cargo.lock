@@ -4024,6 +4024,7 @@ dependencies = [
  "pawrly-schema",
  "pawrly-secrets",
  "pawrly-telemetry",
+ "psl",
  "reqwest 0.12.28",
  "secrecy",
  "serde",
@@ -4413,6 +4414,21 @@ checksum = "3e36c2f31e0a47f9280fb347ef5e461ffcd2c52dd520d8e216b52f93b0b0d7d6"
 dependencies = [
  "thiserror 1.0.69",
 ]
+
+[[package]]
+name = "psl"
+version = "2.1.219"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c29b88c3f8002851c2571f798b898d257cec88d40246523af0afc7e6b30b3640"
+dependencies = [
+ "psl-types",
+]
+
+[[package]]
+name = "psl-types"
+version = "2.0.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "33cb294fe86a74cbcf50d4445b37da762029549ebeea341421c7c70370f86cac"
 
 [[package]]
 name = "psm"
